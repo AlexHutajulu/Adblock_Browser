@@ -1,91 +1,86 @@
-# Optimasi Performa, Bar Pintasan Navigasi Bawah, Logo AI Asli & Sistem Keamanan Stealth Anti-Mod
+# Upgrade Sistem Stealth Anti-AdBlock, Fitur Baru & Optimasi Performa/RAM/Baterai
 
-Memperbarui browser agar menggunakan gambar logo asli **Gemini**, **Claude**, dan **ChatGPT** yang dikirim pengguna, memindahkan dan menyatukan **Bar Pintasan (Auto Putar, Ekstensi, Script)** ke dalam **Bar Navigasi Bawah Utama** (lengkap dengan fitur buka/tutup dan geser Atas/Bawah), mengoptimalkan efisiensi baterai serta mencegah *memory leak*, dan menanamkan **Sistem Keamanan Stealth Anti-Mod & Anti-Tamper Berlapis** yang tersembunyi untuk mencegah modifikasi APK oleh pihak ketiga.
+Peningkatan menyeluruh mesin **AdBlock Browser** agar tidak terdeteksi oleh skrip **Anti-AdBlock** modern (Admiral, BlockAdBlock, FuckAdBlock, Google FundingChoices, PageFair, AdDefend), penambahan **3 fitur unggulan baru** sesuai pilihan Anda, serta **optimasi keseimbangan RAM, CPU, dan baterai** tanpa kebocoran memori (*zero memory leak*).
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Rencana ini disusun berdasarkan seluruh pilihan yang telah Anda konfirmasi:
+> Rencana ini mengimplementasikan seluruh preferensi yang telah Anda pilih:
 
-- **Logo AI Menggunakan Gambar yang Dikirim**: Mengonversi dan menanamkan langsung 3 gambar yang Anda kirim (**Google Gemini 2025**, **Claude AI**, dan **OpenAI ChatGPT Blossom**) sebagai aset *drawable* aplikasi sehingga tampil persis sesuai foto asli di layar *Splash Load* dan *Settings About*.
-- **Posisi Bar Pintasan (Auto Putar, Ekstensi, Script)**: Digabung secara *default* ke bagian **Bar Navigasi Bawah Utama** (tidak lagi memenuhi bagian atas layar), dilengkapi tombol **Buka/Tutup (*Collapse/Expand*)** di bar navigasi bawah serta tombol **Pindah Posisi Atas/Bawah** kapan saja.
-- **Performa Cepat, Stabil, Hemat Baterai & Anti-Memory Leak**: Manajemen siklus hidup *WebView* otomatis (menghentikan timer JS, *rendering*, dan *observer* saat tab tidak aktif atau aplikasi di latar belakang, membatasi ukuran *pool* WebView, dan membersihkan referensi memori saat tab ditutup).
-- **Sistem Keamanan Stealth Anti-Mod & Anti-Tamper**:
-  - **Lapisan Proteksi**: Verifikasi integritas tanda tangan sertifikat APK & *checksum* `classes.dex`, penguncian identitas paket (`com.aistudio.alexbrowser.wdjkpq`) & atribut `AndroidManifest.xml`, serta deteksi alat modifikasi pihak ketiga (*APK Editor, Lucky Patcher, MT Manager, NP Manager, Xposed, EdXposed, LSPosed, Frida, Substrate*).
-  - **Arsitektur Tersembunyi (*Stealth Obfuscation*)**: Nama kelas, metode, dan *string* deteksi disamarkan sebagai modul metrik/telemetri sistem internal (dengan *byte-array XOR encoding* tanpa teks *plain-text* seperti `"AntiMod"` atau `"Tamper"`) dan tersebar di beberapa titik eksekusi (*ContentProvider init, Application/Activity lifecycle, WebView bridge*).
-  - **Reaksi Saat Terdeteksi Mod**: Langsung melakukan *silent force-close / native process termination* (`Process.killProcess` & `Runtime.getRuntime().halt`) tanpa pesan peringatan apa pun sehingga pembuat *mod* tidak dapat melacak titik pemicunya.
+1. **Full Stealth Anti-AdBlock Suite (Surrogate JS, Bait Spoof, Native Proxy)**:
+   - **Surrogate Script & Pixel Spoofing (`AdBlockWebViewClient.kt`)**: Mengembalikan objek tiruan realistis (`window.adsbygoogle`, `window.googletag`, `window.pbjs`, `window.fuckAdBlock`, `window.blockAdBlock`, `window.admiral`, `google_ad_status = 1`) dengan status HTTP `200 OK` untuk skrip iklan, serta GIF transparan `1x1` (`image/gif`) untuk piksel pelacak agar *event* `onerror` tidak pernah terpicu.
+   - **DOM Bait / Honeypot Dimension Spoofing**: Mengganti penyembunyian naif `display: none` yang mudah terdeteksi pada elemen *bait* (`.adsbox`, `.ad-banner`, `.textads`, `.banner-ads`, `ins.adsbygoogle`) dengan penyembunyian tak kasatmata (`opacity: 0.001; pointer-events: none; clip-path: inset(100%)`) serta *Proxy* pada `offsetHeight`, `offsetWidth`, `clientHeight`, `clientWidth`, `getBoundingClientRect()`, dan `getComputedStyle()` agar skrip pendeteksi selalu membaca dimensi iklan sebagai terpasang normal (`> 0px`).
+   - **Zero-Footprint Native Function Cloaking**: Menyembunyikan *monkey-patch* `window.fetch`, `XMLHttpRequest.prototype.open`, dan `navigator.sendBeacon` menggunakan `Function.prototype.toString` *cloaking* (`function fetch() { [native code] }`) serta membungkus seluruh variabel internal di dalam *closure* anonim tanpa meninggalkan properti `window.__Alex*` atau ID `<style>` yang dapat di-*fingerprint*.
+   - **Auto-Neutralizer Modal Anti-AdBlock**: Mendeteksi dan menutup otomatis *overlay* peringatan "Please disable your adblocker" / FundingChoices (`fc-ab-root`, `tp-modal`, `admiral-modal`) serta memulihkan kunci gulir (`overflow: auto !important` pada `html, body`).
+
+2. **Tiga Fitur Unggulan Baru**:
+   - **Mode Hibernasi Tab Otomatis (*Auto-Suspend Tab Hemat RAM*)**: Tab latar belakang yang tidak diakses selama periode tertentu (atau di luar kapasitas *pool* aktif) otomatis di-*suspend* untuk membebaskan memori `WebView` secara penuh sambil menyimpan URL, judul, dan posisi gulir, disertai lencana status *Sleeping/Eco* di *Tab Switcher* dan tombol *Hibernasi Tab Lainnya* satu ketukan.
+   - **Pemilih Elemen Pengganggu (*Custom Element Zapper*)**: Mode interaktif langsung di halaman web untuk mengetuk dan menghilangkan elemen pengganggu (*floating banner*, *widget* mengambang, *overlay* promosi) dengan pratinjau sorotan visual (*highlight border*), tombol *Undo* / *Reset*, dan penyimpanan aturan CSS per-domain secara permanen.
+   - **Panel Statistik & Monitor Anti-AdBlock Real-Time per Situs**: Peningkatan *Chrome AdShield Dialog* dengan indikator status **Stealth Anti-Detect Active**, penghitung *Surrogate Spoofed*, *Anti-AdBlock Traps Defused*, dan tombol pintas *Element Zapper* serta *RAM Hibernation*.
+
+3. **Profil Optimasi Seimbang (Pool 3 WebView Aktif + Throttling Background)**:
+   - Membatasi `MAX_WEBVIEW_POOL_SIZE = 3` (LRU) agar pemakaian RAM tetap rendah sekaligus menjaga perpindahan 3 tab terakhir tetap instan.
+   - Membekukan eksekusi CPU/baterai (`onPause()`, `pauseTimers()` saat tidak ada tab aktif yang memutar audio) pada `WebView` latar belakang dan saat aplikasi masuk ke *background* (`ON_STOP`), serta menangani `ComponentCallbacks2.onTrimMemory` di `MainActivity` untuk memangkas *cache* dan membebaskan `WebView` tidak aktif saat sistem kekurangan RAM.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**:
-  1. Menampilkan aset foto asli ketiga logo AI (**Gemini**, **Claude**, **ChatGPT**) pada atribusi **Developed by Alex Hutajulu**.
-  2. Merapikan tata letak browser dengan menyatukan **Bar Pintasan** ke dalam **Bar Navigasi Bawah Utama** yang dapat dibuka/tutup dengan 1 ketukan dan tetap bisa dipindah ke atas atau bawah.
-  3. Menjamin performa *scrolling* dan pemuatan halaman yang ringan, hemat baterai, serta bebas *memory leak*.
-  4. Melindungi keaslian aplikasi melalui mesin verifikasi integritas berlapis yang tersembunyi (*stealth*) agar APK yang dibongkar/dimodifikasi menggunakan *APK Editor* atau *patcher* langsung *crash/force-close* saat dijalankan.
+- **What It Does**: Menjadikan AdBlock Browser memiliki pertahanan berlapis terhadap deteksi Anti-AdBlock, dilengkapi kontrol zapping elemen kustom oleh pengguna, manajemen siklus hidup tab otomatis yang hemat RAM/baterai, dan telemetri privasi *real-time* per situs.
+- **Key Value**: Situs berita, streaming, dan portal web dengan proteksi Anti-AdBlock tetap dapat diakses mulus tanpa gangguan pop-up pemblokiran, sementara konsumsi RAM dan baterai perangkat tetap ringan meskipun membuka banyak tab.
 
 ---
 
 ## 2. User Experience & Visual Design
 
 - **Key User Flows**:
-  1. **Bar Pintasan Terpadu di Navigasi Bawah**:
-     - Secara *default*, bagian atas layar hanya menampilkan *Omnibox* Chrome yang bersih sehingga pandangan ke halaman web sangat luas dan nyaman.
-     - Baris pintasan (**Auto Putar**, **Ekstensi**, **Bikin JS**, **Mode Gelap**, dll.) terintegrasi menyatu tepat di dalam/atas kontainer **Bar Navigasi Bawah Utama**.
-     - Tersedia tombol ikon **Pintasan (Buka/Tutup)** langsung pada bar navigasi bawah untuk menyembunyikan atau menampilkan baris pintasan dengan animasi halus, serta tombol panah untuk menggeser posisinya ke Atas atau Bawah sesuai selera.
-  2. **Tampilan Logo AI Asli**:
-     - Ketiga foto yang dikirim pengguna (`Google_Gemini_icon_2025`, `claude-ai-logo`, `OAI_OpenAI-Blossom_White`) dirender menggunakan komponen `Image(painterResource(...))` dari aset *drawable* presisi tinggi di dalam kartu *badge* modern pada layar *Splash Load* dan *Settings About*.
-  3. **Pengalaman Browsing Cepat & Hemat Baterai**:
-     - Saat pengguna berpindah tab atau meminimalkan aplikasi, tab yang tidak aktif otomatis memasuki mode *Low-Power Hibernation* (`onPause()`, `pauseTimers()`) sehingga tidak menguras CPU/baterai di latar belakang.
+  1. **Stealth Browsing Otomatis**: Pengguna membuka situs web yang memasang pendeteksi AdBlock; mesin *Surrogate & Bait Spoofer* bekerja otomatis di balik layar dan mencatat jumlah *Anti-AdBlock Traps Defused* pada panel *Chrome AdShield*.
+  2. **Custom Element Zapper**: Pengguna membuka *Chrome AdShield* atau *Shortcut Bar* → memilih **Pemilih Elemen (Zapper)** → mengetuk elemen pengganggu di halaman → elemen disorot dan dapat langsung dihapus & disimpan untuk domain tersebut (atau dibatalkan).
+  3. **Auto-Suspend Tab Hemat RAM**: Tab tidak aktif di luar 3 tab terbaru otomatis masuk mode hemat RAM (*Eco Hibernated*) dan langsung dipulihkan mulus saat diketuk kembali.
+
+- **Visual Identity & Theme**:
+  - Mengikuti bahasa desain **Material Design 3 (M3)** yang responsif untuk *Compact* (ponsel) hingga *Expanded* (tablet/desktop), lengkap dengan *floating control pill* untuk *Element Zapper* dan kartu metrik *Stealth Shield* yang informatif.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Arsitektur Keamanan Tersembunyi (*Multi-Point Stealth Integrity Verification*)**
-  - *Chosen Approach*: Menyembunyikan logika verifikasi di balik komponen bernama netral (seperti pengelola *layout metrics* dan *rendering cache*) yang menggunakan *XOR-encoded byte arrays* untuk menyembunyikan seluruh nama paket terlarang, jalur *socket* Frida/Xposed, dan *hash* tanda tangan. Pengecekan dipicu secara senyap di tiga titik berbeda: saat inisialisasi awal sebelum `Activity` tampil, saat transisi siklus hidup `MainActivity`, dan saat inisialisasi mesin `WebView`.
-  - *Why*: Jika *modder* mencoba mencari kata kunci seperti `"mod"`, `"hack"`, `"signature"`, atau `"apkeditor"` di dalam DEX menggunakan *MT Manager* atau *APK Editor*, mereka tidak akan menemukan satu pun *string* tersebut. Jika salah satu komponen dihapus, aplikasi tetap gagal menginisialisasi konfigurasi *WebView* dan langsung *force-close*.
-- **Decision 2: Pencegahan Memory Leak & Penghematan Baterai**
-  - *Chosen Approach*: Membatasi jumlah *instance* `WebView` aktif di dalam memori (maksimal 5 tab aktif sekaligus di *pool*, dengan tab lama otomatis disimpan status URL-nya dan dibebaskan memorinya), menghentikan *JavaScript timers* saat aplikasi di-*pause*, dan membersihkan seluruh *callback* sebelum `WebView.destroy()`.
-  - *Why*: Mencegah *OutOfMemoryError (OOM)* dan menjaga suhu perangkat tetap dingin meski membuka banyak tab.
+- **Decision 1: Surrogate Response Berbasis Konteks (`200 OK` vs `204 No Content`)**
+  - *Chosen Approach*: Memberikan payload JS *stub* ringan (`adsbygoogle`, `googletag`, `pbjs`, `fuckAdBlock`) untuk permintaan `.js` iklan dan GIF transparan `1x1` (`43 byte`) untuk permintaan gambar iklan, alih-alih respons kosong yang memicu `script.onerror` / `img.onerror`.
+  - *Why*: Lebih dari 80% sistem Anti-AdBlock mendeteksi pemblokir iklan melalui kegagalan pemuatan jaringan (`onerror`) atau absennya objek global SDK iklan.
+
+- **Decision 2: Kapasitas LRU Pool 3 WebView + Lifecycle TrimMemory**
+  - *Chosen Approach*: Menurunkan batas pool `WebView` dari 6 menjadi **3 instans aktif**, menghentikan *timer/rendering* tab latar belakang yang tidak memutar audio, dan menghubungkan `onTrimMemory()` sistem Android ke pembersihan pool `WebView`.
+  - *Why*: Setiap instans `WebView` Chromium memakan 35–80 MB RAM; membatasi maksimal 3 instans aktif memangkas penggunaan RAM hingga ~50% dan menghentikan pengurasan baterai oleh skrip latar belakang.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
 - **Architecture & Component Diagram**:
-
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                 Stealth Multi-Point Integrity Architecture                │
-│                                                                           │
-│  [1. Early Init Hook] ──► [2. Activity Frame Sync] ──► [3. WebView Core]  │
-│          │                           │                         │          │
-│          ▼                           ▼                         ▼          │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │        Internal Core Verifier (XOR-Encoded Byte Signatures)         │  │
-│  │  • Package ID & Manifest Attribute Lock (applicationId, debug/rel)  │  │
-│  │  • APK Signature & classes.dex CRC/Zip Tamper Verification          │  │
-│  │  • Mod Tool & Hook Detection (APK Editor, Lucky Patcher, MT/NP Mgr, │  │
-│  │    Xposed/LSPosed, Frida Server/Ports, Substrate, Repackage Flags)  │  │
-│  └───────────────────────────────────┬─────────────────────────────────┘  │
-│                                      │ (Jika Terdeteksi Modifikasi)       │
-│                                      ▼                                    │
-│             [Silent Native Termination: killProcess / halt(0)]            │
-└───────────────────────────────────────────────────────────────────────────┘
-
-┌───────────────────────────────────────────────────────────────────────────┐
-│                Unified Bottom Navigation & Shortcut Dock                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │ [Collapsible Shortcut Strip: Auto Putar | Ekstensi | JS | ⇅ Posisi] │  │
-│  ├─────────────────────────────────────────────────────────────────────┤  │
-│  │ [  ← Back  |  → Forward  |  + Tab Baru  |  ⚡ Pintasan  |  [N]  | 🛡 ]│  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        UI Layer (BrowserScreen.kt)                         │
+│  • ChromeAdShieldSheet: Statistik Stealth, Anti-Detect Counter & Controls  │
+│  • ElementZapperOverlayBar: Floating Mode Zapper (Tap, Confirm, Undo, Clear)│
+│  • MobileTabsDialog / TabBar: Indikator Eco-Suspended Tab & 1-Tap Hibernate│
+└───────────────────┬────────────────────────────────────┬───────────────────┘
+                    │                                    │
+                    ▼                                    ▼
+┌───────────────────────────────────────┐  ┌─────────────────────────────────┐
+│     ViewModel & Lifecycle Manager     │  │   Stealth AdBlock Engine V6     │
+│  • BrowserViewModel.kt                │  │  • AdBlockWebViewClient.kt      │
+│    ├─ Custom Zapper Rules (per-host)  │  │    ├─ JS/GIF Surrogate Engine   │
+│    ├─ Tab Hibernation (isSuspended)   │  │    ├─ Native toString() Cloaking│
+│    └─ Stealth Counter StateFlows      │  │    ├─ Bait offsetHeight Proxy   │
+│  • MainActivity.kt (onTrimMemory)     │  │    └─ Anti-AdBlock Modal Killer │
+└───────────────────────────────────────┘  └─────────────────────────────────┘
 ```
 
-- **Interactive Component & State Mapping**:
-  - **Aset Drawable Logo AI**: Menyimpan aset gambar `img_logo_gemini`, `img_logo_claude`, dan `img_logo_chatgpt` di `app/src/main/res/drawable/` dan memuatnya di `AiAttributionComponents.kt`.
-  - **Unified Bottom Dock (`ChromeMobileBottomBar`)**: Mengubah posisi *default* `shortcutBarPosition` menjadi `BOTTOM` dan menggabungkan `ChromeShortcutAndJsBar` ke dalam satu kesatuan `Surface` dengan `ChromeMobileBottomBar`, dilengkapi tombol pembuka/penutup baris pintasan (`⚡ Pintasan`) dan tombol penggeser posisi Atas/Bawah.
-  - **Memory & Battery Optimizer**: Mengintegrasikan `LifecycleEventObserver` pada `CustomWebView` dan `BrowserScreen` untuk memanggil `webView.onPause()` / `webView.pauseTimers()` saat aplikasi di latar belakang, serta *LRU eviction* aman pada `webViewPool`.
+- **Key Files to Modify**:
+  - `app/src/main/java/com/yourbrowser/adblock/AdBlockWebViewClient.kt`: Implementasi *Stealth Surrogate Engine* (JS stubs + 1x1 GIF), *Native Function Cloaking* (`toString()` proxy), *Bait Dimension Spoofing*, *Anti-AdBlock Modal Neutralizer*, dan *Debounced Idle MutationObserver*.
+  - `app/src/main/java/com/example/ui/viewmodel/BrowserViewModel.kt`: Penyimpanan aturan *Custom Element Zapper* per domain, manajemen status hibernasi tab (`isSuspended` & `hibernateInactiveTabs()`), serta *StateFlow* metrik *Stealth Anti-Detect*.
+  - `app/src/main/java/com/example/ui/components/CustomWebView.kt`: Integrasi jembatan JS `onElementZapped(selector)` dan `onStealthTrapDefused(kind)`, penginjeksian CSS *Custom Zapper*, serta *throttling* hemat baterai saat tab di latar belakang.
+  - `app/src/main/java/com/example/ui/screens/BrowserScreen.kt`: Batas `MAX_WEBVIEW_POOL_SIZE = 3`, UI *Floating Element Zapper*, peningkatan *Chrome AdShield Sheet* (panel *Stealth Anti-Detect* & hibernasi RAM), serta indikator tab *Eco-Suspended*.
+  - `app/src/main/java/com/example/MainActivity.kt`: Penanganan `onTrimMemory(level)` dan siklus hidup hemat baterai.
+  - `app/src/test/java/com/example/AdBlockTest.kt`: Pengujian Robolectric untuk *Stealth Surrogate Response* (JS stubs, 1x1 GIF), *Native Function Cloaking*, dan *Element Zapper* rules.

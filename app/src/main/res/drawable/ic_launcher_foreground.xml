@@ -1,54 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    
-    <!-- Outer energy/safety ring representing the browser protection (Shield glow) -->
-    <path
-        android:pathData="M 54 18 C 34.12 18 18 34.12 18 54 C 18 73.88 34.12 90 54 90 C 73.88 90 90 73.88 90 54 C 90 34.12 73.88 18 54 18 Z"
-        android:fillColor="#15376F"
-        android:fillAlpha="0.4" />
-        
-    <!-- Sleek Material style security shield -->
-    <path
-        android:pathData="M 54 26 C 68 26 78 30 82 34 C 82 56 68 76 54 82 C 40 76 26 56 26 34 C 30 30 40 26 54 26 Z"
-        android:fillColor="#2F7BFF" />
-        
-    <!-- Shield Accent / Inner core highlights -->
-    <path
-        android:pathData="M 54 26 Q 40 26 26 34 L 26 35 C 26 56 40 76 54 82 L 54 26 Z"
-        android:fillColor="#00C2FF"
-        android:fillAlpha="0.3" />
 
-    <!-- Pure White Central protective Globe / Security Core -->
+    <!-- 1. Soft 3D Ambient Drop Shadow underneath the Outer Ring (within 66dp safe zone) -->
     <path
-        android:pathData="M 54 36.5
-                          C 43.8 36.5 35.5 44.8 35.5 55
-                          C 35.5 65.2 43.8 73.5 54 73.5
-                          C 64.2 73.5 72.5 65.2 72.5 55
-                          C 72.5 44.8 64.2 36.5 54 36.5 Z
-                          M 51.5 69.5
-                          C 44.5 68.3 39 59.8 39 51
-                          L 48 51
-                          L 48 54
-                          C 48 56.8 50.2 59 53 59
-                          L 53 69.5 Z
-                          M 65.5 63.5
-                          C 64.8 61.5 63 60 61 60
-                          L 58.5 60
-                          L 58.5 53.5
-                          C 58.5 52 57.2 50.5 55.5 50.5
-                          L 46.5 50.5
-                          L 46.5 45.5
-                          L 51 45.5
-                          C 52.4 45.5 53.5 44.4 53.5 43
-                          L 53.5 39.5
-                          L 58.5 39.5
-                          C 61.2 39.5 63.5 37.2 63.5 34.5
-                          L 63.5 32
-                          C 69 36.5 72.5 44 72.5 52.5
-                          C 72.5 57 71 61 68.5 63.5 Z"
+        android:pathData="M 54,23.8 A 31.8,31.8 0 1,1 53.9,23.8 Z"
+        android:fillAlpha="0.15">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="56.2"
+                android:gradientRadius="33.2"
+                android:type="radial">
+                <item android:color="#FF0D47A1" android:offset="0.72" />
+                <item android:color="#000D47A1" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 2. Segment 1: TOP RED 3D SWIRL BLADE (120° Rotational Vortex from 212° to 332°) -->
+    <path
+        android:pathData="M 27.29,37.31
+                          A 31.5,31.5 0 0,1 81.81,39.21
+                          C 75.07,36.32 65.00,34.95 59.99,37.56
+                          A 17.5,17.5 0 0,0 36.77,57.04
+                          C 32.00,54.00 28.16,44.60 27.29,37.31 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="27"
+                android:startY="24"
+                android:endX="81"
+                android:endY="42"
+                android:type="linear">
+                <item android:color="#FF5252" android:offset="0.0" />
+                <item android:color="#EA4335" android:offset="0.52" />
+                <item android:color="#B31412" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 3. Segment 2: RIGHT YELLOW-GOLD 3D SWIRL BLADE (120° Rotational Vortex from 332° to 92°) -->
+    <path
+        android:pathData="M 81.81,39.21
+                          A 31.5,31.5 0 0,1 52.90,85.48
+                          C 58.78,81.08 65.00,73.05 65.25,67.41
+                          A 17.5,17.5 0 0,0 59.99,37.56
+                          C 65.00,34.95 75.07,36.32 81.81,39.21 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="80"
+                android:startY="38"
+                android:endX="54"
+                android:endY="85"
+                android:type="linear">
+                <item android:color="#FFEA00" android:offset="0.0" />
+                <item android:color="#FBBC04" android:offset="0.52" />
+                <item android:color="#EA8600" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 4. Segment 3: BOTTOM-LEFT GREEN 3D SWIRL BLADE (120° Rotational Vortex from 92° to 212°) -->
+    <path
+        android:pathData="M 52.90,85.48
+                          A 31.5,31.5 0 0,1 27.29,37.31
+                          C 28.16,44.60 32.00,54.00 36.77,57.04
+                          A 17.5,17.5 0 0,0 65.25,67.41
+                          C 65.00,73.05 58.78,81.08 52.90,85.48 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="23"
+                android:startY="40"
+                android:endX="56"
+                android:endY="85"
+                android:type="linear">
+                <item android:color="#00E676" android:offset="0.0" />
+                <item android:color="#34A853" android:offset="0.52" />
+                <item android:color="#137333" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 5. Subtle 3D Ribbon Overlap Shadows along the Swirl Seams -->
+    <path
+        android:pathData="M 59.99,37.56 C 65.00,34.95 75.07,36.32 81.81,39.21"
+        android:strokeWidth="3.6"
+        android:strokeAlpha="0.16"
+        android:strokeColor="#3E2723"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 65.25,67.41 C 65.00,73.05 58.78,81.08 52.90,85.48"
+        android:strokeWidth="3.6"
+        android:strokeAlpha="0.16"
+        android:strokeColor="#0D3B1E"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 36.77,57.04 C 32.00,54.00 28.16,44.60 27.29,37.31"
+        android:strokeWidth="3.6"
+        android:strokeAlpha="0.16"
+        android:strokeColor="#4A0E0E"
+        android:strokeLineCap="round" />
+
+    <!-- 6. Crisp Curved White Swirl Separator Lines (Distinctive Non-Clone Vortex Cuts) -->
+    <path
+        android:pathData="M 59.99,37.56 C 65.00,34.95 75.07,36.32 82.10,39.35"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 65.25,67.41 C 65.00,73.05 58.78,81.08 52.75,85.80"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 36.77,57.04 C 32.00,54.00 28.16,44.60 27.05,37.05"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- 7. Outer Rim Specular 3D Highlight Ring -->
+    <path
+        android:pathData="M 54,22.5 A 31.5,31.5 0 1,1 53.9,22.5 Z"
+        android:strokeWidth="0.85"
+        android:strokeColor="#45FFFFFF" />
+
+    <!-- 8. Subtle Inner Shield-Crested White Frame + Crisp White Separator Ring (#FFFFFF) -->
+    <path
+        android:pathData="M 54,33.6
+                          C 63.8,33.6 71.4,37.8 72.4,46.4
+                          C 73.4,59.0 63.8,70.2 54,74.4
+                          C 44.2,70.2 34.6,59.0 35.6,46.4
+                          C 36.6,37.8 44.2,33.6 54,33.6 Z"
         android:fillColor="#FFFFFF" />
-        
+
+    <!-- Crisp Circular White Ring Core Backing (Exact Chrome-style separator thickness) -->
+    <path
+        android:pathData="M 54,35.2 A 18.8,18.8 0 1,1 53.9,35.2 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- 9. Soft Inner Drop Shadow for 3D Blue Core Orb -->
+    <path
+        android:pathData="M 54,39.9 A 14.8,14.8 0 1,1 53.9,39.9 Z"
+        android:fillAlpha="0.18"
+        android:fillColor="#0D47A1" />
+
+    <!-- 10. Plain Glossy 3D Blue Core Orb (Bola Biru Mengilap 3D Polos) -->
+    <path
+        android:pathData="M 54,39.2 A 14.8,14.8 0 1,1 53.9,39.2 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="48.5"
+                android:centerY="47.5"
+                android:gradientRadius="20.5"
+                android:type="radial">
+                <item android:color="#82B1FF" android:offset="0.0" />
+                <item android:color="#4285F4" android:offset="0.38" />
+                <item android:color="#1A73E8" android:offset="0.74" />
+                <item android:color="#174EA6" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 11. Top-Left Soft 3D Specular Gloss Reflection on Blue Orb -->
+    <path
+        android:pathData="M 44.2,46.8
+                          C 46.2,42.5 50.8,40.5 55.8,41.2
+                          C 58.2,41.5 60.2,42.8 61.2,44.2
+                          C 57.5,43.2 52.8,43.8 49.2,46.2
+                          C 46.8,47.8 45.2,49.8 44.2,51.5
+                          C 43.4,49.8 43.5,48.2 44.2,46.8 Z"
+        android:fillColor="#55FFFFFF" />
+
 </vector>

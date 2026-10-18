@@ -9,9 +9,11 @@ class DevToolsJsBridge(
     private val onConsoleBridgeMessage: (ConsoleEntry) -> Unit
 ) {
     private val TAG = "DevToolsJsBridge"
+    private val MAX_BRIDGE_PAYLOAD_LENGTH = 32_768
 
     @JavascriptInterface
     fun onElementSelected(json: String) {
+        if (json.length > MAX_BRIDGE_PAYLOAD_LENGTH) return
         try {
             val root = JSONObject(json)
             val rectObj = root.optJSONObject("rect") ?: JSONObject()
@@ -25,8 +27,8 @@ class DevToolsJsBridge(
             val classesList = mutableListOf<String>()
             val classesArray = root.optJSONArray("classes")
             if (classesArray != null) {
-                for (i in 0 until classesArray.length()) {
-                    classesList.add(classesArray.optString(i))
+                for (i in 0 until classesArray.length().coerceAtMost(50)) {
+                    classesList.add(classesArray.optString(i).take(120))
                 }
             }
 
@@ -34,9 +36,11 @@ class DevToolsJsBridge(
             val attrsObj = root.optJSONObject("attributes")
             if (attrsObj != null) {
                 val keys = attrsObj.keys()
-                while (keys.hasNext()) {
+                var count = 0
+                while (keys.hasNext() && count < 60) {
                     val key = keys.next()
-                    attributesMap[key] = attrsObj.optString(key)
+                    attributesMap[key.take(80)] = attrsObj.optString(key).take(500)
+                    count++
                 }
             }
 
@@ -44,21 +48,23 @@ class DevToolsJsBridge(
             val stylesObj = root.optJSONObject("computedStyles")
             if (stylesObj != null) {
                 val keys = stylesObj.keys()
-                while (keys.hasNext()) {
+                var count = 0
+                while (keys.hasNext() && count < 80) {
                     val key = keys.next()
-                    stylesMap[key] = stylesObj.optString(key)
+                    stylesMap[key.take(80)] = stylesObj.optString(key).take(250)
+                    count++
                 }
             }
 
-            val elementId = if (root.isNull("id")) null else root.optString("id").takeIf { it.isNotEmpty() && it != "null" }
+            val elementId = if (root.isNull("id")) null else root.optString("id").takeIf { it.isNotEmpty() && it != "null" }?.take(120)
             val element = SelectedElement(
-                tagName = root.optString("tagName", "unknown").lowercase(),
+                tagName = root.optString("tagName", "unknown").lowercase().take(40),
                 id = elementId,
                 classes = classesList,
-                textPreview = root.optString("textPreview", ""),
+                textPreview = root.optString("textPreview", "").take(500),
                 attributes = attributesMap,
                 computedStyles = stylesMap,
-                selector = root.optString("selector", ""),
+                selector = root.optString("selector", "").take(250),
                 rect = rect
             )
 
@@ -71,17 +77,18 @@ class DevToolsJsBridge(
 
     @JavascriptInterface
     fun onConsoleMessage(json: String) {
+        if (json.length > MAX_BRIDGE_PAYLOAD_LENGTH) return
         try {
             val root = JSONObject(json)
             val levelStr = root.optString("level", "LOG")
             val level = runCatching { ConsoleLevel.valueOf(levelStr) }.getOrDefault(ConsoleLevel.LOG)
             
-            val sourceIdVal = if (root.isNull("sourceId")) null else root.optString("sourceId").takeIf { it.isNotEmpty() && it != "null" }
+            val sourceIdVal = if (root.isNull("sourceId")) null else root.optString("sourceId").takeIf { it.isNotEmpty() && it != "null" }?.take(300)
             val entry = ConsoleEntry(
                 id = java.util.UUID.randomUUID().toString(),
                 timestamp = System.currentTimeMillis(),
                 level = level,
-                message = root.optString("message", ""),
+                message = root.optString("message", "").take(4000),
                 sourceId = sourceIdVal,
                 lineNumber = if (root.has("lineNumber") && !root.isNull("lineNumber")) root.optInt("lineNumber") else null
             )

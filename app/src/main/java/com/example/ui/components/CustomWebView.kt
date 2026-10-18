@@ -51,6 +51,7 @@ fun CustomWebView(
     }
 
     val displayMode by viewModel.displayMode.collectAsState()
+    val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
     val streamingBoostEnabled by viewModel.streamingBoostEnabled.collectAsState()
     val dataSaverEnabled by viewModel.dataSaverEnabled.collectAsState()
     val navigationActions by viewModel.navigationActions.collectAsState()
@@ -70,8 +71,23 @@ fun CustomWebView(
 
     val devToolsStates by viewModel.devToolsStates.collectAsState()
     val devState = devToolsStates[tab.id]
+    val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
 
     val backgroundPlaybackEnabled by viewModel.backgroundPlaybackEnabled.collectAsState()
+
+    LaunchedEffect(tab.id, inspectToolsEnabled) {
+        val webView = webViewPool[tab.id] ?: return@LaunchedEffect
+        try {
+            if (inspectToolsEnabled) {
+                webView.addJavascriptInterface(
+                    createDevToolsJsBridge(tab.id, viewModel),
+                    "AdBlockDevTools"
+                )
+            } else {
+                webView.removeJavascriptInterface("AdBlockDevTools")
+            }
+        } catch (_: Exception) {}
+    }
 
     LaunchedEffect(devState?.isElementPickerActive) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
@@ -80,6 +96,40 @@ fun CustomWebView(
             webView.evaluateJavascript("window.__ADB_DEVTOOLS_PICKER_ACTIVE__ = true;", null)
         } else {
             webView.evaluateJavascript("window.__ADB_DEVTOOLS_PICKER_ACTIVE__ = false;", null)
+        }
+    }
+
+    val isElementZapperActive by viewModel.isElementZapperActive.collectAsState()
+    val zapperRulesVersion by viewModel.zapperRulesVersion.collectAsState()
+
+    LaunchedEffect(tab.id, isElementZapperActive) {
+        val webView = webViewPool[tab.id] ?: return@LaunchedEffect
+        webView.evaluateJavascript(
+            com.yourbrowser.adblock.AdBlockWebViewClient.buildElementZapperToggleScript(isElementZapperActive),
+            null
+        )
+    }
+
+    LaunchedEffect(tab.id, tab.url, zapperRulesVersion) {
+        val webView = webViewPool[tab.id] ?: return@LaunchedEffect
+        val host = safeHost(tab.url)
+        if (host.isNotBlank()) {
+            val rules = viewModel.getCustomZapperRulesForHost(host)
+            val css = if (rules.isEmpty()) "" else {
+                rules.joinToString(",\n") + " { display:none !important; visibility:hidden !important; pointer-events:none !important; }"
+            }
+            val escaped = css.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
+            webView.evaluateJavascript("""
+(function(){
+  var s=window.__asZapperRef;
+  if(!s||!s.isConnected){
+    s=document.createElement('style');
+    (document.head||document.documentElement).appendChild(s);
+    try{Object.defineProperty(window,'__asZapperRef',{value:s,enumerable:false,configurable:true});}catch(e){}
+  }
+  s.textContent=`$escaped`;
+})();
+            """.trimIndent(), null)
         }
     }
 
@@ -153,6 +203,13 @@ fun CustomWebView(
                                 Log.w(TAG, "Safe Browsing is not supported on this device")
                             }
                         }
+
+                        if (viewModel.displayMode.value != DisplayMode.MOBILE) {
+                            userAgentString = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                            textZoom = viewModel.desktopZoomScale.value.coerceIn(50, 200)
+                        } else {
+                            textZoom = 100
+                        }
                     }
 
                     // For private/incognito tabs, disable third-party cookies for security isolation
@@ -172,59 +229,6 @@ fun CustomWebView(
                         settings.cacheMode = if (tab.isPrivate) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
                     }
                     
-                    addJavascriptInterface(object {
-                        @android.webkit.JavascriptInterface
-                        fun openUrlInNewTab(url: String) {
-                            if (url.isNotBlank()) {
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    viewModel.addNewTab(url, tab.isPrivate)
-                                }
-                            }
-                        }
-                        
-                        @android.webkit.JavascriptInterface
-                        fun onWebRtcBlocked(url: String) {
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "WebRTC connection blocked by Strict Privacy Mode. Switch WebRTC to 'Standard' in settings if video calls fail.",
-                                    android.widget.Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    }, "AlexBrowserNative")
-
-                    // Enterprise DevTools JavaScript Bridge
-                    addJavascriptInterface(com.example.devtools.DevToolsJsBridge(
-                        onElementSelected = { selectedElement ->
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                if (viewModel.inspectToolsEnabled.value) {
-                                    viewModel.updateSelectedElement(tab.id, selectedElement)
-                                    viewModel.openDevTools(tab.id, com.example.devtools.DevToolsTab.ELEMENTS)
-                                    
-                                    val infoLog = com.example.devtools.ConsoleEntry(
-                                        id = java.util.UUID.randomUUID().toString(),
-                                        timestamp = System.currentTimeMillis(),
-                                        level = com.example.devtools.ConsoleLevel.INFO,
-                                        message = "Inspected: ${selectedElement.selector}"
-                                    )
-                                    viewModel.addConsoleEntry(tab.id, infoLog)
-                                }
-                            }
-                        },
-                        onConsoleBridgeMessage = { entry ->
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                if (viewModel.inspectToolsEnabled.value) {
-                                    viewModel.addConsoleEntry(tab.id, entry)
-                                }
-                            }
-                        }
-                    ), "AdBlockDevTools")
-                    
-                    // AlexShield Ultra v5 is the primary adblock client for this real browser WebView.
-                    // User-facing modes are now truly separate: BALANCED for compatibility,
-                    // AGGRESSIVE for stronger blocking. The legacy com.example.manager.AdBlockEngine
-                    // below remains only as a compatibility fallback.
                     val currentPageUrlRef = java.util.concurrent.atomic.AtomicReference<String>(tab.url)
                     val alexShieldV5Client = com.yourbrowser.adblock.AdBlockWebViewClient(
                         mode = com.yourbrowser.adblock.PrivacyMode.BALANCED,
@@ -249,12 +253,94 @@ fun CustomWebView(
                             )
                         }
                     )
+
+                    addJavascriptInterface(object {
+                        @Volatile private var lastNewTabTimestamp = 0L
+                        @Volatile private var lastTrapReportTimestamp = 0L
+
+                        @android.webkit.JavascriptInterface
+                        fun openUrlInNewTab(url: String) {
+                            val trimmed = url.trim()
+                            if (trimmed.isBlank() || trimmed.length > 2048) return
+                            // Strict scheme allowlist: prevent javascript:, file:, content:, or intent: injection
+                            val isHttpOrHttps = trimmed.startsWith("https://", ignoreCase = true) ||
+                                trimmed.startsWith("http://", ignoreCase = true)
+                            if (!isHttpOrHttps) return
+
+                            val now = System.currentTimeMillis()
+                            if (now - lastNewTabTimestamp < 1200L) return
+                            if (viewModel.tabs.value.size >= 40) return
+                            lastNewTabTimestamp = now
+
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                viewModel.addNewTab(trimmed, tab.isPrivate)
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun onAudioStateChanged(isPlaying: Boolean) {
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                viewModel.updateTabPlayingAudio(tab.id, isPlaying)
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun onStealthTrapDefused(kind: String) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastTrapReportTimestamp < 300L) return
+                            lastTrapReportTimestamp = now
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                alexShieldV5Client.recordStealthTrapDefused(1)
+                                viewModel.recordStealthTrapDefused()
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun onElementZapperSelected(selector: String, tag: String) {
+                            if (!viewModel.isElementZapperActive.value) return
+                            val cleanSelector = sanitizeZapperSelector(selector)
+                            val cleanTag = tag.trim().lowercase().take(32)
+                            if (cleanSelector.isBlank()) return
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                if (viewModel.isElementZapperActive.value) {
+                                    viewModel.onZapperElementSelected(cleanSelector, cleanTag)
+                                }
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun setImmersiveFullscreen(enabled: Boolean) {
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                viewModel.setImmersivePageFullscreen(enabled)
+                            }
+                        }
+                        
+                        @android.webkit.JavascriptInterface
+                        fun onWebRtcBlocked(url: String) {
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Koneksi WebRTC diblokir oleh Mode Privasi Ketat. Ubah WebRTC ke 'Standar' di Pengaturan jika panggilan video gagal.",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }, "AlexBrowserNative")
+
+                    // Only attach DevTools JS Bridge when Inspect Tools is explicitly enabled by user
+                    if (viewModel.inspectToolsEnabled.value) {
+                        addJavascriptInterface(
+                            createDevToolsJsBridge(tab.id, viewModel),
+                            "AdBlockDevTools"
+                        )
+                    }
                     
                     webViewClient = object : WebViewClient() {
-                        private var lastAlexShieldMode: com.yourbrowser.adblock.PrivacyMode? = null
-                        private var lastAlexShieldWhitelist: Set<String> = emptySet()
+                        @Volatile private var lastAlexShieldMode: com.yourbrowser.adblock.PrivacyMode? = null
+                        @Volatile private var lastAlexShieldWhitelist: Set<String> = emptySet()
 
-                        private fun syncAlexShieldV5State() {
+                        @Synchronized
+                        private fun syncAlexShieldV5State(syncZapperRules: Boolean = false) {
                             val nextMode = when (viewModel.adBlockMode.value) {
                                 com.example.manager.AdBlockMode.OFF -> com.yourbrowser.adblock.PrivacyMode.OFF
                                 com.example.manager.AdBlockMode.BALANCED -> com.yourbrowser.adblock.PrivacyMode.BALANCED
@@ -273,16 +359,23 @@ fun CustomWebView(
                                 .toSet()
 
                             if (nextWhitelist != lastAlexShieldWhitelist) {
-                                alexShieldV5Client.clearWhitelist()
-                                nextWhitelist.forEach { alexShieldV5Client.whitelistHost(it) }
+                                alexShieldV5Client.setWhitelist(nextWhitelist)
                                 lastAlexShieldWhitelist = nextWhitelist
+                            }
+
+                            if (syncZapperRules) {
+                                val currentHost = safeHost(currentPageUrlRef.get())
+                                if (currentHost.isNotBlank()) {
+                                    val zapperRules = viewModel.getCustomZapperRulesForHost(currentHost).toSet()
+                                    alexShieldV5Client.setCustomZapperSelectors(currentHost, zapperRules)
+                                }
                             }
                         }
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
                             currentPageUrlRef.set(url.orEmpty())
-                            syncAlexShieldV5State()
+                            syncAlexShieldV5State(syncZapperRules = true)
                             if (view != null && !url.isNullOrBlank()) {
                                 alexShieldV5Client.onPageStarted(view, url, favicon)
                                 com.example.manager.SecurityGuardEngine.injectClientSecurityScript(
@@ -298,6 +391,7 @@ fun CustomWebView(
                                 )
                             }
                             viewModel.clearTabActivePermissions(tab.id)
+                            viewModel.updateTabPlayingAudio(tab.id, false)
                             viewModel.updateTabLoading(tab.id, true)
                             viewModel.updateTabError(tab.id, null)
                             viewModel.updateTabNavigation(
@@ -461,7 +555,7 @@ fun CustomWebView(
                             viewModel.updateTabTitle(tab.id, title)
                             viewModel.handlePageLoadComplete(title, url, tab.isPrivate)
                             
-                            // Inject middle-click handler and sync mute state if muted
+                            // Inject middle-click handler, media audio state tracker, and sync mute state if muted
                             view?.evaluateJavascript("""
                                 (function() {
                                     if (!window.__middleClickInjected) {
@@ -475,11 +569,44 @@ fun CustomWebView(
                                                 }
                                             }
                                         });
+                                        function syncMediaState() {
+                                            try {
+                                                var playing = Array.from(document.querySelectorAll('video, audio')).some(function(m) {
+                                                    return !m.paused && !m.ended && m.readyState > 2;
+                                                });
+                                                if (window.AlexBrowserNative && window.AlexBrowserNative.onAudioStateChanged) {
+                                                    window.AlexBrowserNative.onAudioStateChanged(playing);
+                                                }
+                                            } catch(e) {}
+                                        }
+                                        document.addEventListener('play', syncMediaState, true);
+                                        document.addEventListener('pause', syncMediaState, true);
+                                        document.addEventListener('ended', syncMediaState, true);
                                     }
                                     if (${tab.isMuted}) {
                                         document.querySelectorAll('video, audio').forEach(function(media) {
                                             media.muted = true;
                                         });
+                                    }
+                                    var wantsDesktop = ${viewModel.displayMode.value != DisplayMode.MOBILE};
+                                    var metaVp = document.querySelector('meta[name="viewport"]');
+                                    if (wantsDesktop) {
+                                        if (!metaVp) {
+                                            metaVp = document.createElement('meta');
+                                            metaVp.name = 'viewport';
+                                            metaVp.setAttribute('data-created-desktop-vp', '1');
+                                            (document.head || document.documentElement).appendChild(metaVp);
+                                        } else if (!metaVp.hasAttribute('data-orig-vp')) {
+                                            metaVp.setAttribute('data-orig-vp', metaVp.getAttribute('content') || '');
+                                        }
+                                        metaVp.setAttribute('content', 'width=1280, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes');
+                                    } else if (metaVp) {
+                                        if (metaVp.hasAttribute('data-created-desktop-vp')) {
+                                            metaVp.remove();
+                                        } else if (metaVp.hasAttribute('data-orig-vp')) {
+                                            metaVp.setAttribute('content', metaVp.getAttribute('data-orig-vp') || 'width=device-width, initial-scale=1.0');
+                                            metaVp.removeAttribute('data-orig-vp');
+                                        }
                                     }
                                 })();
                             """.trimIndent(), null)
@@ -626,7 +753,7 @@ fun CustomWebView(
                             val requestUrl = request?.url?.toString()
                             
                             var entryId: String? = null
-                            if (viewModel.inspectToolsEnabled.value && requestUrl != null && request != null) {
+                            if (viewModel.inspectToolsEnabled.value && requestUrl != null) {
                                 val sanitizedHeaders = com.example.devtools.DevToolsSanitizer.sanitizeHeaders(request.requestHeaders ?: emptyMap())
                                 val resType = com.example.devtools.DevToolsResourceClassifier.classify(requestUrl)
                                 entryId = viewModel.recordNetworkRequest(
@@ -645,46 +772,37 @@ fun CustomWebView(
                             alexShieldV5Client.updateCurrentPageUrl(mainPageUrl)
 
                             val currentMode = viewModel.adBlockMode.value
-                            val currentTrackerBlock = viewModel.trackerBlockEnabled.value
-                            val disabledDomains = viewModel.adBlockDisabledDomains.value
-
-                            // Primary AlexShield Ultra v5 request blocking.
-                            // BALANCED and AGGRESSIVE now map to their own v5 engine levels,
-                            // instead of forcing every enabled mode into aggressive.
-                            syncAlexShieldV5State()
+                            // Primary AlexShield Ultra v5/v6 request blocking & Stealth Surrogate engine.
+                            syncAlexShieldV5State(syncZapperRules = false)
                             if (currentMode != com.example.manager.AdBlockMode.OFF && view != null && request != null) {
                                 val v5Blocked = alexShieldV5Client.shouldInterceptRequest(view, request)
                                 if (v5Blocked != null) {
                                     if (entryId != null) {
-                                        viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by AdBlock (AlexShield V5)")
+                                        viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by AdBlock (AlexShield)")
                                     }
                                     return v5Blocked
                                 }
-                            }
-                            
-                            // Tracker Cookie & Fingerprinting detection
-                            val isTracker = requestUrl != null && (requestUrl.contains("analytics") || requestUrl.contains("pixel") || requestUrl.contains("tracker") || requestUrl.contains("telemetry") || requestUrl.contains("stats"))
-                            if (isTracker) {
-                                if (currentTrackerBlock) {
-                                    viewModel.incrementTrackerCookiesBlocked()
-                                    if (entryId != null) {
-                                        viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by Tracker Protection")
-                                    }
-                                    return WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
-                                }
-                                if (viewModel.privacyShieldMode.value == com.example.manager.PrivacyShieldMode.STRICT && requestUrl != null && (requestUrl.contains("fingerprint") || requestUrl.contains("fp.js"))) {
+
+                                // Strict Fingerprinting Script Protection (returns 200 OK JS surrogate to prevent onerror detection)
+                                val pageHost = safeHost(mainPageUrl)
+                                val isPageWhitelisted = isHostInSet(pageHost, lastAlexShieldWhitelist)
+                                if (!isPageWhitelisted &&
+                                    viewModel.privacyShieldMode.value == com.example.manager.PrivacyShieldMode.STRICT &&
+                                    requestUrl != null &&
+                                    (requestUrl.contains("fingerprint2") || requestUrl.contains("/fp.js") || requestUrl.contains("clientjs"))
+                                ) {
                                     viewModel.incrementFingerprintingBlocked()
                                     if (entryId != null) {
                                         viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by Strict Privacy Shield (Fingerprinting protection)")
                                     }
-                                    return WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                                    return alexShieldV5Client.emptyResponse(request.url, "application/javascript")
                                 }
                             }
-                            
+
                             if (entryId != null) {
                                 viewModel.updateNetworkAllowed(tab.id, entryId, statusCode = 200, mimeType = null)
                             }
-                            
+
                             return super.shouldInterceptRequest(view, request)
                         }
 
@@ -1025,14 +1143,23 @@ fun CustomWebView(
                 }
             }
 
-            val desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            val desktopUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             val wantsDesktop = displayMode != DisplayMode.MOBILE
-            val isCurrentlyDesktop = webView.settings.userAgentString?.contains("Windows NT") == true
+            val isCurrentlyDesktop = webView.settings.userAgentString?.let {
+                it.contains("Windows NT") || it.contains("X11; Linux x86_64")
+            } == true
+
+            val targetTextZoom = if (wantsDesktop) desktopZoomScale.coerceIn(50, 200) else 100
+            if (webView.settings.textZoom != targetTextZoom) {
+                webView.settings.textZoom = targetTextZoom
+            }
 
             if (wantsDesktop && !isCurrentlyDesktop) {
                 webView.settings.userAgentString = desktopUserAgent
                 webView.settings.useWideViewPort = true
                 webView.settings.loadWithOverviewMode = true
+                webView.settings.builtInZoomControls = true
+                webView.settings.displayZoomControls = false
 
                 val currentUrl = webView.url
                 if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
@@ -1042,6 +1169,7 @@ fun CustomWebView(
                 webView.settings.userAgentString = null // Reset down to original mobile agent
                 webView.settings.useWideViewPort = true
                 webView.settings.loadWithOverviewMode = true
+                webView.settings.textZoom = 100
 
                 val currentUrl = webView.url
                 if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
@@ -1165,3 +1293,47 @@ private fun isHostInSet(host: String, domains: Set<String>): Boolean {
         host == clean || host.endsWith(".$clean")
     }
 }
+
+private fun sanitizeZapperSelector(raw: String): String {
+    val trimmed = raw.trim().take(160)
+    if (trimmed.isEmpty()) return ""
+    // Block CSS rule breakouts, imports, or HTML tags
+    if (trimmed.contains('{') || trimmed.contains('}') || trimmed.contains(';') ||
+        trimmed.contains('<') || trimmed.contains('>') || trimmed.contains('@') ||
+        trimmed.contains('\n') || trimmed.contains('\r')
+    ) {
+        return ""
+    }
+    return trimmed
+}
+
+private fun createDevToolsJsBridge(
+    tabId: String,
+    viewModel: BrowserViewModel
+): com.example.devtools.DevToolsJsBridge {
+    return com.example.devtools.DevToolsJsBridge(
+        onElementSelected = { selectedElement ->
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (viewModel.inspectToolsEnabled.value) {
+                    viewModel.updateSelectedElement(tabId, selectedElement)
+                    viewModel.openDevTools(tabId, com.example.devtools.DevToolsTab.ELEMENTS)
+                    val infoLog = com.example.devtools.ConsoleEntry(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestamp = System.currentTimeMillis(),
+                        level = com.example.devtools.ConsoleLevel.INFO,
+                        message = "Inspected: ${selectedElement.selector}"
+                    )
+                    viewModel.addConsoleEntry(tabId, infoLog)
+                }
+            }
+        },
+        onConsoleBridgeMessage = { entry ->
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (viewModel.inspectToolsEnabled.value) {
+                    viewModel.addConsoleEntry(tabId, entry)
+                }
+            }
+        }
+    )
+}
+

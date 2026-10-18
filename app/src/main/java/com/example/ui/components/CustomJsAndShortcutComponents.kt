@@ -50,6 +50,7 @@ import java.util.UUID
 
 fun resolveToolbarIcon(iconName: String): ImageVector {
     return when (iconName) {
+        "Fullscreen" -> Icons.Outlined.Fullscreen
         "DarkMode" -> Icons.Outlined.DarkMode
         "Speed" -> Icons.Outlined.Speed
         "LockOpen" -> Icons.Outlined.LockOpen
@@ -101,6 +102,8 @@ fun ChromeShortcutAndJsBar(
     val customScripts by viewModel.customJsScripts.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val displayMode by viewModel.displayMode.collectAsState()
+    val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
+    val tiltState by viewModel.deviceTiltState.collectAsState()
 
     val barBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
     val chipBg = if (isIncognito) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainerHigh
@@ -124,12 +127,43 @@ fun ChromeShortcutAndJsBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // 1. Screen Orientation Quick Switcher (Auto / Landscape / Portrait)
+                // 0. Full Screen Immersive Tool Pill (1-tap Kiwi/Chrome Full Screen)
+                if (enabledShortcuts.contains(BuiltInShortcut.FULLSCREEN_PAGE.id)) {
+                    ShortcutActionPill(
+                        label = if (isImmersiveFs) "Keluar Full Screen" else "Full Screen",
+                        icon = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                        isHighlighted = isImmersiveFs,
+                        containerColor = if (isImmersiveFs) accentColor.copy(alpha = 0.2f) else chipBg,
+                        contentColor = if (isImmersiveFs) accentColor else chipContent,
+                        borderColor = if (isImmersiveFs) accentColor.copy(alpha = 0.6f) else null,
+                        testTag = "shortcut_fullscreen_page",
+                        onClick = {
+                            viewModel.triggerFullScreenTool(activeWebView) { msg ->
+                                if (msg.isNotBlank() && msg != "null") {
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
+                }
+
+                // 1. Screen Orientation Quick Switcher (Auto-Tilt Sensor / Landscape / Portrait)
                 if (enabledShortcuts.contains(BuiltInShortcut.ROTATE_SCREEN.id)) {
+                    val isTiltedLandscape = tiltState.quadrant.isLandscape
                     val (orientLabel, orientIcon, isLocked) = when (orientationMode) {
-                        ScreenOrientationMode.AUTO_SENSOR -> Triple("Auto Putar", Icons.Outlined.ScreenRotation, false)
-                        ScreenOrientationMode.LANDSCAPE -> Triple("Landscape", Icons.Outlined.StayCurrentLandscape, true)
-                        ScreenOrientationMode.PORTRAIT -> Triple("Portrait", Icons.Outlined.StayCurrentPortrait, true)
+                        ScreenOrientationMode.AUTO_SENSOR -> {
+                            val sub = if (!tiltState.isSensorActive) "Auto-Tilt"
+                            else if (isTiltedLandscape) "Auto • Miring" else "Auto • Tegak"
+                            Triple(sub, Icons.Outlined.ScreenRotation, false)
+                        }
+                        ScreenOrientationMode.LANDSCAPE -> {
+                            val mismatch = tiltState.isSensorActive && !isTiltedLandscape
+                            Triple(if (mismatch) "Landscape (Tegak)" else "Landscape", Icons.Outlined.StayCurrentLandscape, true)
+                        }
+                        ScreenOrientationMode.PORTRAIT -> {
+                            val mismatch = tiltState.isSensorActive && isTiltedLandscape
+                            Triple(if (mismatch) "Portrait (Miring)" else "Portrait", Icons.Outlined.StayCurrentPortrait, true)
+                        }
                     }
                     ShortcutActionPill(
                         label = orientLabel,
@@ -142,7 +176,7 @@ fun ChromeShortcutAndJsBar(
                         onClick = {
                             val next = viewModel.cycleScreenOrientationMode()
                             val msg = when (next) {
-                                ScreenOrientationMode.AUTO_SENSOR -> "Mode Layar: Otomatis mengikuti sensor (Portrait & Landscape)"
+                                ScreenOrientationMode.AUTO_SENSOR -> "Mode Layar: Auto-Tilt Sensor Aktif (Otomatis mendeteksi saat perangkat miring)"
                                 ScreenOrientationMode.LANDSCAPE -> "Mode Layar: Dikunci ke Landscape (Mendatar)"
                                 ScreenOrientationMode.PORTRAIT -> "Mode Layar: Dikunci ke Portrait (Tegak)"
                             }
@@ -928,15 +962,39 @@ fun CustomJsStudioDialog(
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             item {
+                                val studioTilt by viewModel.deviceTiltState.collectAsState()
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.surfaceContainerLow
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Text(
-                                            text = "Pengaturan Rotasi Layar (Portrait / Landscape)",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Rotasi Layar & Sensor Kemiringan (Auto-Tilt)",
+                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                                                )
+                                                Text(
+                                                    text = if (studioTilt.isSensorActive && studioTilt.angleDegrees >= 0) {
+                                                        "Sensor Aktif: ${studioTilt.angleDegrees}° • ${studioTilt.quadrant.label}"
+                                                    } else {
+                                                        "Mendeteksi otomatis posisi Portrait & Landscape saat perangkat dimiringkan"
+                                                    },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Outlined.ScreenRotation,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -944,7 +1002,7 @@ fun CustomJsStudioDialog(
                                             FilterChip(
                                                 selected = orientationMode == ScreenOrientationMode.AUTO_SENSOR,
                                                 onClick = { viewModel.setScreenOrientationMode(ScreenOrientationMode.AUTO_SENSOR) },
-                                                label = { Text("Auto Sensor") }
+                                                label = { Text("Auto-Tilt Sensor") }
                                             )
                                             FilterChip(
                                                 selected = orientationMode == ScreenOrientationMode.LANDSCAPE,

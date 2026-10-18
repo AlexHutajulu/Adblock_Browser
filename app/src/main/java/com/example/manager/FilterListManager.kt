@@ -3,6 +3,8 @@ package com.example.manager
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,24 +41,30 @@ object FilterListManager {
 
     @Volatile
     private var cachedRules: ParsedRules? = null
+    private val loadMutex = Mutex()
 
     /**
      * Load rules — dari cache file jika masih valid, atau download ulang.
-     * Panggil ini satu kali saat aplikasi start, di background coroutine.
+     * Thread-safe dengan Mutex agar tidak terjadi duplikasi download/parsing paralel.
      */
     suspend fun loadRules(context: Context): ParsedRules = withContext(Dispatchers.IO) {
-        val cacheFile = File(context.cacheDir, "adblock_rules.txt")
+        cachedRules?.let { return@withContext it }
+        loadMutex.withLock {
+            cachedRules?.let { return@withLock it }
 
-        val rawText = if (cacheFile.exists() &&
-            System.currentTimeMillis() - cacheFile.lastModified() < CACHE_DURATION_MS) {
-            Log.d(TAG, "Loading rules from cache (${cacheFile.length() / 1024}KB)")
-            cacheFile.readText()
-        } else {
-            Log.d(TAG, "Downloading fresh filter lists...")
-            downloadAllLists(context, cacheFile)
+            val cacheFile = File(context.cacheDir, "adblock_rules.txt")
+
+            val rawText = if (cacheFile.exists() &&
+                System.currentTimeMillis() - cacheFile.lastModified() < CACHE_DURATION_MS) {
+                Log.d(TAG, "Loading rules from cache (${cacheFile.length() / 1024}KB)")
+                cacheFile.readText()
+            } else {
+                Log.d(TAG, "Downloading fresh filter lists...")
+                downloadAllLists(context, cacheFile)
+            }
+
+            parseRules(rawText).also { cachedRules = it }
         }
-
-        parseRules(rawText).also { cachedRules = it }
     }
 
     fun isLoaded(): Boolean = cachedRules != null

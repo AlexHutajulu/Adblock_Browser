@@ -19,6 +19,17 @@ class TabPersistenceService : Service() {
         try {
             val settings = SettingsManager(applicationContext)
             settings.clearPersistedTabs()
+            if (settings.clearCookiesOnExit) {
+                try {
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                    val cookieManager = android.webkit.CookieManager.getInstance()
+                    cookieManager.removeAllCookies(null)
+                    cookieManager.flush()
+                    Log.d("TabPersistenceService", "Cleared cookies & web storage on exit as configured")
+                } catch (e: Exception) {
+                    Log.w("TabPersistenceService", "Failed to clear cookies on exit: ${e.message}")
+                }
+            }
         } catch (e: Exception) {
             Log.e("TabPersistenceService", "Failed to clear persisted tabs on swipe away", e)
         }

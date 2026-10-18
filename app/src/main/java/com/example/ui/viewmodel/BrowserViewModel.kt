@@ -41,7 +41,8 @@ data class BrowserTab(
     val isPrivate: Boolean = false,
     val loadError: String? = null,
     val isPlayingAudio: Boolean = false,
-    val isMuted: Boolean = false
+    val isMuted: Boolean = false,
+    val isSuspended: Boolean = false
 )
 
 
@@ -127,29 +128,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun addActivePermission(tabId: String, type: SitePermissionType) {
-        val current = _activePermissions.value.toMutableMap()
-        val set = current[tabId]?.toMutableSet() ?: mutableSetOf()
-        set.add(type)
-        current[tabId] = set
-        _activePermissions.value = current
+        _activePermissions.update { currentMap ->
+            val current = currentMap.toMutableMap()
+            val set = current[tabId]?.toMutableSet() ?: mutableSetOf()
+            set.add(type)
+            current[tabId] = set
+            current
+        }
     }
 
     fun removeActivePermission(tabId: String, type: SitePermissionType) {
-        val current = _activePermissions.value.toMutableMap()
-        val set = current[tabId]?.toMutableSet() ?: mutableSetOf()
-        set.remove(type)
-        if (set.isEmpty()) {
-            current.remove(tabId)
-        } else {
-            current[tabId] = set
+        _activePermissions.update { currentMap ->
+            val current = currentMap.toMutableMap()
+            val set = current[tabId]?.toMutableSet() ?: mutableSetOf()
+            set.remove(type)
+            if (set.isEmpty()) {
+                current.remove(tabId)
+            } else {
+                current[tabId] = set
+            }
+            current
         }
-        _activePermissions.value = current
     }
 
     fun clearTabActivePermissions(tabId: String) {
-        val current = _activePermissions.value.toMutableMap()
-        current.remove(tabId)
-        _activePermissions.value = current
+        _activePermissions.update { it - tabId }
     }
 
     // Lists of bookmarks and history
@@ -288,6 +291,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _isFullscreen = MutableStateFlow(false)
     val isFullscreen = _isFullscreen.asStateFlow()
 
+    private val _isImmersivePageFullscreen = MutableStateFlow(false)
+    val isImmersivePageFullscreen = _isImmersivePageFullscreen.asStateFlow()
+
+    private val _fullScreenToolSignal = MutableStateFlow(0L)
+    val fullScreenToolSignal = _fullScreenToolSignal.asStateFlow()
+
     private val _isAppPaused = MutableStateFlow(false)
     val isAppPaused = _isAppPaused.asStateFlow()
 
@@ -303,16 +312,42 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _isFullscreen.value = enabled
     }
 
+    fun setImmersivePageFullscreen(enabled: Boolean) {
+        _isImmersivePageFullscreen.value = enabled
+    }
+
+    fun requestFullScreenToolToggle() {
+        _fullScreenToolSignal.value = System.currentTimeMillis()
+    }
+
+    fun triggerFullScreenTool(
+        webView: android.webkit.WebView?,
+        onFeedback: ((String) -> Unit)? = null
+    ) {
+        if (webView == null) {
+            val next = !_isImmersivePageFullscreen.value
+            _isImmersivePageFullscreen.value = next
+            onFeedback?.invoke(if (next) "Mode Full Screen Aktif" else "Keluar dari Full Screen")
+            return
+        }
+        com.example.manager.CustomJsToolbarManager.executeRawJsInWebView(
+            webView = webView,
+            rawJsCode = com.example.manager.CustomJsToolbarManager.UPGRADED_FULLSCREEN_SCRIPT,
+            scriptLabel = "Full Screen",
+            onResult = onFeedback
+        )
+    }
+
     private val _devToolsStates = MutableStateFlow<Map<String, DevToolsState>>(emptyMap())
     val devToolsStates = _devToolsStates.asStateFlow()
 
     init {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 com.example.manager.FilterListManager.loadRules(getApplication())
-                Log.d("BrowserViewModel", "AdBlock filter lists loaded successfully")
+                Log.d(TAG, "AdBlock filter lists loaded successfully")
             } catch (e: Exception) {
-                Log.w("BrowserViewModel", "Filter list load failed: \${e.message}")
+                Log.w(TAG, "Filter list load failed: ${e.message}")
             }
         }
     }
@@ -566,13 +601,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } catch (_: Exception) {
                     ""
                 }
-                
+
                 val lowerUrl = log.blockedUrl.lowercase()
-                val isPopup = log.reason.contains("popup", true) || log.reason.contains("Redirect", true)
-                val isTracker = lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
+                val isPopup = log.reason.contains("popup", true) || log.reason.contains("redirect", true)
+                val isTracker = log.reason.contains("tracker", true) || log.reason.contains("beacon", true) ||
+                                lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
                                 lowerUrl.contains("pixel") || lowerUrl.contains("beacon") ||
-                                lowerUrl.contains("telemetry") || lowerUrl.contains("collect") ||
-                                lowerUrl.contains("event")
+                                lowerUrl.contains("telemetry") || lowerUrl.contains("collect")
                 val category = when {
                     isPopup -> "Popup"
                     isTracker -> "Tracker"
@@ -594,14 +629,108 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleTabMute(tabId: String) {
-        val updatedTabs = _tabs.value.map {
-            if (it.id == tabId) {
-                it.copy(isMuted = !it.isMuted)
-            } else {
-                it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId) it.copy(isMuted = !it.isMuted) else it
             }
         }
-        _tabs.value = updatedTabs
+    }
+
+    fun updateTabPlayingAudio(tabId: String, isPlayingAudio: Boolean) {
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId && it.isPlayingAudio != isPlayingAudio) {
+                    it.copy(isPlayingAudio = isPlayingAudio)
+                } else it
+            }
+        }
+    }
+
+    // ─── Stealth Anti-AdBlock & Custom Element Zapper & Tab Hibernation ─────────
+
+    private val _stealthTrapsDefusedCount = MutableStateFlow(settings.stealthTrapsDefusedCount)
+    val stealthTrapsDefusedCount = _stealthTrapsDefusedCount.asStateFlow()
+
+    fun recordStealthTrapDefused() {
+        settings.incrementStealthTrapsDefused()
+        _stealthTrapsDefusedCount.value = settings.stealthTrapsDefusedCount
+    }
+
+    private val _isElementZapperActive = MutableStateFlow(false)
+    val isElementZapperActive = _isElementZapperActive.asStateFlow()
+
+    private val _zapperPreviewSelector = MutableStateFlow("")
+    val zapperPreviewSelector = _zapperPreviewSelector.asStateFlow()
+
+    private val _zapperPreviewTag = MutableStateFlow("")
+    val zapperPreviewTag = _zapperPreviewTag.asStateFlow()
+
+    private val _zapperRulesVersion = MutableStateFlow(0)
+    val zapperRulesVersion = _zapperRulesVersion.asStateFlow()
+
+    fun setElementZapperActive(active: Boolean) {
+        _isElementZapperActive.value = active
+        if (!active) {
+            _zapperPreviewSelector.value = ""
+            _zapperPreviewTag.value = ""
+        }
+    }
+
+    fun onZapperElementSelected(selector: String, tag: String) {
+        _zapperPreviewSelector.value = selector
+        _zapperPreviewTag.value = tag
+    }
+
+    fun getCustomZapperRulesForHost(host: String): List<String> {
+        return settings.getCustomZapperRules(host)
+    }
+
+    fun addCustomZapperRule(host: String, selector: String) {
+        val norm = host.lowercase().trim().removePrefix("www.")
+        if (norm.isBlank() || selector.isBlank()) return
+        val current = settings.getCustomZapperRules(norm).toMutableList()
+        if (!current.contains(selector)) {
+            current.add(selector)
+            settings.saveCustomZapperRules(norm, current)
+            _zapperRulesVersion.update { it + 1 }
+        }
+        _zapperPreviewSelector.value = ""
+        _zapperPreviewTag.value = ""
+    }
+
+    fun undoLastCustomZapperRule(host: String): Boolean {
+        val norm = host.lowercase().trim().removePrefix("www.")
+        if (norm.isBlank()) return false
+        val current = settings.getCustomZapperRules(norm).toMutableList()
+        if (current.isEmpty()) return false
+        current.removeAt(current.lastIndex)
+        settings.saveCustomZapperRules(norm, current)
+        _zapperRulesVersion.update { it + 1 }
+        return true
+    }
+
+    fun clearCustomZapperRulesForHost(host: String) {
+        val norm = host.lowercase().trim().removePrefix("www.")
+        if (norm.isBlank()) return
+        settings.saveCustomZapperRules(norm, emptyList())
+        _zapperRulesVersion.update { it + 1 }
+    }
+
+    private val _hibernateInactiveTabsSignal = MutableStateFlow(0L)
+    val hibernateInactiveTabsSignal = _hibernateInactiveTabsSignal.asStateFlow()
+
+    fun requestHibernateInactiveTabs() {
+        _hibernateInactiveTabsSignal.value = System.currentTimeMillis()
+    }
+
+    fun markTabSuspended(tabId: String, suspended: Boolean) {
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId && it.isSuspended != suspended) {
+                    it.copy(isSuspended = suspended, isLoading = false, isPlayingAudio = if (suspended) false else it.isPlayingAudio)
+                } else it
+            }
+        }
     }
 
     // Navigation trigger (each action has a unique actionId so it executes strictly once)
@@ -622,10 +751,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun pushTabHistoryUrl(tabId: String, url: String) {
         if (url.isBlank() || url == "about:blank") return
-        val currentStack = _tabHistoryStacks.value[tabId] ?: emptyList()
-        if (currentStack.lastOrNull() == url) return
-        val updatedStack = (currentStack + url).takeLast(50)
-        _tabHistoryStacks.value = _tabHistoryStacks.value + (tabId to updatedStack)
+        _tabHistoryStacks.update { stacks ->
+            val currentStack = stacks[tabId] ?: emptyList()
+            if (currentStack.lastOrNull() == url) stacks
+            else stacks + (tabId to (currentStack + url).takeLast(50))
+        }
     }
 
     fun getTabHistoryStack(tabId: String): List<String> {
@@ -637,10 +767,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun consumeNavigationAction(tabId: String, actionId: String? = null) {
-        val current = _navigationActions.value[tabId] ?: return
-        if (actionId == null || current.actionId == actionId) {
-            _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                remove(tabId)
+        _navigationActions.update { currentMap ->
+            val current = currentMap[tabId] ?: return@update currentMap
+            if (actionId == null || current.actionId == actionId) {
+                currentMap - tabId
+            } else {
+                currentMap
             }
         }
     }
@@ -649,18 +781,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun navigateTo(inputUrl: String) {
         val activeId = _activeTabId.value
         if (inputUrl.isBlank()) {
-            _tabs.value = _tabs.value.map {
-                if (it.id == activeId) {
-                    it.copy(
-                        url = "",
-                        title = if (it.isPrivate) "Private Tab" else "New Tab",
-                        loadError = null,
-                        isLoading = false,
-                        progress = 0,
-                        canGoBack = false,
-                        canGoForward = false
-                    )
-                } else it
+            _tabs.update { currentTabs ->
+                currentTabs.map {
+                    if (it.id == activeId) {
+                        it.copy(
+                            url = "",
+                            title = if (it.isPrivate) "Private Tab" else "New Tab",
+                            loadError = null,
+                            isLoading = false,
+                            progress = 0,
+                            canGoBack = false,
+                            canGoForward = false
+                        )
+                    } else it
+                }
             }
             consumeNavigationAction(activeId)
             saveCurrentTabsToPreferences()
@@ -684,21 +818,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isUserTrustedHost = isTrusted
         )
         if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
-            _tabSecurityThreats.value = _tabSecurityThreats.value + (activeId to threat)
+            _tabSecurityThreats.update { it + (activeId to threat) }
         } else {
-            _tabSecurityThreats.value = _tabSecurityThreats.value - activeId
+            _tabSecurityThreats.update { it - activeId }
         }
 
         pushTabHistoryUrl(activeId, finalUrl)
 
-        _tabs.value = _tabs.value.map {
-            if (it.id == activeId) it.copy(url = finalUrl, loadError = null, isLoading = threat.severity == com.example.manager.ThreatSeverity.SAFE, progress = 10) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == activeId) it.copy(url = finalUrl, loadError = null, isLoading = threat.severity == com.example.manager.ThreatSeverity.SAFE, progress = 10) else it
+            }
         }
 
         if (threat.severity == com.example.manager.ThreatSeverity.SAFE) {
-            _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                put(activeId, NavigationAction.LoadUrl(finalUrl))
-            }
+            _navigationActions.update { it + (activeId to NavigationAction.LoadUrl(finalUrl)) }
         }
         saveCurrentTabsToPreferences()
     }
@@ -707,44 +841,44 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val activeId = _activeTabId.value
         val currentTab = _tabs.value.find { it.id == activeId } ?: return
         if (currentTab.url.isBlank() || currentTab.url == "about:blank") return
-        _tabs.value = _tabs.value.map {
-            if (it.id == activeId) it.copy(loadError = null) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == activeId) it.copy(loadError = null) else it
+            }
         }
-        _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-            put(activeId, NavigationAction.GoBack())
-        }
+        _navigationActions.update { it + (activeId to NavigationAction.GoBack()) }
     }
 
     fun goForward() {
         val activeId = _activeTabId.value
-        _tabs.value = _tabs.value.map {
-            if (it.id == activeId) it.copy(loadError = null) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == activeId) it.copy(loadError = null) else it
+            }
         }
-        _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-            put(activeId, NavigationAction.GoForward())
-        }
+        _navigationActions.update { it + (activeId to NavigationAction.GoForward()) }
     }
 
     fun reload() {
         val activeId = _activeTabId.value
         val activeTab = _tabs.value.find { it.id == activeId }
         if (activeTab == null || activeTab.url.isBlank() || activeTab.url == "about:blank") return
-        _tabs.value = _tabs.value.map {
-            if (it.id == activeId) it.copy(loadError = null, isLoading = true, progress = 10) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == activeId) it.copy(loadError = null, isLoading = true, progress = 10) else it
+            }
         }
-        _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-            put(activeId, NavigationAction.Reload())
-        }
+        _navigationActions.update { it + (activeId to NavigationAction.Reload()) }
     }
 
     fun stop() {
         val activeId = _activeTabId.value
-        _tabs.value = _tabs.value.map {
-            if (it.id == activeId) it.copy(isLoading = false) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == activeId) it.copy(isLoading = false) else it
+            }
         }
-        _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-            put(activeId, NavigationAction.StopLoading())
-        }
+        _navigationActions.update { it + (activeId to NavigationAction.StopLoading()) }
     }
 
     fun goHome() {
@@ -759,14 +893,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             title = if (isPrivate) "Private Tab" else "New Tab",
             isPrivate = isPrivate
         )
-        _tabs.value = _tabs.value + newTab
+        _tabs.update { it + newTab }
         _activeTabId.value = newTab.id
         _showTabsDialog.value = false
 
         if (targetUrl.isNotEmpty() && targetUrl != "about:blank") {
-            _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                put(newTab.id, NavigationAction.LoadUrl(targetUrl))
-            }
+            _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(targetUrl)) }
         }
         saveCurrentTabsToPreferences()
     }
@@ -781,9 +913,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _tabs.value = listOf(newTab)
             _activeTabId.value = newTab.id
             if (newTab.url.isNotEmpty()) {
-                _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                    put(newTab.id, NavigationAction.LoadUrl(newTab.url))
-                }
+                _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(newTab.url)) }
             }
         } else {
             _tabs.value = nonPrivateTabs
@@ -825,9 +955,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _activeTabId.value = newTab.id
             
             if (newTab.url.isNotEmpty()) {
-                _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                    put(newTab.id, NavigationAction.LoadUrl(newTab.url))
-                }
+                _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(newTab.url)) }
             }
             saveCurrentTabsToPreferences()
             return
@@ -852,12 +980,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isLoading = tabToRestore.url.isNotBlank() && tabToRestore.url != "about:blank",
                 loadError = null
             )
-            _tabs.value = _tabs.value + restoredTab
+            _tabs.update { it + restoredTab }
             _activeTabId.value = newTabId
             if (restoredTab.url.isNotBlank() && restoredTab.url != "about:blank") {
-                _navigationActions.value = _navigationActions.value.toMutableMap().apply {
-                    put(newTabId, NavigationAction.LoadUrl(restoredTab.url))
-                }
+                _navigationActions.update { it + (newTabId to NavigationAction.LoadUrl(restoredTab.url)) }
             }
             saveCurrentTabsToPreferences()
         }
@@ -888,6 +1014,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectTab(tabId: String) {
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId && it.isSuspended) it.copy(isSuspended = false) else it
+            }
+        }
         _activeTabId.value = tabId
         _showTabsDialog.value = false
         saveCurrentTabsToPreferences()
@@ -898,58 +1029,70 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (url.isNotBlank() && url != "about:blank") {
             pushTabHistoryUrl(tabId, url)
         }
-        _tabs.value = _tabs.value.map { tab ->
-            if (tab.id == tabId) {
-                if (!tab.isPrivate && url != "about:blank") {
-                    settings.lastOpenedUrl = url
+        _tabs.update { currentTabs ->
+            currentTabs.map { tab ->
+                if (tab.id == tabId) {
+                    if (!tab.isPrivate && url != "about:blank") {
+                        settings.lastOpenedUrl = url
+                    }
+                    tab.copy(url = url)
+                } else {
+                    tab
                 }
-                tab.copy(url = url)
-            } else {
-                tab
             }
         }
         saveCurrentTabsToPreferences()
     }
 
     fun updateTabTitle(tabId: String, title: String) {
-        _tabs.value = _tabs.value.map { tab ->
-            if (tab.id == tabId) {
-                val newTitle = when {
-                    title.isNotBlank() && title != "about:blank" -> title
-                    tab.url.isNotBlank() && !tab.url.startsWith("about:") -> {
-                        try {
-                            android.net.Uri.parse(tab.url).host ?: "Untitled"
-                        } catch (e: Exception) { "Untitled" }
+        _tabs.update { currentTabs ->
+            currentTabs.map { tab ->
+                if (tab.id == tabId) {
+                    val newTitle = when {
+                        title.isNotBlank() && title != "about:blank" -> title
+                        tab.url.isNotBlank() && !tab.url.startsWith("about:") -> {
+                            try {
+                                android.net.Uri.parse(tab.url).host ?: "Untitled"
+                            } catch (e: Exception) { "Untitled" }
+                        }
+                        else -> tab.title.ifBlank { "Untitled" }
                     }
-                    else -> tab.title.ifBlank { "Untitled" }
-                }
-                tab.copy(title = newTitle)
-            } else tab
+                    tab.copy(title = newTitle)
+                } else tab
+            }
         }
         saveCurrentTabsToPreferences()
     }
 
     fun updateTabProgress(tabId: String, progress: Int) {
-        _tabs.value = _tabs.value.map {
-            if (it.id == tabId) it.copy(progress = progress) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId) it.copy(progress = progress) else it
+            }
         }
     }
 
     fun updateTabLoading(tabId: String, isLoading: Boolean) {
-        _tabs.value = _tabs.value.map {
-            if (it.id == tabId) it.copy(isLoading = isLoading) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId) it.copy(isLoading = isLoading) else it
+            }
         }
     }
 
     fun updateTabNavigation(tabId: String, canBack: Boolean, canForward: Boolean) {
-        _tabs.value = _tabs.value.map {
-            if (it.id == tabId) it.copy(canGoBack = canBack, canGoForward = canForward) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId) it.copy(canGoBack = canBack, canGoForward = canForward) else it
+            }
         }
     }
 
     fun updateTabError(tabId: String, errorDescription: String?) {
-        _tabs.value = _tabs.value.map {
-            if (it.id == tabId) it.copy(loadError = errorDescription) else it
+        _tabs.update { currentTabs ->
+            currentTabs.map {
+                if (it.id == tabId) it.copy(loadError = errorDescription) else it
+            }
         }
     }
 
@@ -1194,7 +1337,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     // Clean browser cache, cookies, and local database storage
     fun clearCacheAndCookies(context: Context) {
         try {
-            android.webkit.WebView(context).clearCache(true)
+            val tempWebView = android.webkit.WebView(context)
+            tempWebView.clearCache(true)
+            tempWebView.destroy()
             val cookieManager = android.webkit.CookieManager.getInstance()
             cookieManager.removeAllCookies(null)
             cookieManager.flush()
@@ -1225,9 +1370,62 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     )
     val screenOrientationMode = _screenOrientationMode.asStateFlow()
 
+    private val _deviceTiltState = MutableStateFlow(com.example.manager.DeviceTiltState())
+    val deviceTiltState = _deviceTiltState.asStateFlow()
+
+    private val _smartTiltDismissedQuadrant = MutableStateFlow<com.example.manager.PhysicalTiltQuadrant?>(null)
+    val smartTiltDismissedQuadrant = _smartTiltDismissedQuadrant.asStateFlow()
+
+    private val _desktopZoomScale = MutableStateFlow(
+        com.example.manager.CustomJsToolbarManager.getDesktopZoomScale(application)
+    )
+    val desktopZoomScale = _desktopZoomScale.asStateFlow()
+
+    fun setDesktopZoomScale(scale: Int) {
+        val clamped = scale.coerceIn(50, 200)
+        com.example.manager.CustomJsToolbarManager.setDesktopZoomScale(getApplication(), clamped)
+        _desktopZoomScale.value = clamped
+    }
+
+    fun adjustDesktopZoomScale(delta: Int): Int {
+        val next = (_desktopZoomScale.value + delta).coerceIn(50, 200)
+        setDesktopZoomScale(next)
+        return next
+    }
+
+    fun updateDeviceTilt(angleDegrees: Int, sensorAvailable: Boolean) {
+        val current = _deviceTiltState.value
+        if (!sensorAvailable || angleDegrees < 0) {
+            if (current.isSensorActive != sensorAvailable || current.angleDegrees != -1) {
+                _deviceTiltState.value = current.copy(angleDegrees = -1, isSensorActive = sensorAvailable)
+            }
+            return
+        }
+        val nextQuadrant = com.example.manager.CustomJsToolbarManager.computeTiltQuadrantWithHysteresis(
+            angleDegrees = angleDegrees,
+            currentQuadrant = current.quadrant
+        )
+        // Reset dismissed tilt suggestion when physical quadrant changes back
+        if (nextQuadrant != current.quadrant && _smartTiltDismissedQuadrant.value != null && _smartTiltDismissedQuadrant.value != nextQuadrant) {
+            _smartTiltDismissedQuadrant.value = null
+        }
+        if (nextQuadrant != current.quadrant || kotlin.math.abs(angleDegrees - current.angleDegrees) >= 3 || !current.isSensorActive) {
+            _deviceTiltState.value = com.example.manager.DeviceTiltState(
+                angleDegrees = angleDegrees,
+                quadrant = nextQuadrant,
+                isSensorActive = true
+            )
+        }
+    }
+
+    fun dismissSmartTiltSuggestion() {
+        _smartTiltDismissedQuadrant.value = _deviceTiltState.value.quadrant
+    }
+
     fun setScreenOrientationMode(mode: com.example.manager.ScreenOrientationMode) {
         com.example.manager.CustomJsToolbarManager.setScreenOrientationMode(getApplication(), mode)
         _screenOrientationMode.value = mode
+        _smartTiltDismissedQuadrant.value = null
     }
 
     fun cycleScreenOrientationMode(): com.example.manager.ScreenOrientationMode {

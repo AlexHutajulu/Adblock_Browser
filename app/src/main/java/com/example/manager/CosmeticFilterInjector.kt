@@ -86,21 +86,28 @@ object CosmeticFilterInjector {
 
         if (safeSelectors.isEmpty()) return
 
-        // Group selectors in small chunks of 25 so a single unsupported selector in WebView never invalidates the rest
+        // Group selectors in small chunks of 25 so a single unsupported selector in WebView never invalidates the rest.
+        // Use stealth offscreen + zero-opacity instead of display:none so anti-adblock offsetHeight/display checks never trigger.
         val cssRules = safeSelectors.chunked(25).joinToString("\n") { chunk ->
-            chunk.joinToString(", ") + " { display: none !important; visibility: hidden !important; pointer-events: none !important; }"
+            chunk.joinToString(", ") + " { opacity: 0 !important; pointer-events: none !important; max-height: 1px !important; max-width: 1px !important; overflow: hidden !important; position: absolute !important; left: -9999px !important; top: -9999px !important; z-index: -9999 !important; }"
         }
 
         val b64css = Base64.encodeToString(cssRules.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         val js = """
             (function() {
                 try {
-                    var style = document.getElementById('__alex_adblock_css');
-                    if (!style) {
+                    var style = window.__asCosmeticRef;
+                    if (!style || !style.isConnected) {
                         style = document.createElement('style');
-                        style.id = '__alex_adblock_css';
                         style.type = 'text/css';
                         (document.head || document.documentElement).appendChild(style);
+                        try {
+                            Object.defineProperty(window, '__asCosmeticRef', {
+                                value: style,
+                                enumerable: false,
+                                configurable: true
+                            });
+                        } catch(e) {}
                     }
                     style.textContent = window.atob('$b64css');
                 } catch(e) {}
@@ -109,7 +116,7 @@ object CosmeticFilterInjector {
 
         try {
             webView.evaluateJavascript(js, null)
-            Log.v(TAG, "Injected ${safeSelectors.size} safe cosmetic rules")
+            Log.v(TAG, "Injected ${safeSelectors.size} safe stealth cosmetic rules")
         } catch (e: Exception) {
             Log.w(TAG, "Cosmetic injection failed: ${e.message}")
         }

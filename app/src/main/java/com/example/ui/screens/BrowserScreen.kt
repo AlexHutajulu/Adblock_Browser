@@ -106,7 +106,7 @@ fun BrowserScreen(
     val activeTab = tabs.find { it.id == activeTabId } ?: tabs.firstOrNull() ?: BrowserTab()
     val isIncognito = activeTab.isPrivate
 
-    val webViewPool = remember { mutableMapOf<String, android.webkit.WebView>() }
+    val webViewPool = remember { java.util.LinkedHashMap<String, android.webkit.WebView>(16, 0.75f, true) }
 
     val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
     val devToolsStates by viewModel.devToolsStates.collectAsState()
@@ -120,13 +120,62 @@ fun BrowserScreen(
     val tabSecurityThreats by viewModel.tabSecurityThreats.collectAsState()
     val activeTabThreat = tabSecurityThreats[activeTab.id]
 
-    // Reactive Screen Orientation Controller (Auto Sensor / Landscape / Portrait)
+    // Hardware Accelerometer / Gravity Tilt Sensor Monitor (Real-Time Portrait/Landscape Tilt Detection)
+    val deviceTiltState by viewModel.deviceTiltState.collectAsState()
+    val smartTiltDismissedQuadrant by viewModel.smartTiltDismissedQuadrant.collectAsState()
+    DisposableEffect(context) {
+        val orientationListener = object : android.view.OrientationEventListener(
+            context,
+            android.hardware.SensorManager.SENSOR_DELAY_UI
+        ) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) {
+                    viewModel.updateDeviceTilt(-1, canDetectOrientation())
+                } else {
+                    viewModel.updateDeviceTilt(orientation, true)
+                }
+            }
+        }
+        val canDetect = try {
+            orientationListener.canDetectOrientation()
+        } catch (_: Exception) {
+            false
+        }
+        if (canDetect) {
+            try {
+                orientationListener.enable()
+            } catch (_: Exception) {}
+        } else {
+            viewModel.updateDeviceTilt(-1, false)
+        }
+        onDispose {
+            try {
+                orientationListener.disable()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Reactive Screen Orientation Controller (Auto-Tilt Sensor / Landscape / Portrait)
     val hostActivity = context as? android.app.Activity
-    LaunchedEffect(screenOrientationMode, nativeFullscreenView) {
+    LaunchedEffect(screenOrientationMode, deviceTiltState.quadrant, deviceTiltState.isSensorActive, nativeFullscreenView) {
         if (nativeFullscreenView == null && hostActivity != null) {
             val targetOrientation = when (screenOrientationMode) {
-                com.example.manager.ScreenOrientationMode.AUTO_SENSOR ->
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+                com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> {
+                    if (deviceTiltState.isSensorActive && deviceTiltState.angleDegrees >= 0) {
+                        when (deviceTiltState.quadrant) {
+                            com.example.manager.PhysicalTiltQuadrant.PORTRAIT_UPRIGHT ->
+                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            com.example.manager.PhysicalTiltQuadrant.LANDSCAPE_LEFT ->
+                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            com.example.manager.PhysicalTiltQuadrant.LANDSCAPE_RIGHT ->
+                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                            com.example.manager.PhysicalTiltQuadrant.PORTRAIT_INVERTED ->
+                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+                        }
+                    } else {
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+                    }
+                }
                 com.example.manager.ScreenOrientationMode.LANDSCAPE ->
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 com.example.manager.ScreenOrientationMode.PORTRAIT ->
@@ -145,16 +194,49 @@ fun BrowserScreen(
         else viewModel.getBlockedLogsForPage(activeTab.url).size
     }
 
+    val isElementZapperActive by viewModel.isElementZapperActive.collectAsState()
+    val zapperPreviewSelector by viewModel.zapperPreviewSelector.collectAsState()
+    val zapperPreviewTag by viewModel.zapperPreviewTag.collectAsState()
+    val hibernateSignal by viewModel.hibernateInactiveTabsSignal.collectAsState()
+    val isImmersivePageFullscreen by viewModel.isImmersivePageFullscreen.collectAsState()
+    val fullScreenToolSignal by viewModel.fullScreenToolSignal.collectAsState()
+
+    LaunchedEffect(fullScreenToolSignal) {
+        if (fullScreenToolSignal <= 0L) return@LaunchedEffect
+        val wv = webViewPool[activeTab.id]
+        viewModel.triggerFullScreenTool(wv) { msg ->
+            if (msg.isNotBlank() && msg != "null") {
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Immersive System Bars Controller for Full Screen Tool & HTML5 Fullscreen
+    LaunchedEffect(isImmersivePageFullscreen, nativeFullscreenView) {
+        val window = hostActivity?.window ?: return@LaunchedEffect
+        val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+        if (isImmersivePageFullscreen || nativeFullscreenView != null) {
+            insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            insetsController.systemBarsBehavior =
+                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            insetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     // Unified BackHandler - Steps back one page at a time in WebView history before returning to Home
     androidx.activity.compose.BackHandler(enabled = true) {
         val webView = webViewPool[activeTabId]
 
-        if (nativeFullscreenView != null) {
+        if (nativeFullscreenView != null || isImmersivePageFullscreen) {
             customViewCallback?.onCustomViewHidden()
             nativeFullscreenView = null
             customViewCallback = null
-            (context as? android.app.Activity)?.requestedOrientation =
-                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            viewModel.setFullscreen(false)
+            viewModel.setImmersivePageFullscreen(false)
+            webView?.evaluateJavascript("if(window.__kiwiExitFs) window.__kiwiExitFs();", null)
+        } else if (isElementZapperActive) {
+            viewModel.setElementZapperActive(false)
         } else if (showExtensionsHub) {
             viewModel.setExtensionsHubVisible(false)
         } else if (showCustomJsStudio) {
@@ -197,9 +279,13 @@ fun BrowserScreen(
     val isAppPaused by viewModel.isAppPaused.collectAsState()
     val backgroundPlaybackEnabled by viewModel.backgroundPlaybackEnabled.collectAsState()
 
-    // Release WebView instances cleanly when tabs close and enforce LRU pool cap (max 5 active WebViews) to prevent memory leaks / OOM
+    // Balanced RAM Optimization: Keep at most 3 active WebViews in the LRU pool and auto-suspend older tabs
     val tabIds = remember(tabs) { tabs.map { it.id }.toSet() }
     LaunchedEffect(tabIds, activeTabId) {
+        // Touch active tab entry to update access order in LinkedHashMap LRU
+        webViewPool[activeTabId]
+        viewModel.markTabSuspended(activeTabId, false)
+
         val iterator = webViewPool.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
@@ -208,21 +294,36 @@ fun BrowserScreen(
                 iterator.remove()
             }
         }
-        // Evict oldest inactive non-audio WebView instances if pool exceeds 5
-        if (webViewPool.size > 5) {
+        // Evict least-recently-used inactive non-audio WebView instances if pool exceeds 3 (Balanced Profile)
+        val maxPoolSize = 3
+        if (webViewPool.size > maxPoolSize) {
             val evictCandidates = webViewPool.keys.filter { id ->
                 id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
             }
-            val excessCount = webViewPool.size - 5
+            val excessCount = webViewPool.size - maxPoolSize
             evictCandidates.take(excessCount).forEach { evictId ->
                 webViewPool.remove(evictId)?.let { safeDestroyWebView(it) }
+                viewModel.markTabSuspended(evictId, true)
             }
+        }
+    }
+
+    // 1-Tap & System Memory Trim Hibernation Handler
+    LaunchedEffect(hibernateSignal) {
+        if (hibernateSignal <= 0L) return@LaunchedEffect
+        val toHibernate = webViewPool.keys.filter { id ->
+            id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
+        }
+        toHibernate.forEach { id ->
+            webViewPool.remove(id)?.let { safeDestroyWebView(it) }
+            viewModel.markTabSuspended(id, true)
         }
     }
 
     // Battery & CPU Hibernation: Pause inactive background tabs and resume only the active tab
     LaunchedEffect(activeTabId, isAppPaused, backgroundPlaybackEnabled, tabs) {
-        webViewPool.forEach { (id, wv) ->
+        // Iterate over a snapshot of entries so LinkedHashMap access-order isn't mutated during iteration
+        webViewPool.entries.toList().forEach { (id, wv) ->
             val tabObj = tabs.find { it.id == id }
             val keepAudioAlive = backgroundPlaybackEnabled && (tabObj?.isPlayingAudio == true)
             if (id == activeTabId && !isAppPaused) {
@@ -246,14 +347,23 @@ fun BrowserScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webViewPool.values.forEach { webView ->
+            webViewPool.values.toList().forEach { webView ->
                 safeDestroyWebView(webView)
             }
             webViewPool.clear()
         }
     }
 
-    var addressInput by remember(activeTab.url) { mutableStateOf(activeTab.url) }
+    var addressInput by remember { mutableStateOf(activeTab.url) }
+    var isAddressBarFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(activeTab.id) {
+        addressInput = activeTab.url
+    }
+    LaunchedEffect(activeTab.url) {
+        if (!isAddressBarFocused) {
+            addressInput = activeTab.url
+        }
+    }
     val addressBarFocusRequester = remember { FocusRequester() }
 
     val isCurrentUrlBookmarked = remember(bookmarks, activeTab.url) {
@@ -378,79 +488,52 @@ fun BrowserScreen(
         val url = intentToOpen!!
         AlertDialog(
             onDismissRequest = { viewModel.clearIntentToOpen() },
-            title = { Text("Leave Chrome to open app?", fontWeight = FontWeight.SemiBold) },
-            text = { Text("This site wants to open an external application:\n$url") },
+            title = { Text("Buka Aplikasi Eksternal?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Situs ini ingin membuka aplikasi di luar AlexBrowser:\n${url.take(180)}") },
             confirmButton = {
                 Button(onClick = {
                     try {
-                        val parsedUri = Uri.parse(url)
-                        val intent = Intent(Intent.ACTION_VIEW, parsedUri)
-                        context.startActivity(intent)
+                        val intent = if (url.startsWith("intent://", ignoreCase = true)) {
+                            Intent.parseUri(url, Intent.URI_INTENT_SCHEME).apply {
+                                // OWASP MASVS Intent Hardening: prevent internal component hijacking & URI permission leaks
+                                addCategory(Intent.CATEGORY_BROWSABLE)
+                                component = null
+                                selector = null
+                                flags = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION.inv() and Intent.FLAG_GRANT_WRITE_URI_PERMISSION.inv()
+                            }
+                        } else {
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                addCategory(Intent.CATEGORY_BROWSABLE)
+                                component = null
+                                selector = null
+                            }
+                        }
+                        try {
+                            context.startActivity(intent)
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            val fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                            if (!fallbackUrl.isNullOrBlank() &&
+                                (fallbackUrl.startsWith("https://", ignoreCase = true) || fallbackUrl.startsWith("http://", ignoreCase = true))
+                            ) {
+                                viewModel.navigateTo(fallbackUrl)
+                            } else {
+                                Toast.makeText(context, "Aplikasi eksternal tidak ditemukan di perangkat", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     } catch (_: Exception) {
-                        Toast.makeText(context, "Cannot open external app", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Tidak dapat membuka tautan aplikasi eksternal", Toast.LENGTH_SHORT).show()
                     }
                     viewModel.clearIntentToOpen()
                 }) {
-                    Text("Continue")
+                    Text("Buka")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.clearIntentToOpen() }) {
-                    Text("Cancel")
+                    Text("Batal")
                 }
             }
         )
-    }
-
-    if (nativeFullscreenView != null) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            androidx.compose.ui.viewinterop.AndroidView(
-                factory = { nativeFullscreenView!! },
-                modifier = Modifier.fillMaxSize()
-            )
-
-            val contextActivity = context as? android.app.Activity
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                IconButton(
-                    onClick = {
-                        try {
-                            contextActivity?.enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                        } catch (_: Exception) {}
-                    },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PictureInPicture,
-                        contentDescription = "Enter Picture in Picture",
-                        tint = Color.White
-                    )
-                }
-            }
-        }
-
-        val activity = context as? android.app.Activity
-        DisposableEffect(Unit) {
-            val window = activity?.window
-            val insetsController = androidx.core.view.WindowCompat.getInsetsController(window!!, window.decorView)
-            insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-
-            activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-
-            onDispose {
-                val restoredOrientation = when (viewModel.screenOrientationMode.value) {
-                    com.example.manager.ScreenOrientationMode.AUTO_SENSOR ->
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-                    com.example.manager.ScreenOrientationMode.LANDSCAPE ->
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                    com.example.manager.ScreenOrientationMode.PORTRAIT ->
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                }
-                activity.requestedOrientation = restoredOrientation
-                insetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            }
-        }
-        return
     }
 
     if (isPipMode) {
@@ -532,18 +615,21 @@ fun BrowserScreen(
                 onFullscreenView = { view, callback ->
                     nativeFullscreenView = view
                     customViewCallback = callback
+                    viewModel.setFullscreen(true)
                 },
                 onHideFullscreenView = {
                     nativeFullscreenView = null
                     customViewCallback = null
+                    viewModel.setFullscreen(false)
                 },
-                addressBarFocusRequester = addressBarFocusRequester
+                addressBarFocusRequester = addressBarFocusRequester,
+                onAddressFocusChanged = { isAddressBarFocused = it }
             )
         } else {
             Scaffold(
                 containerColor = containerBg,
                 bottomBar = {
-                    if (!isTablet) {
+                    if (!isTablet && !isImmersivePageFullscreen) {
                         ChromeMobileBottomBar(
                             viewModel = viewModel,
                             activeTab = activeTab,
@@ -569,7 +655,7 @@ fun BrowserScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(innerPadding)
+                        .padding(if (isImmersivePageFullscreen) PaddingValues(0.dp) else innerPadding)
                         .imePadding()
                 ) {
                     // Tablet inline side panel
@@ -606,100 +692,103 @@ fun BrowserScreen(
                             .fillMaxSize()
                             .weight(1f)
                     ) {
-                        if (isTablet) {
-                            TabletHorizontalTabBar(viewModel, tabs, activeTabId)
-                        }
+                        if (!isImmersivePageFullscreen) {
+                            if (isTablet) {
+                                TabletHorizontalTabBar(viewModel, tabs, activeTabId)
+                            }
 
-                        if (showFindInPage) {
-                            ChromeFindInPageBar(
-                                query = findInPageQuery,
-                                onQueryChange = { q ->
-                                    findInPageQuery = q
-                                    val wv = webViewPool[activeTab.id]
-                                    if (q.isNotBlank()) wv?.findAllAsync(q) else wv?.clearMatches()
-                                },
-                                onFindPrev = { webViewPool[activeTab.id]?.findNext(false) },
-                                onFindNext = { webViewPool[activeTab.id]?.findNext(true) },
-                                onClose = {
-                                    webViewPool[activeTab.id]?.clearMatches()
-                                    findInPageQuery = ""
-                                    showFindInPage = false
-                                }
-                            )
-                        } else {
-                            TabletOrMobileToolbar(
-                                isTablet = isTablet,
-                                activeTab = activeTab,
-                                tabsCount = tabs.size,
-                                addressInput = addressInput,
-                                onAddressValueChange = { addressInput = it },
-                                onSearchSubmit = {
-                                    if (addressInput.isNotBlank()) {
-                                        viewModel.navigateTo(addressInput.trim())
-                                        focusManager.clearFocus()
+                            if (showFindInPage) {
+                                ChromeFindInPageBar(
+                                    query = findInPageQuery,
+                                    onQueryChange = { q ->
+                                        findInPageQuery = q
+                                        val wv = webViewPool[activeTab.id]
+                                        if (q.isNotBlank()) wv?.findAllAsync(q) else wv?.clearMatches()
+                                    },
+                                    onFindPrev = { webViewPool[activeTab.id]?.findNext(false) },
+                                    onFindNext = { webViewPool[activeTab.id]?.findNext(true) },
+                                    onClose = {
+                                        webViewPool[activeTab.id]?.clearMatches()
+                                        findInPageQuery = ""
+                                        showFindInPage = false
                                     }
-                                },
-                                isUrlInsecure = isUrlInsecure,
-                                isCurrentUrlBookmarked = isCurrentUrlBookmarked,
-                                showTabsDialog = showTabsDialog,
-                                showBookmarks = showBookmarks,
-                                showHistory = showHistory,
-                                pageBlockedCount = pageBlockedCount,
-                                bookmarks = bookmarks,
-                                history = history,
-                                onClearAddressInput = { addressInput = "" },
-                                onToggleBookmark = {
-                                    viewModel.toggleBookmark(activeTab.title, activeTab.url)
-                                    val msg = if (isCurrentUrlBookmarked) "Bookmark removed" else "Bookmarked"
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                },
-                                onToggleTabsSidebar = {
-                                    if (showTabsDialog) {
-                                        viewModel.setTabsDialogVisible(false)
-                                    } else {
-                                        viewModel.setBookmarksVisible(false)
-                                        viewModel.setHistoryVisible(false)
-                                        viewModel.setTabsDialogVisible(true)
-                                    }
-                                },
-                                onToggleBookmarksSidebar = {
-                                    if (showBookmarks) {
-                                        viewModel.setBookmarksVisible(false)
-                                    } else {
-                                        viewModel.setTabsDialogVisible(false)
-                                        viewModel.setHistoryVisible(false)
-                                        viewModel.setBookmarksVisible(true)
-                                    }
-                                },
-                                onToggleHistorySidebar = {
-                                    if (showHistory) {
-                                        viewModel.setHistoryVisible(false)
-                                    } else {
-                                        viewModel.setTabsDialogVisible(false)
-                                        viewModel.setBookmarksVisible(false)
-                                        viewModel.setHistoryVisible(true)
-                                    }
-                                },
-                                onNavigateToSettings = onNavigateToSettings,
-                                onShowShield = { showShieldDialog = true },
-                                onShowSecurityDashboard = { showSecurityDashboard = true },
-                                onOpenFindInPage = { showFindInPage = true },
-                                context = context,
-                                viewModel = viewModel,
-                                addressBarFocusRequester = addressBarFocusRequester
-                            )
-                        }
+                                )
+                            } else {
+                                TabletOrMobileToolbar(
+                                    isTablet = isTablet,
+                                    activeTab = activeTab,
+                                    tabsCount = tabs.size,
+                                    addressInput = addressInput,
+                                    onAddressValueChange = { addressInput = it },
+                                    onSearchSubmit = {
+                                        if (addressInput.isNotBlank()) {
+                                            viewModel.navigateTo(addressInput.trim())
+                                            focusManager.clearFocus()
+                                        }
+                                    },
+                                    isUrlInsecure = isUrlInsecure,
+                                    isCurrentUrlBookmarked = isCurrentUrlBookmarked,
+                                    showTabsDialog = showTabsDialog,
+                                    showBookmarks = showBookmarks,
+                                    showHistory = showHistory,
+                                    pageBlockedCount = pageBlockedCount,
+                                    bookmarks = bookmarks,
+                                    history = history,
+                                    onClearAddressInput = { addressInput = "" },
+                                    onToggleBookmark = {
+                                        viewModel.toggleBookmark(activeTab.title, activeTab.url)
+                                        val msg = if (isCurrentUrlBookmarked) "Bookmark removed" else "Bookmarked"
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    },
+                                    onToggleTabsSidebar = {
+                                        if (showTabsDialog) {
+                                            viewModel.setTabsDialogVisible(false)
+                                        } else {
+                                            viewModel.setBookmarksVisible(false)
+                                            viewModel.setHistoryVisible(false)
+                                            viewModel.setTabsDialogVisible(true)
+                                        }
+                                    },
+                                    onToggleBookmarksSidebar = {
+                                        if (showBookmarks) {
+                                            viewModel.setBookmarksVisible(false)
+                                        } else {
+                                            viewModel.setTabsDialogVisible(false)
+                                            viewModel.setHistoryVisible(false)
+                                            viewModel.setBookmarksVisible(true)
+                                        }
+                                    },
+                                    onToggleHistorySidebar = {
+                                        if (showHistory) {
+                                            viewModel.setHistoryVisible(false)
+                                        } else {
+                                            viewModel.setTabsDialogVisible(false)
+                                            viewModel.setBookmarksVisible(false)
+                                            viewModel.setHistoryVisible(true)
+                                        }
+                                    },
+                                    onNavigateToSettings = onNavigateToSettings,
+                                    onShowShield = { showShieldDialog = true },
+                                    onShowSecurityDashboard = { showSecurityDashboard = true },
+                                    onOpenFindInPage = { showFindInPage = true },
+                                    context = context,
+                                    viewModel = viewModel,
+                                    addressBarFocusRequester = addressBarFocusRequester,
+                                    onAddressFocusChanged = { isAddressBarFocused = it }
+                                )
+                            }
 
-                        // Top Position: Chrome Scrollable Shortcut & Custom JS Bar
-                        if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
-                            ChromeShortcutAndJsBar(
-                                viewModel = viewModel,
-                                activeTab = activeTab,
-                                activeWebView = webViewPool[activeTab.id],
-                                isIncognito = isIncognito,
-                                onOpenFindInPage = { showFindInPage = true },
-                                onOpenSecurityShield = { showSecurityDashboard = true }
-                            )
+                            // Top Position: Chrome Scrollable Shortcut & Custom JS Bar
+                            if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
+                                ChromeShortcutAndJsBar(
+                                    viewModel = viewModel,
+                                    activeTab = activeTab,
+                                    activeWebView = webViewPool[activeTab.id],
+                                    isIncognito = isIncognito,
+                                    onOpenFindInPage = { showFindInPage = true },
+                                    onOpenSecurityShield = { showSecurityDashboard = true }
+                                )
+                            }
                         }
 
                         // Chrome thin 2dp progress bar
@@ -767,10 +856,12 @@ fun BrowserScreen(
                                         onFullscreenView = { view, callback ->
                                             nativeFullscreenView = view
                                             customViewCallback = callback
+                                            viewModel.setFullscreen(true)
                                         },
                                         onHideFullscreenView = {
                                             nativeFullscreenView = null
                                             customViewCallback = null
+                                            viewModel.setFullscreen(false)
                                         }
                                     )
                                 }
@@ -778,7 +869,7 @@ fun BrowserScreen(
                         }
 
                         // Tablet Bottom Position: Chrome Scrollable Shortcut & Custom JS Bar (Mobile renders it inside ChromeMobileBottomBar)
-                        if (isTablet && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM) {
+                        if (isTablet && !isImmersivePageFullscreen && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM) {
                             HorizontalDivider(
                                 thickness = 0.5.dp,
                                 color = if (isIncognito) Color.White.copy(alpha = 0.1f)
@@ -817,8 +908,132 @@ fun BrowserScreen(
             }
         }
 
-        // Mobile Full-Screen Chrome Overlays
-        if (!isTablet) {
+        // Interactive Custom Element Zapper Floating Overlay
+        if (isElementZapperActive) {
+            val currentHost = remember(activeTab.url) {
+                try { Uri.parse(activeTab.url).host?.lowercase()?.removePrefix("www.") ?: "" } catch (_: Exception) { "" }
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 16.dp, vertical = 72.dp)
+                    .widthIn(max = 520.dp)
+                    .fillMaxWidth()
+            ) {
+                ElementZapperFloatingBar(
+                    selectedSelector = zapperPreviewSelector,
+                    selectedTag = zapperPreviewTag,
+                    onZapConfirm = {
+                        val wv = webViewPool[activeTab.id]
+                        if (wv != null && zapperPreviewSelector.isNotBlank() && currentHost.isNotBlank()) {
+                            wv.evaluateJavascript("if(window.__asConfirmZap) window.__asConfirmZap();", null)
+                            viewModel.addCustomZapperRule(currentHost, zapperPreviewSelector)
+                            Toast.makeText(context, "Elemen dihapus & disimpan untuk $currentHost", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onUndo = {
+                        if (currentHost.isNotBlank() && viewModel.undoLastCustomZapperRule(currentHost)) {
+                            viewModel.reload()
+                            Toast.makeText(context, "Aturan elemen terakhir dibatalkan", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Belum ada elemen yang dihapus di situs ini", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onClose = { viewModel.setElementZapperActive(false) }
+                )
+            }
+        }
+
+        // Smart Tilt Detection Floating Prompt (Appears when locked in Portrait/Landscape and device is physically tilted)
+        val isTiltMismatch = remember(screenOrientationMode, deviceTiltState, smartTiltDismissedQuadrant) {
+            if (!deviceTiltState.isSensorActive || deviceTiltState.angleDegrees < 0) false
+            else if (smartTiltDismissedQuadrant == deviceTiltState.quadrant) false
+            else when (screenOrientationMode) {
+                com.example.manager.ScreenOrientationMode.PORTRAIT -> deviceTiltState.quadrant.isLandscape
+                com.example.manager.ScreenOrientationMode.LANDSCAPE -> !deviceTiltState.quadrant.isLandscape
+                com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> false
+            }
+        }
+
+        AnimatedVisibility(
+            visible = isTiltMismatch && !isElementZapperActive && !isImmersivePageFullscreen,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 76.dp)
+        ) {
+            val targetMode = if (deviceTiltState.quadrant.isLandscape) {
+                com.example.manager.ScreenOrientationMode.LANDSCAPE
+            } else {
+                com.example.manager.ScreenOrientationMode.PORTRAIT
+            }
+            val targetName = if (targetMode == com.example.manager.ScreenOrientationMode.LANDSCAPE) "Landscape" else "Portrait"
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
+                modifier = Modifier.testTag("smart_tilt_suggestion_bar")
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ScreenRotation,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.inversePrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Perangkat miring (${deviceTiltState.angleDegrees}°)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.inverseOnSurface
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            viewModel.setScreenOrientationMode(targetMode)
+                            Toast.makeText(context, "Layar diputar ke $targetName", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Text("Ke $targetName", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.AUTO_SENSOR)
+                            Toast.makeText(context, "Mode Auto-Tilt diaktifkan", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Text(
+                            text = "Auto-Tilt",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.inversePrimary
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.dismissSmartTiltSuggestion() },
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Abaikan",
+                            tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.7f),
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Mobile Full-Screen Chrome Overlays (Only when in Mobile DisplayMode; Desktop Mode uses its own structured Sidebar)
+        if (!isTablet && displayMode != DisplayMode.DESKTOP) {
             if (showTabsDialog) {
                 MobileTabsDialog(viewModel, tabs, activeTabId)
             }
@@ -871,6 +1086,64 @@ fun BrowserScreen(
                 activeUrl = activeTab.url,
                 onDismiss = { viewModel.setExtensionsHubVisible(false) }
             )
+        }
+
+        // Top-level HTML5 / Video Custom Fullscreen Overlay (keeps CustomWebView mounted underneath so DOM fullscreen never detaches)
+        if (nativeFullscreenView != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            ) {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = {
+                        val v = nativeFullscreenView!!
+                        (v.parent as? android.view.ViewGroup)?.removeView(v)
+                        v
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                val contextActivity = context as? android.app.Activity
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        IconButton(
+                            onClick = {
+                                try {
+                                    contextActivity?.enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
+                                } catch (_: Exception) {}
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureInPicture,
+                                contentDescription = "Enter Picture in Picture",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = {
+                            customViewCallback?.onCustomViewHidden()
+                            nativeFullscreenView = null
+                            customViewCallback = null
+                            viewModel.setFullscreen(false)
+                            viewModel.setImmersivePageFullscreen(false)
+                            webViewPool[activeTab.id]?.evaluateJavascript("if(window.__kiwiExitFs) window.__kiwiExitFs();", null)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.FullscreenExit,
+                            contentDescription = "Exit Full Screen",
+                            tint = Color.White
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1374,6 +1647,7 @@ fun TabletOrMobileToolbar(
     context: Context,
     viewModel: BrowserViewModel,
     addressBarFocusRequester: FocusRequester,
+    onAddressFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -1526,7 +1800,10 @@ fun TabletOrMobileToolbar(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .focusRequester(addressBarFocusRequester)
-                                .onFocusChanged { isOmniboxFocused = it.isFocused },
+                                .onFocusChanged {
+                                    isOmniboxFocused = it.isFocused
+                                    onAddressFocusChanged(it.isFocused)
+                                },
                             cursorBrush = SolidColor(if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary)
                         )
                     }
@@ -1843,6 +2120,23 @@ fun TabletOrMobileToolbar(
                         )
 
                         val currentOrientation by viewModel.screenOrientationMode.collectAsState()
+                        val isImmersiveFsMenu by viewModel.isImmersivePageFullscreen.collectAsState()
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (isImmersiveFsMenu) "Keluar Layar Penuh (Full Screen)" else "Layar Penuh (Full Screen)")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (isImmersiveFsMenu) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showOverflowMenu = false
+                                viewModel.requestFullScreenToolToggle()
+                            }
+                        )
+
                         DropdownMenuItem(
                             text = {
                                 val modeName = when (currentOrientation) {
@@ -2591,6 +2885,14 @@ fun MobileTabsDialog(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Hibernasi tab lain (Hemat RAM)") },
+                                    leadingIcon = { Icon(Icons.Outlined.Memory, null) },
+                                    onClick = {
+                                        showTabSwitcherMenu = false
+                                        viewModel.requestHibernateInactiveTabs()
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Close all tabs", color = MaterialTheme.colorScheme.error) },
                                     leadingIcon = { Icon(Icons.Outlined.Close, null, tint = MaterialTheme.colorScheme.error) },
                                     onClick = {
@@ -2790,6 +3092,23 @@ fun MobileTabsDialog(
                                                 overflow = TextOverflow.Ellipsis,
                                                 textAlign = TextAlign.Center
                                             )
+                                            if (tab.isSuspended && !isActive) {
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(100.dp),
+                                                    color = MaterialTheme.colorScheme.secondaryContainer
+                                                ) {
+                                                    Text(
+                                                        text = "Eco · Hemat RAM",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        ),
+                                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3206,95 +3525,116 @@ fun DesktopBrowserLayout(
     onFullscreenView: (android.view.View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreenView: () -> Unit,
     addressBarFocusRequester: FocusRequester,
+    onAddressFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val isImmersiveDesktopFs by viewModel.isImmersivePageFullscreen.collectAsState()
+    val isIncognitoDesktop = activeTab.isPrivate
+    val desktopFrameBg = if (isIncognitoDesktop) ChromeIncognitoBg else MaterialTheme.colorScheme.surfaceContainerLowest
+    val isSidebarOpen = showTabsDialog || showBookmarks || showHistory
+
+    val toggleTabsAction = {
+        if (showTabsDialog) {
+            viewModel.setTabsDialogVisible(false)
+        } else {
+            viewModel.setBookmarksVisible(false)
+            viewModel.setHistoryVisible(false)
+            viewModel.setTabsDialogVisible(true)
+        }
+    }
+    val toggleBookmarksAction = {
+        if (showBookmarks) {
+            viewModel.setBookmarksVisible(false)
+        } else {
+            viewModel.setTabsDialogVisible(false)
+            viewModel.setHistoryVisible(false)
+            viewModel.setBookmarksVisible(true)
+        }
+    }
+    val toggleHistoryAction = {
+        if (showHistory) {
+            viewModel.setHistoryVisible(false)
+        } else {
+            viewModel.setTabsDialogVisible(false)
+            viewModel.setBookmarksVisible(false)
+            viewModel.setHistoryVisible(true)
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .background(desktopFrameBg)
+            .then(if (isImmersiveDesktopFs) Modifier else Modifier.statusBarsPadding())
     ) {
-        DesktopTabBar(
-            viewModel = viewModel,
-            tabs = tabs,
-            activeTabId = activeTab.id
-        )
-
-        if (showFindInPage) {
-            ChromeFindInPageBar(
-                query = findInPageQuery,
-                onQueryChange = onFindQueryChange,
-                onFindPrev = { onFindNext(false) },
-                onFindNext = { onFindNext(true) },
-                onClose = onCloseFindInPage
-            )
-        } else {
-            DesktopToolbar(
+        if (!isImmersiveDesktopFs) {
+            // Tier 1: Structured Desktop Window Header & Tab Strip
+            DesktopTabBar(
                 viewModel = viewModel,
-                activeTab = activeTab,
-                addressInput = addressInput,
-                onAddressValueChange = onAddressInputChanged,
-                onSearchSubmit = {
-                    if (addressInput.isNotBlank()) {
-                        viewModel.navigateTo(addressInput.trim())
-                        focusManager.clearFocus()
-                    }
-                },
-                isUrlInsecure = isUrlInsecure,
-                isCurrentUrlBookmarked = isCurrentUrlBookmarked,
-                showBookmarks = showBookmarks,
-                showHistory = showHistory,
-                showTabs = showTabsDialog,
-                pageBlockedCount = pageBlockedCount,
-                onToggleBookmarks = {
-                    if (showBookmarks) {
-                        viewModel.setBookmarksVisible(false)
-                    } else {
-                        viewModel.setTabsDialogVisible(false)
-                        viewModel.setHistoryVisible(false)
-                        viewModel.setBookmarksVisible(true)
-                    }
-                },
-                onToggleHistory = {
-                    if (showHistory) {
-                        viewModel.setHistoryVisible(false)
-                    } else {
-                        viewModel.setTabsDialogVisible(false)
-                        viewModel.setBookmarksVisible(false)
-                        viewModel.setHistoryVisible(true)
-                    }
-                },
-                onToggleTabs = {
-                    if (showTabsDialog) {
-                        viewModel.setTabsDialogVisible(false)
-                    } else {
-                        viewModel.setBookmarksVisible(false)
-                        viewModel.setHistoryVisible(false)
-                        viewModel.setTabsDialogVisible(true)
-                    }
-                },
-                onNavigateToSettings = onNavigateToSettings,
-                onShowShield = onShowShield,
-                onShowSecurityDashboard = onShowSecurityDashboard,
-                onOpenFindInPage = onOpenFindInPage,
-                context = context,
-                addressBarFocusRequester = addressBarFocusRequester
+                tabs = tabs,
+                activeTabId = activeTab.id,
+                isSidebarOpen = isSidebarOpen,
+                onToggleSidebar = toggleTabsAction
+            )
+
+            // Tier 2: Structured Desktop Navigation, Omnibox & Action Dock
+            if (showFindInPage) {
+                ChromeFindInPageBar(
+                    query = findInPageQuery,
+                    onQueryChange = onFindQueryChange,
+                    onFindPrev = { onFindNext(false) },
+                    onFindNext = { onFindNext(true) },
+                    onClose = onCloseFindInPage
+                )
+            } else {
+                DesktopToolbar(
+                    viewModel = viewModel,
+                    activeTab = activeTab,
+                    addressInput = addressInput,
+                    onAddressValueChange = onAddressInputChanged,
+                    onSearchSubmit = {
+                        if (addressInput.isNotBlank()) {
+                            viewModel.navigateTo(addressInput.trim())
+                            focusManager.clearFocus()
+                        }
+                    },
+                    isUrlInsecure = isUrlInsecure,
+                    isCurrentUrlBookmarked = isCurrentUrlBookmarked,
+                    showBookmarks = showBookmarks,
+                    showHistory = showHistory,
+                    showTabs = showTabsDialog,
+                    pageBlockedCount = pageBlockedCount,
+                    onToggleBookmarks = toggleBookmarksAction,
+                    onToggleHistory = toggleHistoryAction,
+                    onToggleTabs = toggleTabsAction,
+                    onNavigateToSettings = onNavigateToSettings,
+                    onShowShield = onShowShield,
+                    onShowSecurityDashboard = onShowSecurityDashboard,
+                    onOpenFindInPage = onOpenFindInPage,
+                    context = context,
+                    addressBarFocusRequester = addressBarFocusRequester,
+                    onAddressFocusChanged = onAddressFocusChanged
+                )
+            }
+
+            // Tier 3: Structured Desktop Bookmarks & Quick Workspace Tools Bar
+            DesktopBookmarkBar(
+                viewModel = viewModel,
+                bookmarks = bookmarks,
+                tabsCount = tabs.size,
+                isSidebarOpen = isSidebarOpen,
+                onToggleSidebar = toggleTabsAction
             )
         }
-
-        DesktopBookmarkBar(
-            viewModel = viewModel,
-            bookmarks = bookmarks
-        )
 
         val shortcutBarVisible by viewModel.shortcutBarVisible.collectAsState()
         val shortcutBarPosition by viewModel.shortcutBarPosition.collectAsState()
         val tabSecurityThreats by viewModel.tabSecurityThreats.collectAsState()
         val activeDesktopThreat = tabSecurityThreats[activeTab.id]
 
-        if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
+        if (!isImmersiveDesktopFs && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
             ChromeShortcutAndJsBar(
                 viewModel = viewModel,
                 activeTab = activeTab,
@@ -3316,32 +3656,196 @@ fun DesktopBrowserLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(2.dp),
-                color = MaterialTheme.colorScheme.primary,
+                color = if (isIncognitoDesktop) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary,
                 trackColor = Color.Transparent
             )
         } else {
-            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(
+                thickness = 0.5.dp,
+                color = if (isIncognitoDesktop) Color.White.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+            )
         }
 
-        Row(
+        val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
+        val devToolsStates by viewModel.devToolsStates.collectAsState()
+        val activeState = devToolsStates[activeTab.id] ?: DevToolsState()
+
+        // Adaptive Desktop Workspace Viewport (Docked Side-by-Side on Wide Screens, Slide-Over Drawer on Compact Screens)
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
         ) {
-            AnimatedVisibility(
-                visible = showTabsDialog || showBookmarks || showHistory,
+            val isWideWorkspace = maxWidth >= 640.dp
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Docked Left Sidebar on Wide/Landscape Viewports
+                AnimatedVisibility(
+                    visible = isWideWorkspace && isSidebarOpen,
+                    enter = slideInHorizontally() + fadeIn(),
+                    exit = slideOutHorizontally() + fadeOut()
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .width(276.dp)
+                            .fillMaxHeight(),
+                        color = if (isIncognitoDesktop) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp
+                    ) {
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                                DesktopSidebarSwitcherHeader(
+                                    showTabs = showTabsDialog,
+                                    showBookmarks = showBookmarks,
+                                    showHistory = showHistory,
+                                    onSelectTabs = {
+                                        viewModel.setBookmarksVisible(false)
+                                        viewModel.setHistoryVisible(false)
+                                        viewModel.setTabsDialogVisible(true)
+                                    },
+                                    onSelectBookmarks = {
+                                        viewModel.setTabsDialogVisible(false)
+                                        viewModel.setHistoryVisible(false)
+                                        viewModel.setBookmarksVisible(true)
+                                    },
+                                    onSelectHistory = {
+                                        viewModel.setTabsDialogVisible(false)
+                                        viewModel.setBookmarksVisible(false)
+                                        viewModel.setHistoryVisible(true)
+                                    }
+                                )
+                                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                    if (showTabsDialog) {
+                                        SidebarTabsPanel(viewModel, tabs, activeTab.id)
+                                    } else if (showBookmarks) {
+                                        SidebarBookmarksPanel(viewModel, bookmarks, context)
+                                    } else if (showHistory) {
+                                        SidebarHistoryPanel(viewModel, history, context)
+                                    }
+                                }
+                            }
+                            VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        }
+                    }
+                }
+
+                // Main Desktop Web Content Area
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f)
+                ) {
+                    if (activeDesktopThreat != null) {
+                        ChromeSecurityThreatInterstitial(
+                            threat = activeDesktopThreat,
+                            onBackToSafety = {
+                                viewModel.clearTabSecurityThreat(activeTab.id)
+                                val wv = webViewPool[activeTab.id]
+                                if (wv?.canGoBack() == true) {
+                                    viewModel.goBack()
+                                } else {
+                                    viewModel.goHome()
+                                }
+                            },
+                            onProceedAnyway = {
+                                viewModel.proceedDespiteSecurityThreat(activeTab.id, activeDesktopThreat)
+                            }
+                        )
+                    } else if (activeTab.loadError != null) {
+                        WebErrorPlaceholderPage(activeTab.loadError, viewModel)
+                    } else if (activeTab.url.isBlank() || activeTab.url == "about:blank") {
+                        HomeScreen(
+                            viewModel = viewModel,
+                            onNavigate = { viewModel.navigateTo(it) },
+                            onSearchSubmit = { viewModel.navigateTo(it) }
+                        )
+                    } else {
+                        key(activeTab.id) {
+                            CustomWebView(
+                                tab = activeTab,
+                                viewModel = viewModel,
+                                adBlockEnabled = adBlockEnabled,
+                                trackerBlockEnabled = trackerBlockEnabled,
+                                webViewPool = webViewPool,
+                                onFileChooser = onFileChooser,
+                                onFullscreenView = onFullscreenView,
+                                onHideFullscreenView = onHideFullscreenView
+                            )
+                        }
+                    }
+                }
+
+                // Docked Right DevTools Inspector on Wide Viewports
+                AnimatedVisibility(
+                    visible = isWideWorkspace && inspectToolsEnabled && activeState.isOpen,
+                    enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                    modifier = Modifier
+                        .width(320.dp)
+                        .fillMaxHeight()
+                ) {
+                    DevToolsPanel(
+                        viewModel = viewModel,
+                        tabId = activeTab.id,
+                        devToolsState = activeState,
+                        webView = webViewPool[activeTab.id],
+                        onClose = { viewModel.toggleDevTools(activeTab.id) },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            // Slide-Over Left Sidebar Drawer on Compact/Portrait Viewports (Never crushes the Desktop WebView!)
+            if (!isWideWorkspace && isSidebarOpen) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.4f))
+                        .clickable {
+                            viewModel.setTabsDialogVisible(false)
+                            viewModel.setBookmarksVisible(false)
+                            viewModel.setHistoryVisible(false)
+                        }
+                )
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !isWideWorkspace && isSidebarOpen,
                 enter = slideInHorizontally() + fadeIn(),
-                exit = slideOutHorizontally() + fadeOut()
+                exit = slideOutHorizontally() + fadeOut(),
+                modifier = Modifier.align(Alignment.CenterStart)
             ) {
                 Surface(
                     modifier = Modifier
-                        .width(280.dp)
+                        .widthIn(max = 300.dp)
+                        .fillMaxWidth(0.84f)
                         .fillMaxHeight(),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 2.dp
+                    color = if (isIncognitoDesktop) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 12.dp
                 ) {
-                    Row(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        DesktopSidebarSwitcherHeader(
+                            showTabs = showTabsDialog,
+                            showBookmarks = showBookmarks,
+                            showHistory = showHistory,
+                            onSelectTabs = {
+                                viewModel.setBookmarksVisible(false)
+                                viewModel.setHistoryVisible(false)
+                                viewModel.setTabsDialogVisible(true)
+                            },
+                            onSelectBookmarks = {
+                                viewModel.setTabsDialogVisible(false)
+                                viewModel.setHistoryVisible(false)
+                                viewModel.setBookmarksVisible(true)
+                            },
+                            onSelectHistory = {
+                                viewModel.setTabsDialogVisible(false)
+                                viewModel.setBookmarksVisible(false)
+                                viewModel.setHistoryVisible(true)
+                            }
+                        )
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                             if (showTabsDialog) {
                                 SidebarTabsPanel(viewModel, tabs, activeTab.id)
                             } else if (showBookmarks) {
@@ -3350,67 +3854,19 @@ fun DesktopBrowserLayout(
                                 SidebarHistoryPanel(viewModel, history, context)
                             }
                         }
-                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     }
                 }
             }
 
-            Box(
+            // Bottom Sheet Docked DevTools on Compact Viewports
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !isWideWorkspace && inspectToolsEnabled && activeState.isOpen,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f)
-            ) {
-                if (activeDesktopThreat != null) {
-                    ChromeSecurityThreatInterstitial(
-                        threat = activeDesktopThreat,
-                        onBackToSafety = {
-                            viewModel.clearTabSecurityThreat(activeTab.id)
-                            val wv = webViewPool[activeTab.id]
-                            if (wv?.canGoBack() == true) {
-                                viewModel.goBack()
-                            } else {
-                                viewModel.goHome()
-                            }
-                        },
-                        onProceedAnyway = {
-                            viewModel.proceedDespiteSecurityThreat(activeTab.id, activeDesktopThreat)
-                        }
-                    )
-                } else if (activeTab.loadError != null) {
-                    WebErrorPlaceholderPage(activeTab.loadError, viewModel)
-                } else if (activeTab.url.isBlank() || activeTab.url == "about:blank") {
-                    HomeScreen(
-                        viewModel = viewModel,
-                        onNavigate = { viewModel.navigateTo(it) },
-                        onSearchSubmit = { viewModel.navigateTo(it) }
-                    )
-                } else {
-                    key(activeTab.id) {
-                        CustomWebView(
-                            tab = activeTab,
-                            viewModel = viewModel,
-                            adBlockEnabled = adBlockEnabled,
-                            trackerBlockEnabled = trackerBlockEnabled,
-                            webViewPool = webViewPool,
-                            onFileChooser = onFileChooser,
-                            onFullscreenView = onFullscreenView,
-                            onHideFullscreenView = onHideFullscreenView
-                        )
-                    }
-                }
-            }
-
-            val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
-            val devToolsStates by viewModel.devToolsStates.collectAsState()
-            val activeState = devToolsStates[activeTab.id] ?: DevToolsState()
-
-            AnimatedVisibility(
-                visible = inspectToolsEnabled && activeState.isOpen,
-                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
-                modifier = Modifier
-                    .width(320.dp)
-                    .fillMaxHeight()
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.48f)
             ) {
                 DevToolsPanel(
                     viewModel = viewModel,
@@ -3424,7 +3880,7 @@ fun DesktopBrowserLayout(
         }
 
         AnimatedVisibility(
-            visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
+            visible = !isImmersiveDesktopFs && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
             enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
             exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
         ) {
@@ -3448,18 +3904,313 @@ fun DesktopBrowserLayout(
 }
 
 @Composable
+private fun DesktopSidebarSwitcherHeader(
+    showTabs: Boolean,
+    showBookmarks: Boolean,
+    showHistory: Boolean,
+    onSelectTabs: () -> Unit,
+    onSelectBookmarks: () -> Unit,
+    onSelectHistory: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(
+                selected = showTabs,
+                onClick = onSelectTabs,
+                label = { Text("Tab", fontSize = 11.sp) },
+                leadingIcon = { Icon(Icons.Outlined.Tab, null, modifier = Modifier.size(14.dp)) },
+                modifier = Modifier.weight(1f)
+            )
+            FilterChip(
+                selected = showBookmarks,
+                onClick = onSelectBookmarks,
+                label = { Text("Bookmark", fontSize = 11.sp) },
+                leadingIcon = { Icon(Icons.Outlined.Bookmarks, null, modifier = Modifier.size(14.dp)) },
+                modifier = Modifier.weight(1f)
+            )
+            FilterChip(
+                selected = showHistory,
+                onClick = onSelectHistory,
+                label = { Text("Riwayat", fontSize = 11.sp) },
+                leadingIcon = { Icon(Icons.Outlined.History, null, modifier = Modifier.size(14.dp)) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+}
+
+@Composable
 fun DesktopTabBar(
     viewModel: BrowserViewModel,
     tabs: List<BrowserTab>,
     activeTabId: String,
+    isSidebarOpen: Boolean = false,
+    onToggleSidebar: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    TabletHorizontalTabBar(
-        viewModel = viewModel,
-        tabs = tabs,
-        activeTabId = activeTabId,
+    val context = LocalContext.current
+    val activeTab = tabs.find { it.id == activeTabId }
+    val isIncognito = activeTab?.isPrivate == true
+    val stripBg = if (isIncognito) ChromeIncognitoBg else MaterialTheme.colorScheme.surfaceContainerLowest
+    val activeTabBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
+    val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val orientationMode by viewModel.screenOrientationMode.collectAsState()
+    val tiltState by viewModel.deviceTiltState.collectAsState()
+
+    Row(
         modifier = modifier
-    )
+            .fillMaxWidth()
+            .height(42.dp)
+            .background(stripBg)
+            .padding(start = 6.dp, end = 6.dp, top = 5.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        // Left: Workspace Sidebar Toggle Button with Tab Counter
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (isSidebarOpen) accentColor.copy(alpha = 0.18f) else Color.Transparent,
+            modifier = Modifier
+                .padding(bottom = 3.dp, end = 4.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { onToggleSidebar() }
+                .testTag("desktop_sidebar_toggle")
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ViewSidebar,
+                    contentDescription = "Workspace Sidebar",
+                    tint = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "${tabs.size}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Center-Left: Scrollable Structured Desktop Tabs + Add Tab Button
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            tabs.forEach { tab ->
+                val isActive = tab.id == activeTabId
+                val tabColor = if (isActive) {
+                    activeTabBg
+                } else {
+                    if (isIncognito) ChromeIncognitoSurface.copy(alpha = 0.42f)
+                    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)
+                }
+                val textColor = if (isIncognito) {
+                    if (isActive) ChromeIncognitoText else ChromeIncognitoSubtext
+                } else {
+                    if (isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                val domainInitial = remember(tab.url, tab.title) {
+                    try {
+                        val h = Uri.parse(tab.url).host?.removePrefix("www.") ?: ""
+                        (h.firstOrNull() ?: tab.title.firstOrNull() ?: 'G').uppercaseChar().toString()
+                    } catch (_: Exception) { "G" }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .widthIn(min = 128.dp, max = 216.dp)
+                        .fillMaxHeight()
+                        .clickable { viewModel.selectTab(tab.id) },
+                    shape = RoundedCornerShape(topStart = 11.dp, topEnd = 11.dp),
+                    color = tabColor,
+                    tonalElevation = if (isActive) 2.dp else 0.dp
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Top Active Accent Line
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.5.dp)
+                                .background(if (isActive) accentColor else Color.Transparent)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(start = 8.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (tab.isPrivate) ChromeIncognitoOmnibox
+                                            else if (isActive) accentColor.copy(alpha = 0.16f)
+                                            else MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (tab.isPrivate) {
+                                        Icon(
+                                            imageVector = Icons.Default.VisibilityOff,
+                                            contentDescription = null,
+                                            tint = ChromeIncognitoAccent,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                    } else {
+                                        Text(
+                                            text = domainInitial,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isActive) accentColor else textColor
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = tab.title.ifBlank { "Tab Baru" },
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = textColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (tab.isPlayingAudio) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.VolumeUp,
+                                        contentDescription = "Playing audio",
+                                        tint = accentColor,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                } else if (tab.isSuspended && !isActive) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.Outlined.Eco,
+                                        contentDescription = "Eco Suspended",
+                                        tint = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.removeTab(tab.id) },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close Tab",
+                                    tint = textColor.copy(alpha = 0.72f),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // "+" New Tab Button right next to the last tab
+            IconButton(
+                onClick = { viewModel.addNewTab(isPrivate = false) },
+                modifier = Modifier
+                    .padding(bottom = 2.dp)
+                    .size(30.dp)
+                    .testTag("desktop_new_tab_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Tab Baru",
+                    tint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+
+            IconButton(
+                onClick = { viewModel.addNewTab(isPrivate = true) },
+                modifier = Modifier
+                    .padding(bottom = 2.dp)
+                    .size(30.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.VisibilityOff,
+                    contentDescription = "Tab Samaran Baru",
+                    tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(4.dp))
+
+        // Right Window Status Cluster: Auto-Tilt Orientation Badge & Mobile Switch
+        val orientShortLabel = when (orientationMode) {
+            com.example.manager.ScreenOrientationMode.AUTO_SENSOR ->
+                if (tiltState.isSensorActive && tiltState.quadrant.isLandscape) "Auto•L" else "Auto•P"
+            com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Land"
+            com.example.manager.ScreenOrientationMode.PORTRAIT -> "Port"
+        }
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (orientationMode != com.example.manager.ScreenOrientationMode.AUTO_SENSOR)
+                accentColor.copy(alpha = 0.16f)
+            else MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier
+                .padding(bottom = 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable {
+                    val next = viewModel.cycleScreenOrientationMode()
+                    val modeMsg = when (next) {
+                        com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> "Auto-Tilt Sensor (Otomatis Miring)"
+                        com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Dikunci Landscape"
+                        com.example.manager.ScreenOrientationMode.PORTRAIT -> "Dikunci Portrait"
+                    }
+                    Toast.makeText(context, "Orientasi: $modeMsg", Toast.LENGTH_SHORT).show()
+                }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ScreenRotation,
+                    contentDescription = "Orientasi Layar",
+                    tint = accentColor,
+                    modifier = Modifier.size(13.dp)
+                )
+                Text(
+                    text = orientShortLabel,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -3483,7 +4234,8 @@ fun DesktopToolbar(
     onShowSecurityDashboard: () -> Unit,
     onOpenFindInPage: () -> Unit,
     context: Context,
-    addressBarFocusRequester: FocusRequester
+    addressBarFocusRequester: FocusRequester,
+    onAddressFocusChanged: (Boolean) -> Unit = {}
 ) {
     var showDesktopOverflowMenu by remember { mutableStateOf(false) }
     val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
@@ -3492,11 +4244,19 @@ fun DesktopToolbar(
     val extensionsList by viewModel.extensions.collectAsState()
     val enabledExtCount = remember(extensionsList) { extensionsList.count { it.isEnabled } }
     val currentOrientation by viewModel.screenOrientationMode.collectAsState()
+    val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
+    val isImmersiveFsDesktop by viewModel.isImmersivePageFullscreen.collectAsState()
+    val isIncognito = activeTab.isPrivate
+    val toolbarBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
+    val omniboxBg = if (isIncognito) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainer
+    val contentTint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+    val subTint = if (isIncognito) ChromeIncognitoSubtext else MaterialTheme.colorScheme.onSurfaceVariant
+    val accentTint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
     val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface
+        color = toolbarBg
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val isCompactDesktop = maxWidth < 620.dp
@@ -3506,71 +4266,91 @@ fun DesktopToolbar(
                     .fillMaxWidth()
                     .padding(horizontal = if (isCompactDesktop) 6.dp else 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                IconButton(
-                    onClick = { viewModel.goBack() },
-                    enabled = canNavigateBack,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .testTag("desktop_back_button")
+                // 1. Left Structured Navigation Capsule (Back, Forward, Reload, Home)
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = if (canNavigateBack) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                IconButton(
-                    onClick = { viewModel.goForward() },
-                    enabled = activeTab.canGoForward,
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Forward",
-                        tint = if (activeTab.canGoForward) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                IconButton(
-                    onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                        contentDescription = "Refresh",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                if (!isCompactDesktop) {
-                    IconButton(
-                        onClick = { viewModel.goHome() },
-                        modifier = Modifier.size(34.dp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Outlined.Home, contentDescription = "Home", modifier = Modifier.size(18.dp))
+                        IconButton(
+                            onClick = { viewModel.goBack() },
+                            enabled = canNavigateBack,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("desktop_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = if (canNavigateBack) contentTint else contentTint.copy(alpha = 0.32f),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.goForward() },
+                            enabled = activeTab.canGoForward,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Forward",
+                                tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                                contentDescription = "Refresh",
+                                tint = contentTint,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        if (!isCompactDesktop) {
+                            IconButton(
+                                onClick = { viewModel.goHome() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Home,
+                                    contentDescription = "Home",
+                                    tint = contentTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.width(4.dp))
-
-                // Responsive Chrome Desktop Omnibox Pill (always stays wide & readable even on phones)
+                // 2. Center Structured Desktop Omnibox Pill
                 Row(
                     modifier = Modifier
                         .weight(1f)
                         .height(38.dp)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .background(omniboxBg)
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                            RoundedCornerShape(20.dp)
+                        )
                         .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = if (isUrlInsecure && activeTab.url.isNotBlank()) Icons.Outlined.Warning else Icons.Outlined.Lock,
                         contentDescription = "Page Info",
-                        tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else accentTint,
                         modifier = Modifier
-                            .size(16.dp)
+                            .size(15.dp)
                             .clickable { onShowSecurityDashboard() }
                     )
 
@@ -3582,9 +4362,9 @@ fun DesktopToolbar(
                     ) {
                         if (addressInput.isEmpty()) {
                             Text(
-                                text = "Cari di $selectedSearchEngine atau ketik URL",
+                                text = "Cari di $selectedSearchEngine atau ketik URL (Viewport Desktop 1280p)",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = subTint,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -3595,14 +4375,15 @@ fun DesktopToolbar(
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(
                                 fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = contentTint
                             ),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false),
                             keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .focusRequester(addressBarFocusRequester),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                                .focusRequester(addressBarFocusRequester)
+                                .onFocusChanged { onAddressFocusChanged(it.isFocused) },
+                            cursorBrush = SolidColor(accentTint)
                         )
                     }
 
@@ -3611,9 +4392,37 @@ fun DesktopToolbar(
                             onClick = { onAddressValueChange("") },
                             modifier = Modifier.size(24.dp)
                         ) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Clear, contentDescription = "Clear", tint = subTint, modifier = Modifier.size(14.dp))
                         }
                     }
+
+                    // Desktop Zoom Scale Badge inside Omnibox (Tap to reset or open menu)
+                    if (desktopZoomScale != 100 || !isCompactDesktop) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .clickable {
+                                    if (desktopZoomScale != 100) {
+                                        viewModel.setDesktopZoomScale(100)
+                                        Toast.makeText(context, "Zoom Desktop direset ke 100%", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        showDesktopOverflowMenu = true
+                                    }
+                                }
+                        ) {
+                            Text(
+                                text = "${desktopZoomScale}%",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
                     IconButton(
                         onClick = {
                             viewModel.toggleBookmark(activeTab.title, activeTab.url)
@@ -3625,268 +4434,329 @@ fun DesktopToolbar(
                         Icon(
                             imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
                             contentDescription = "Bookmark",
-                            tint = if (isCurrentUrlBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isCurrentUrlBookmarked) accentTint else subTint,
                             modifier = Modifier.size(16.dp)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.width(2.dp))
-
-                // Chrome Extensions Puzzle Button (Always visible on Desktop Toolbar)
-                IconButton(
-                    onClick = { viewModel.setExtensionsHubVisible(true) },
-                    modifier = Modifier
-                        .size(34.dp)
-                        .testTag("desktop_extensions_button")
+                // 3. Right Structured Action Dock Capsule
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
-                    BadgedBox(
-                        badge = {
-                            if (enabledExtCount > 0) {
-                                Badge { Text(enabledExtCount.toString(), fontSize = 8.sp) }
+                    Row(
+                        modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // AdShield Guard Button
+                        IconButton(onClick = onShowShield, modifier = Modifier.size(32.dp)) {
+                            BadgedBox(
+                                badge = {
+                                    if (adBlockEnabledState && pageBlockedCount > 0) {
+                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 8.sp) }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
+                                    contentDescription = "AdShield",
+                                    tint = if (adBlockEnabledState) accentTint else subTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
                             }
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Extension,
-                            contentDescription = "Extensions",
-                            tint = if (enabledExtCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
 
-                // 1-Tap Shortcut Bar Toggle on Desktop Toolbar
-                val isDesktopShortcutVisible by viewModel.shortcutBarVisible.collectAsState()
-                IconButton(
-                    onClick = { viewModel.setShortcutBarVisible(!isDesktopShortcutVisible) },
-                    modifier = Modifier
-                        .size(34.dp)
-                        .testTag("desktop_toggle_shortcut_bar")
-                ) {
-                    Icon(
-                        imageVector = if (isDesktopShortcutVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
-                        contentDescription = if (isDesktopShortcutVisible) "Sembunyikan Pintasan" else "Tampilkan Pintasan",
-                        tint = if (isDesktopShortcutVisible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // AdShield Guard Button
-                IconButton(onClick = onShowShield, modifier = Modifier.size(34.dp)) {
-                    BadgedBox(
-                        badge = {
-                            if (adBlockEnabledState && pageBlockedCount > 0) {
-                                Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 8.sp) }
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
-                            contentDescription = "AdShield",
-                            tint = if (adBlockEnabledState) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                // Quick 1-Tap Switch to Mobile Mode
-                IconButton(
-                    onClick = {
-                        viewModel.setDisplayMode(DisplayMode.MOBILE)
-                        Toast.makeText(context, "Beralih ke Mode Mobile", Toast.LENGTH_SHORT).show()
-                    },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.PhoneAndroid,
-                        contentDescription = "Mode Mobile",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Extra Desktop Icons shown directly only when screen is wide enough
-                if (!isCompactDesktop) {
-                    IconButton(onClick = onOpenFindInPage, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Outlined.FindInPage, contentDescription = "Find in page", modifier = Modifier.size(18.dp))
-                    }
-
-                    if (inspectToolsEnabled) {
+                        // Chrome Extensions Puzzle Button
                         IconButton(
-                            onClick = { viewModel.toggleDevTools(activeTab.id) },
-                            modifier = Modifier.size(34.dp)
+                            onClick = { viewModel.setExtensionsHubVisible(true) },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("desktop_extensions_button")
                         ) {
-                            Icon(Icons.Default.Code, contentDescription = "Inspect", modifier = Modifier.size(18.dp))
+                            BadgedBox(
+                                badge = {
+                                    if (enabledExtCount > 0) {
+                                        Badge { Text(enabledExtCount.toString(), fontSize = 8.sp) }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Extension,
+                                    contentDescription = "Extensions",
+                                    tint = if (enabledExtCount > 0) accentTint else subTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
                         }
-                    }
 
-                    IconButton(onClick = onToggleBookmarks, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = Icons.Outlined.Bookmarks,
-                            contentDescription = "Bookmarks",
-                            tint = if (showBookmarks) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    IconButton(onClick = onToggleHistory, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = Icons.Outlined.History,
-                            contentDescription = "History",
-                            tint = if (showHistory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    IconButton(onClick = { viewModel.setDownloadsVisible(true) }, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Outlined.Download, contentDescription = "Downloads", modifier = Modifier.size(18.dp))
-                    }
-                }
-
-                // Unified Desktop 3-Dot Chrome Menu (accessible on both compact & wide screens)
-                Box {
-                    IconButton(
-                        onClick = { showDesktopOverflowMenu = true },
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showDesktopOverflowMenu,
-                        onDismissRequest = { showDesktopOverflowMenu = false },
-                        modifier = Modifier.widthIn(min = 248.dp)
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Tab baru") },
-                            leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.addNewTab(isPrivate = false)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Tab Samaran (Incognito)") },
-                            leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.addNewTab(isPrivate = true)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Halaman Utama (Home)") },
-                            leadingIcon = { Icon(Icons.Outlined.Home, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.goHome()
-                            }
-                        )
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("Ekstensi Browser (WebExtensions)")
-                                    Text(
-                                        text = "$enabledExtCount aktif • Impor file / URL luar",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            },
-                            leadingIcon = { Icon(Icons.Outlined.Extension, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.setExtensionsHubVisible(true)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Studio Pintasan & Custom JS") },
-                            leadingIcon = { Icon(Icons.Outlined.Terminal, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.setCustomJsStudioVisible(true)
-                            }
-                        )
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        DropdownMenuItem(
-                            text = { Text("Kembali ke Mode Mobile") },
-                            leadingIcon = { Icon(Icons.Outlined.PhoneAndroid, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.setDisplayMode(DisplayMode.MOBILE)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                val modeName = when (currentOrientation) {
-                                    com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> "Auto Sensor"
-                                    com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Landscape"
-                                    com.example.manager.ScreenOrientationMode.PORTRAIT -> "Portrait"
-                                }
-                                Text("Putar Layar ($modeName)")
-                            },
-                            leadingIcon = { Icon(Icons.Outlined.ScreenRotation, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.cycleScreenOrientationMode()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Cari di halaman") },
-                            leadingIcon = { Icon(Icons.Outlined.FindInPage, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                onOpenFindInPage()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Bookmark") },
-                            leadingIcon = { Icon(Icons.Outlined.Bookmarks, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                onToggleBookmarks()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Riwayat (History)") },
-                            leadingIcon = { Icon(Icons.Outlined.History, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                onToggleHistory()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Unduhan (Downloads)") },
-                            leadingIcon = { Icon(Icons.Outlined.Download, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                viewModel.setDownloadsVisible(true)
-                            }
-                        )
-                        if (inspectToolsEnabled) {
-                            DropdownMenuItem(
-                                text = { Text("Developer Tools (Inspect)") },
-                                leadingIcon = { Icon(Icons.Outlined.Code, null) },
-                                onClick = {
-                                    showDesktopOverflowMenu = false
-                                    viewModel.toggleDevTools(activeTab.id)
-                                }
+                        // 1-Tap Full Screen Tool Button
+                        IconButton(
+                            onClick = { viewModel.requestFullScreenToolToggle() },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("desktop_fullscreen_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isImmersiveFsDesktop) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                                contentDescription = "Full Screen",
+                                tint = if (isImmersiveFsDesktop) accentTint else subTint,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        DropdownMenuItem(
-                            text = { Text("Setelan (Settings)") },
-                            leadingIcon = { Icon(Icons.Outlined.Settings, null) },
-                            onClick = {
-                                showDesktopOverflowMenu = false
-                                onNavigateToSettings()
+
+                        // 1-Tap Shortcut Bar Toggle on Desktop Toolbar
+                        val isDesktopShortcutVisible by viewModel.shortcutBarVisible.collectAsState()
+                        if (!isCompactDesktop) {
+                            IconButton(
+                                onClick = { viewModel.setShortcutBarVisible(!isDesktopShortcutVisible) },
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .testTag("desktop_toggle_shortcut_bar")
+                            ) {
+                                Icon(
+                                    imageVector = if (isDesktopShortcutVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                                    contentDescription = "Pintasan & JS Bar",
+                                    tint = if (isDesktopShortcutVisible) accentTint else subTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
                             }
-                        )
+
+                            IconButton(
+                                onClick = {
+                                    viewModel.setDisplayMode(DisplayMode.MOBILE)
+                                    Toast.makeText(context, "Beralih ke Mode Mobile", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.PhoneAndroid,
+                                    contentDescription = "Mode Mobile",
+                                    tint = accentTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                        }
+
+                        // Unified Structured Desktop 3-Dot Chrome Menu
+                        Box {
+                            IconButton(
+                                onClick = { showDesktopOverflowMenu = true },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More options",
+                                    tint = contentTint,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = showDesktopOverflowMenu,
+                                onDismissRequest = { showDesktopOverflowMenu = false },
+                                modifier = Modifier.widthIn(min = 272.dp)
+                            ) {
+                                // Structured Header 1: Desktop Zoom & Viewport Controller
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Zoom Desktop",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            OutlinedIconButton(
+                                                onClick = { viewModel.adjustDesktopZoomScale(-15) },
+                                                modifier = Modifier.size(26.dp)
+                                            ) {
+                                                Icon(Icons.Default.Remove, contentDescription = "Zoom Out", modifier = Modifier.size(14.dp))
+                                            }
+                                            Text(
+                                                text = "${desktopZoomScale}%",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier
+                                                    .clickable { viewModel.setDesktopZoomScale(100) }
+                                                    .padding(horizontal = 6.dp)
+                                            )
+                                            OutlinedIconButton(
+                                                onClick = { viewModel.adjustDesktopZoomScale(15) },
+                                                modifier = Modifier.size(26.dp)
+                                            ) {
+                                                Icon(Icons.Default.Add, contentDescription = "Zoom In", modifier = Modifier.size(14.dp))
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Structured Header 2: Quick Orientation & Auto-Tilt Selector
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.AUTO_SENSOR,
+                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.AUTO_SENSOR) },
+                                        label = { Text("Auto-Tilt", fontSize = 11.sp) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    FilterChip(
+                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.LANDSCAPE,
+                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.LANDSCAPE) },
+                                        label = { Text("Landscape", fontSize = 11.sp) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    FilterChip(
+                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.PORTRAIT,
+                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.PORTRAIT) },
+                                        label = { Text("Portrait", fontSize = 11.sp) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                                DropdownMenuItem(
+                                    text = { Text("Tab baru") },
+                                    leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.addNewTab(isPrivate = false)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Tab Samaran (Incognito)") },
+                                    leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.addNewTab(isPrivate = true)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isImmersiveFsDesktop) "Keluar Layar Penuh (Full Screen)" else "Layar Penuh Imersif (Full Screen)") },
+                                    leadingIcon = { Icon(if (isImmersiveFsDesktop) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.requestFullScreenToolToggle()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Kembali ke Mode Mobile") },
+                                    leadingIcon = { Icon(Icons.Outlined.PhoneAndroid, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.setDisplayMode(DisplayMode.MOBILE)
+                                    }
+                                )
+
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("Ekstensi Browser (WebExtensions)")
+                                            Text(
+                                                text = "$enabledExtCount aktif • Impor file / URL luar",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.Extension, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.setExtensionsHubVisible(true)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Studio Pintasan & Custom JS") },
+                                    leadingIcon = { Icon(Icons.Outlined.Terminal, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.setCustomJsStudioVisible(true)
+                                    }
+                                )
+
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                                DropdownMenuItem(
+                                    text = { Text("Panel Samping: Daftar Tab (${activeTab.title.take(12)})") },
+                                    leadingIcon = { Icon(Icons.Outlined.ViewSidebar, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        onToggleTabs()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Panel Samping: Bookmark") },
+                                    leadingIcon = { Icon(Icons.Outlined.Bookmarks, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        onToggleBookmarks()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Panel Samping: Riwayat (History)") },
+                                    leadingIcon = { Icon(Icons.Outlined.History, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        onToggleHistory()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Unduhan (Downloads)") },
+                                    leadingIcon = { Icon(Icons.Outlined.Download, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        viewModel.setDownloadsVisible(true)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Cari di halaman") },
+                                    leadingIcon = { Icon(Icons.Outlined.FindInPage, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        onOpenFindInPage()
+                                    }
+                                )
+                                if (inspectToolsEnabled) {
+                                    DropdownMenuItem(
+                                        text = { Text("Developer Tools (Inspect)") },
+                                        leadingIcon = { Icon(Icons.Outlined.Code, null) },
+                                        onClick = {
+                                            showDesktopOverflowMenu = false
+                                            viewModel.toggleDevTools(activeTab.id)
+                                        }
+                                    )
+                                }
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                DropdownMenuItem(
+                                    text = { Text("Setelan (Settings)") },
+                                    leadingIcon = { Icon(Icons.Outlined.Settings, null) },
+                                    onClick = {
+                                        showDesktopOverflowMenu = false
+                                        onNavigateToSettings()
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -3897,7 +4767,10 @@ fun DesktopToolbar(
 @Composable
 fun DesktopBookmarkBar(
     viewModel: BrowserViewModel,
-    bookmarks: List<com.example.data.BookmarkItem>
+    bookmarks: List<com.example.data.BookmarkItem>,
+    tabsCount: Int = 1,
+    isSidebarOpen: Boolean = false,
+    onToggleSidebar: () -> Unit = {}
 ) {
     val quickLinks = listOf(
         Pair("Google", "https://www.google.com"),
@@ -3905,6 +4778,7 @@ fun DesktopBookmarkBar(
         Pair("Wikipedia", "https://www.wikipedia.org"),
         Pair("GitHub", "https://github.com")
     )
+    val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -3913,13 +4787,39 @@ fun DesktopBookmarkBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(30.dp)
-                .padding(horizontal = 10.dp, vertical = 2.dp)
+                .height(32.dp)
+                .padding(horizontal = 10.dp, vertical = 3.dp)
                 .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Quick Extensions shortcut on Desktop Bookmark Bar
+            // Zone 1: Structured Desktop Workspace Tools
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (isSidebarOpen) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceContainerHigh
+                    )
+                    .clickable { onToggleSidebar() }
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ViewSidebar,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "Panel ($tabsCount)",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
@@ -3943,8 +4843,55 @@ fun DesktopBookmarkBar(
                 )
             }
 
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .clickable { viewModel.requestFullScreenToolToggle() }
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "Full Screen",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .clickable { viewModel.setElementZapperActive(true) }
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.TouchApp,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "Zapper",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
             VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
+            // Zone 2: Quick Sites & User Bookmarks
             quickLinks.forEach { (name, url) ->
                 Row(
                     modifier = Modifier
@@ -3971,7 +4918,7 @@ fun DesktopBookmarkBar(
 
             if (bookmarks.isNotEmpty()) {
                 VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                bookmarks.take(8).forEach { bmark ->
+                bookmarks.take(10).forEach { bmark ->
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -4094,13 +5041,53 @@ fun WebGuardShieldDialog(
                         }
                     }
 
+                    val stealthTrapsDefused by viewModel.stealthTrapsDefusedCount.collectAsState()
+                    val zapperRulesVersion by viewModel.zapperRulesVersion.collectAsState()
+                    val customZapperCount = remember(host, zapperRulesVersion) {
+                        if (host.isEmpty()) 0 else viewModel.getCustomZapperRulesForHost(host).size
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         ChromeStatTile("Ads Blocked", adCount.toString(), Modifier.weight(1f))
                         ChromeStatTile("Trackers", trackerCount.toString(), Modifier.weight(1f))
-                        ChromeStatTile("Popups", popupCount.toString(), Modifier.weight(1f))
+                        ChromeStatTile("Anti-Detect", stealthTrapsDefused.toString(), Modifier.weight(1f))
+                    }
+
+                    // Stealth Anti-AdBlock Status Card
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.VerifiedUser,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Stealth Anti-AdBlock Engine V6",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Surrogate JS, 1x1 GIF Spoof, Bait Proxy & Native toString() Cloak aktif",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
 
                     Surface(
@@ -4120,7 +5107,7 @@ fun WebGuardShieldDialog(
                                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
                                 )
                                 Text(
-                                    text = if (isSiteWhitelisted) "Paused on this site" else "Active & filtering ads",
+                                    text = if (isSiteWhitelisted) "Paused on this site" else "Active & filtering ads in Stealth mode",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -4137,6 +5124,57 @@ fun WebGuardShieldDialog(
                         }
                     }
 
+                    // Custom Element Zapper & RAM Hibernation Actions
+                    if (host.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.setElementZapperActive(true)
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("launch_element_zapper_button")
+                            ) {
+                                Icon(Icons.Outlined.TouchApp, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Hapus Elemen", maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.requestHibernateInactiveTabs()
+                                    Toast.makeText(context, "Tab latar belakang dihibernasi (Hemat RAM)", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("hibernate_tabs_button")
+                            ) {
+                                Icon(Icons.Outlined.Memory, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Hemat RAM", maxLines = 1)
+                            }
+                        }
+
+                        if (customZapperCount > 0) {
+                            TextButton(
+                                onClick = {
+                                    viewModel.clearCustomZapperRulesForHost(host)
+                                    viewModel.reload()
+                                    Toast.makeText(context, "Aturan elemen kustom direset untuk $host", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Outlined.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Reset $customZapperCount Elemen Terhapus di $host")
+                            }
+                        }
+                    }
+
                     if (blockedLogs.isNotEmpty()) {
                         Surface(
                             shape = RoundedCornerShape(16.dp),
@@ -4144,7 +5182,7 @@ fun WebGuardShieldDialog(
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
                                 Text(
-                                    text = "Recently blocked on this page",
+                                    text = "Recently blocked on this page ($popupCount popups)",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -4192,6 +5230,97 @@ fun WebGuardShieldDialog(
                             Text("Fix CAPTCHA / Verification Loop")
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ElementZapperFloatingBar(
+    selectedSelector: String,
+    selectedTag: String,
+    onZapConfirm: () -> Unit,
+    onUndo: () -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 6.dp,
+        shadowElevation = 10.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("element_zapper_floating_bar")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        imageVector = Icons.Outlined.TouchApp,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = "Mode Pemilih Elemen (Zapper)",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (selectedSelector.isBlank()) {
+                                "Ketuk elemen iklan/banner di halaman untuk memilih"
+                            } else {
+                                "Dipilih: <$selectedTag> $selectedSelector"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (selectedSelector.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Tutup Zapper")
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onZapConfirm,
+                    enabled = selectedSelector.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Hapus Elemen")
+                }
+                OutlinedButton(
+                    onClick = onUndo,
+                    modifier = Modifier.weight(0.75f)
+                ) {
+                    Icon(Icons.Outlined.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Undo")
                 }
             }
         }

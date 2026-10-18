@@ -68,13 +68,17 @@ class AppDownloadManager(
     }
 
     private fun resolveWritableDownloadsDir(): File {
-        val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        try {
-            if (!publicDir.exists()) publicDir.mkdirs()
-            if (publicDir.exists() && publicDir.canWrite()) {
-                return publicDir
-            }
-        } catch (_: Exception) {}
+        // On Android 10+ (API 29+), Scoped Storage restricts direct raw File writes to public Downloads.
+        // Using getExternalFilesDir(DIRECTORY_DOWNLOADS) guarantees reliable write + FileProvider sharing.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            try {
+                if (!publicDir.exists()) publicDir.mkdirs()
+                if (publicDir.exists() && publicDir.canWrite()) {
+                    return publicDir
+                }
+            } catch (_: Exception) {}
+        }
 
         val appExtDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
         if (appExtDir != null) {
@@ -89,6 +93,25 @@ class AppDownloadManager(
         }
     }
 
+    private fun isSafeDownloadUrl(url: String): Boolean {
+        val trimmed = url.trim()
+        if (trimmed.startsWith("data:", ignoreCase = true)) return true
+        return try {
+            val parsed = URL(trimmed)
+            val protocol = parsed.protocol.lowercase()
+            if (protocol != "http" && protocol != "https") return false
+            val host = parsed.host.lowercase()
+            if (host.isBlank() || host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" ||
+                host == "::1" || host.startsWith("169.254.")
+            ) {
+                return false
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun startDownload(
         url: String,
         userAgent: String,
@@ -97,6 +120,7 @@ class AppDownloadManager(
         domain: String,
         isIncognito: Boolean
     ) {
+        if (!isSafeDownloadUrl(url)) return
         val id = UUID.randomUUID().toString()
         val downloadsDir = resolveWritableDownloadsDir()
         val sanitizedName = sanitizeFileName(fileName)
@@ -156,6 +180,9 @@ class AppDownloadManager(
         saveToDb(currentDownload.copy(status = "DOWNLOADING"))
 
         try {
+            if (!isSafeDownloadUrl(url)) {
+                throw SecurityException("Blocked unsafe download URL scheme or loopback target")
+            }
             // Support data: URI downloads (e.g. Base64 images saved from WebView)
             if (url.startsWith("data:", ignoreCase = true)) {
                 val commaIndex = url.indexOf(',')

@@ -26,7 +26,21 @@ enum class ScreenOrientationMode {
     PORTRAIT
 }
 
+enum class PhysicalTiltQuadrant(val isLandscape: Boolean, val label: String) {
+    PORTRAIT_UPRIGHT(false, "Tegak (Portrait)"),
+    LANDSCAPE_RIGHT(true, "Miring Kanan (Landscape)"),
+    PORTRAIT_INVERTED(false, "Tegak Terbalik (Portrait)"),
+    LANDSCAPE_LEFT(true, "Miring Kiri (Landscape)")
+}
+
+data class DeviceTiltState(
+    val angleDegrees: Int = -1,
+    val quadrant: PhysicalTiltQuadrant = PhysicalTiltQuadrant.PORTRAIT_UPRIGHT,
+    val isSensorActive: Boolean = false
+)
+
 enum class BuiltInShortcut(val id: String, val label: String) {
+    FULLSCREEN_PAGE("fullscreen_page", "Full Screen"),
     ROTATE_SCREEN("rotate_screen", "Putar Layar"),
     CUSTOM_JS_STUDIO("custom_js_studio", "Studio JS"),
     DESKTOP_MODE("desktop_mode", "Mode Desktop"),
@@ -67,6 +81,7 @@ object CustomJsToolbarManager {
     private const val KEY_ENABLED_SHORTCUTS = "enabled_builtin_shortcuts"
 
     val AVAILABLE_ICONS = listOf(
+        "Fullscreen",
         "Code",
         "DarkMode",
         "Speed",
@@ -81,7 +96,159 @@ object CustomJsToolbarManager {
         "Terminal"
     )
 
+    val UPGRADED_FULLSCREEN_SCRIPT: String = """
+(function(){
+  var d=document,r=d.documentElement,P="__kiwi_fs_ov",S="__kiwi_fs_st",X="__kiwi_fs_exit";
+  function rm(){var el=d.getElementById(P);if(el)el.remove();}
+  function rmExit(){var el=d.getElementById(X);if(el)el.remove();}
+  function isFs(){
+    return !!(d.fullscreenElement||d.webkitFullscreenElement||d.mozFullScreenElement||d.msFullscreenElement||r.getAttribute("data-kiwi-fs")==="1");
+  }
+  function notifyNative(active){
+    try{
+      if(window.AlexBrowserNative&&window.AlexBrowserNative.setImmersiveFullscreen){
+        window.AlexBrowserNative.setImmersiveFullscreen(!!active);
+      }
+    }catch(e){}
+  }
+  function restoreBg(){
+    r.removeAttribute("data-kiwi-fs");
+    if(r.getAttribute("data-kiwi-bg")==="1"){
+      r.style.backgroundColor="";
+      r.removeAttribute("data-kiwi-bg");
+    }
+    rmExit();
+  }
+  function showExitBtn(){
+    rmExit();
+    var btn=d.createElement("button");
+    btn.id=X;
+    btn.type="button";
+    btn.textContent="⤫ Keluar Full Screen";
+    btn.style.cssText="position:fixed;bottom:18px;right:16px;z-index:2147483646;background:rgba(15,23,42,0.84);color:#f8fafc;border:1px solid rgba(255,255,255,0.22);border-radius:999px;padding:7px 14px;font:600 12px system-ui,-apple-system,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,0.35);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity 0.35s ease;opacity:0.92;";
+    var fadeTimer=setTimeout(function(){btn.style.opacity="0.22";},2600);
+    btn.addEventListener("pointerenter",function(){clearTimeout(fadeTimer);btn.style.opacity="0.95";});
+    btn.addEventListener("touchstart",function(){clearTimeout(fadeTimer);btn.style.opacity="0.95";fadeTimer=setTimeout(function(){btn.style.opacity="0.22";},2600);},{passive:true});
+    btn.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();exFs();},true);
+    (d.body||r).appendChild(btn);
+  }
+  function exFs(){
+    rm();
+    window.__kiwiNativeImmersiveKeep=false;
+    restoreBg();
+    notifyNative(false);
+    try{
+      if(d.exitFullscreen){d.exitFullscreen().catch(function(){});}
+      else if(d.webkitExitFullscreen){d.webkitExitFullscreen();}
+      else if(d.webkitCancelFullScreen){d.webkitCancelFullScreen();}
+      else if(d.mozCancelFullScreen){d.mozCancelFullScreen();}
+      else if(d.msExitFullscreen){d.msExitFullscreen();}
+    }catch(e){}
+  }
+  window.__kiwiExitFs=exFs;
+  function prep(){
+    if(!d.getElementById(S)){
+      var st=d.createElement("style");
+      st.id=S;
+      st.textContent="html:fullscreen,html:-webkit-full-screen,html[data-kiwi-fs='1']{overflow:auto!important;width:100%!important;height:100%!important;min-height:100dvh!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;}html:fullscreen body,html:-webkit-full-screen body,html[data-kiwi-fs='1'] body{overflow:auto!important;min-height:100dvh!important;}";
+      (d.head||r).appendChild(st);
+    }
+    var rb=window.getComputedStyle(r).backgroundColor,bb=d.body?window.getComputedStyle(d.body).backgroundColor:"";
+    if((!rb||rb==="rgba(0, 0, 0, 0)"||rb==="transparent")&&(!bb||bb==="rgba(0, 0, 0, 0)"||bb==="transparent")){
+      var isDark=false;
+      try{
+        isDark=!!(d.getElementById("__ext_css_ext_dark_reader_pro")||d.getElementById("__chrome_custom_dark_mode__")||(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches&&window.getComputedStyle(d.body||r).color==="rgb(255, 255, 255)"));
+      }catch(e){}
+      r.style.backgroundColor=isDark?"#121212":"#ffffff";
+      r.setAttribute("data-kiwi-bg","1");
+    }
+    r.setAttribute("data-kiwi-fs","1");
+  }
+  function reqFs(){
+    prep();
+    notifyNative(true);
+    showExitBtn();
+    var fn=r.requestFullscreen||r.webkitRequestFullscreen||r.webkitRequestFullScreen||r.mozRequestFullScreen||r.msRequestFullscreen;
+    if(!fn)return Promise.resolve();
+    try{
+      var p=fn.call(r,{navigationUI:"hide"});
+      if(p&&p.then){
+        return p.catch(function(){
+          var p2=fn.call(r);
+          return p2&&p2.then?p2:Promise.resolve();
+        });
+      }
+      return Promise.resolve();
+    }catch(e){
+      try{fn.call(r);return Promise.resolve();}catch(e2){return Promise.reject(e2);}
+    }
+  }
+  function promptFs(){
+    rm();
+    var ov=d.createElement("div");
+    ov.id=P;
+    ov.style.cssText="position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.58);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;user-select:none;-webkit-tap-highlight-color:transparent;cursor:pointer;padding:20px;";
+    var b=d.createElement("div");
+    b.style.cssText="background:linear-gradient(135deg,#1e293b,#0f172a);color:#f8fafc;padding:15px 28px;border-radius:999px;font-size:15px;font-weight:600;box-shadow:0 12px 28px rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.18);";
+    b.textContent="⛶ Ketuk layar untuk masuk Full Screen";
+    var sub=d.createElement("div");
+    sub.style.cssText="color:rgba(248,250,252,0.82);font-size:12px;font-weight:500;";
+    sub.textContent="Tekan Esc, tombol Kembali, atau ⤫ untuk keluar kapan saja";
+    ov.appendChild(b);
+    ov.appendChild(sub);
+    ov.addEventListener("click",function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      rm();
+      reqFs().catch(function(){
+        r.setAttribute("data-kiwi-fs","1");
+        notifyNative(true);
+        showExitBtn();
+      });
+    },true);
+    (d.body||r).appendChild(ov);
+  }
+  if(!window.__kiwiFsInit){
+    window.__kiwiFsInit=true;
+    window.addEventListener("keydown",function(e){
+      if(e.key==="Escape"||e.key==="Esc"||e.keyCode===27){
+        if(d.getElementById(P)){rm();}else if(isFs()){exFs();}
+      }
+    },true);
+    function onFsChange(){
+      if(!(d.fullscreenElement||d.webkitFullscreenElement||d.mozFullScreenElement||d.msFullscreenElement)){
+        if(!window.__kiwiNativeImmersiveKeep){
+          restoreBg();
+          notifyNative(false);
+        }
+      }
+    }
+    d.addEventListener("fullscreenchange",onFsChange);
+    d.addEventListener("webkitfullscreenchange",onFsChange);
+  }
+  if(isFs()){
+    exFs();
+    return "Keluar dari Full Screen";
+  }else{
+    rm();
+    window.__kiwiNativeImmersiveKeep=true;
+    reqFs().catch(function(){promptFs();});
+    return "Mode Full Screen Aktif";
+  }
+})();
+    """.trimIndent()
+
     val TEMPLATE_GALLERY: List<CustomToolbarScript> = listOf(
+        CustomToolbarScript(
+            id = "tpl_fullscreen_kiwi_pro",
+            name = "Full Screen",
+            iconName = "Fullscreen",
+            description = "Masuk/keluar mode Layar Penuh (Full Screen) imersif dengan dukungan scroll penuh, deteksi warna latar otomatis, dan prompt sentuh cerdas.",
+            jsCode = UPGRADED_FULLSCREEN_SCRIPT,
+            autoRunMode = JsAutoRunMode.MANUAL_ONLY,
+            isEnabled = true,
+            isBuiltInTemplate = true
+        ),
         CustomToolbarScript(
             id = "tpl_smart_dark_mode",
             name = "Dark Mode",
@@ -343,7 +510,18 @@ object CustomJsToolbarManager {
             return TEMPLATE_GALLERY
         }
 
-        return parseScriptsFromJson(rawJson).ifEmpty { TEMPLATE_GALLERY }
+        val parsed = parseScriptsFromJson(rawJson)
+        if (parsed.isEmpty()) return TEMPLATE_GALLERY
+
+        val existingIds = parsed.map { it.id }.toSet()
+        val missingBuiltIns = TEMPLATE_GALLERY.filter { it.id !in existingIds }
+        return if (missingBuiltIns.isNotEmpty()) {
+            val merged = missingBuiltIns + parsed
+            saveScripts(context, merged)
+            merged
+        } else {
+            parsed
+        }
     }
 
     fun saveScripts(context: Context, scripts: List<CustomToolbarScript>) {
@@ -557,11 +735,49 @@ object CustomJsToolbarManager {
     fun getEnabledBuiltInShortcuts(context: Context): Set<String> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val defaultSet = BuiltInShortcut.entries.map { it.id }.toSet()
-        return prefs.getStringSet(KEY_ENABLED_SHORTCUTS, defaultSet) ?: defaultSet
+        val saved = prefs.getStringSet(KEY_ENABLED_SHORTCUTS, null)?.toMutableSet() ?: return defaultSet
+        if (!prefs.getBoolean("migrated_fullscreen_shortcut_v1", false)) {
+            saved.add(BuiltInShortcut.FULLSCREEN_PAGE.id)
+            prefs.edit()
+                .putStringSet(KEY_ENABLED_SHORTCUTS, saved)
+                .putBoolean("migrated_fullscreen_shortcut_v1", true)
+                .apply()
+        }
+        return saved
     }
 
     fun setEnabledBuiltInShortcuts(context: Context, ids: Set<String>) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putStringSet(KEY_ENABLED_SHORTCUTS, ids).apply()
     }
+
+    fun getDesktopZoomScale(context: Context): Int {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt("desktop_zoom_scale_v1", 100)
+            .coerceIn(50, 200)
+    }
+
+    fun setDesktopZoomScale(context: Context, scale: Int) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt("desktop_zoom_scale_v1", scale.coerceIn(50, 200)).apply()
+    }
+
+    /**
+     * Computes physical device tilt quadrant with a 20-degree deadband/hysteresis
+     * around 45/135/225/315 boundaries so holding the device near diagonal angles never flickers.
+     */
+    fun computeTiltQuadrantWithHysteresis(
+        angleDegrees: Int,
+        currentQuadrant: PhysicalTiltQuadrant
+    ): PhysicalTiltQuadrant {
+        if (angleDegrees < 0 || angleDegrees >= 360) return currentQuadrant
+        return when {
+            angleDegrees >= 335 || angleDegrees <= 25 -> PhysicalTiltQuadrant.PORTRAIT_UPRIGHT
+            angleDegrees in 65..115 -> PhysicalTiltQuadrant.LANDSCAPE_RIGHT
+            angleDegrees in 155..205 -> PhysicalTiltQuadrant.PORTRAIT_INVERTED
+            angleDegrees in 245..295 -> PhysicalTiltQuadrant.LANDSCAPE_LEFT
+            else -> currentQuadrant
+        }
+    }
 }
+

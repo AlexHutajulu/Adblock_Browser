@@ -71,10 +71,7 @@ class MainActivity : ComponentActivity() {
     private fun createTempImageFileUri(): Uri? {
         return try {
             val baseDir = externalCacheDir ?: cacheDir
-            val cameraDir = java.io.File(baseDir, "camera-temp").apply {
-                // Ensure directory matches filepath path configuration or name
-                // Note: file_paths.xml path is 'camera' which corresponds to the relative folder 'camera' under cache
-            }
+            // Sesuaikan langsung dengan path="camera" di res/xml/file_paths.xml
             val relativeCameraDir = java.io.File(baseDir, "camera").apply {
                 if (!exists()) mkdirs()
             }
@@ -98,15 +95,6 @@ class MainActivity : ComponentActivity() {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        // Pre-load AdBlock rules of FilterListManager from local cache or internet on startup
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                com.example.manager.FilterListManager.loadRules(applicationContext)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load EasyList rules at startup: ${e.message}")
-            }
-        }
 
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]
@@ -198,8 +186,13 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value) {
-            // We should ideally pause the WebView timers if background playback is OFF.
-            // That involves sending a pause signal to the active WebView. We can do that via ViewModel or broadcast
+            viewModel.setAppPaused(true)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value) {
             viewModel.setAppPaused(true)
         }
     }
@@ -208,6 +201,24 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         viewModel.setAppPaused(false)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::viewModel.isInitialized &&
+            (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+        ) {
+            viewModel.requestHibernateInactiveTabs()
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::viewModel.isInitialized) {
+            viewModel.requestHibernateInactiveTabs()
+        }
     }
 
     /**

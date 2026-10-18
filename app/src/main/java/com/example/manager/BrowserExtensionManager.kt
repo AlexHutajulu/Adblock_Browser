@@ -56,6 +56,19 @@ object BrowserExtensionManager {
 
     val BUILT_IN_EXTENSIONS: List<BrowserExtension> = listOf(
         BrowserExtension(
+            id = "ext_fullscreen_kiwi_pro",
+            name = "Full Screen Immersive Tool",
+            version = "2.0.0",
+            description = "Mode Layar Penuh (Full Screen) imersif untuk seluruh situs web dengan dukungan scroll penuh, deteksi latar otomatis, tombol keluar mengambang, dan prompt sentuh cerdas.",
+            author = "Kiwi & Chrome Tools",
+            iconName = "Fullscreen",
+            runAt = ExtensionRunAt.MANUAL_ONLY,
+            isEnabled = true,
+            isPinnedToToolbar = true,
+            sourceType = ExtensionSourceType.BUILT_IN,
+            jsCode = CustomJsToolbarManager.UPGRADED_FULLSCREEN_SCRIPT
+        ),
+        BrowserExtension(
             id = "ext_dark_reader_pro",
             name = "Dark Reader Pro",
             version = "2.4.0",

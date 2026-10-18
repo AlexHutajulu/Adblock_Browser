@@ -190,6 +190,51 @@ class SettingsManager(private val context: Context) {
         prefs.edit().remove("adblock_disabled_domains").apply()
     }
 
+    // --- Custom Element Zapper Rules per Domain (JSON with legacy delimiter fallback) ---
+    fun getCustomZapperRules(domain: String): List<String> {
+        val normalized = domain.lowercase().trim().removePrefix("www.")
+        if (normalized.isBlank()) return emptyList()
+        val raw = prefs.getString("zapper_rules_$normalized", null) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        if (raw.trimStart().startsWith("[")) {
+            return try {
+                val arr = org.json.JSONArray(raw)
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i).trim()
+                    if (item.isNotBlank()) list.add(item)
+                }
+                list
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+        return raw.split("|||zap|||").filter { it.isNotBlank() }
+    }
+
+    fun saveCustomZapperRules(domain: String, selectors: List<String>) {
+        val normalized = domain.lowercase().trim().removePrefix("www.")
+        if (normalized.isBlank()) return
+        val editor = prefs.edit()
+        if (selectors.isEmpty()) {
+            editor.remove("zapper_rules_$normalized")
+        } else {
+            val arr = org.json.JSONArray()
+            selectors.filter { it.isNotBlank() }.forEach { arr.put(it.trim()) }
+            editor.putString("zapper_rules_$normalized", arr.toString())
+        }
+        editor.apply()
+    }
+
+    var stealthTrapsDefusedCount: Long
+        get() = prefs.getLong("stealth_traps_defused_count", 0L)
+        set(value) = prefs.edit().putLong("stealth_traps_defused_count", value).apply()
+
+    @Synchronized
+    fun incrementStealthTrapsDefused() {
+        stealthTrapsDefusedCount++
+    }
+
     var appTheme: AppTheme
         get() {
             val name = prefs.getString(KEY_THEME, AppTheme.SYSTEM.name) ?: AppTheme.SYSTEM.name
@@ -206,16 +251,52 @@ class SettingsManager(private val context: Context) {
         set(value) = prefs.edit().putBoolean("force_web_page_dark_mode", value).apply()
 
     fun saveTabs(tabs: List<com.example.ui.viewmodel.BrowserTab>, activeTabId: String) {
-        val serialized = tabs.joinToString("|||tab|||") { tab ->
-            "${tab.id}|||field|||${tab.url}|||field|||${tab.title}|||field|||${tab.isPrivate}"
+        val jsonArray = org.json.JSONArray()
+        tabs.forEach { tab ->
+            val obj = org.json.JSONObject().apply {
+                put("id", tab.id)
+                put("url", tab.url)
+                put("title", tab.title)
+                put("isPrivate", tab.isPrivate)
+            }
+            jsonArray.put(obj)
         }
         prefs.edit()
-            .putString("persisted_tabs_v2", serialized)
+            .putString("persisted_tabs_v3_json", jsonArray.toString())
+            .remove("persisted_tabs_v2")
             .putString("persisted_active_tab_id_v2", activeTabId)
             .apply()
     }
 
     fun loadTabs(): List<com.example.ui.viewmodel.BrowserTab>? {
+        val jsonStr = prefs.getString("persisted_tabs_v3_json", null)
+        if (jsonStr != null) {
+            if (jsonStr.isBlank()) return emptyList()
+            return try {
+                val arr = org.json.JSONArray(jsonStr)
+                val result = mutableListOf<com.example.ui.viewmodel.BrowserTab>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id").takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString()
+                    val url = obj.optString("url", "")
+                    val title = obj.optString("title", "New Tab")
+                    val isPrivate = obj.optBoolean("isPrivate", false)
+                    result.add(
+                        com.example.ui.viewmodel.BrowserTab(
+                            id = id,
+                            url = url,
+                            title = title,
+                            isPrivate = isPrivate
+                        )
+                    )
+                }
+                result
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        // Legacy fallback for persisted_tabs_v2
         val serialized = prefs.getString("persisted_tabs_v2", null) ?: return null
         if (serialized.isBlank()) return emptyList()
         val parts = serialized.split("|||tab|||")
@@ -240,6 +321,7 @@ class SettingsManager(private val context: Context) {
 
     fun clearPersistedTabs() {
         prefs.edit()
+            .remove("persisted_tabs_v3_json")
             .remove("persisted_tabs_v2")
             .remove("persisted_active_tab_id_v2")
             .apply()

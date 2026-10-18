@@ -968,20 +968,10 @@ fun SettingsAboutBanner() {
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Public,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(30.dp)
-                )
-            }
+            AdBlockBrandEmblem(
+                size = 66.dp,
+                cornerRadius = 18.dp
+            )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = "AdBlock Browser",

@@ -47,6 +47,7 @@ import java.util.UUID
 
 fun resolveExtensionIcon(iconName: String): ImageVector {
     return when (iconName) {
+        "Fullscreen" -> Icons.Outlined.Fullscreen
         "DarkMode" -> Icons.Outlined.DarkMode
         "FastForward" -> Icons.Outlined.FastForward
         "LockOpen" -> Icons.Outlined.LockOpen
