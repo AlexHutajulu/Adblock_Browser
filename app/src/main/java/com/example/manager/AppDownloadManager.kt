@@ -1,0 +1,610 @@
+package com.example.manager
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.example.data.DownloadItem
+import com.example.data.DownloadRepository
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.RandomAccessFile
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.UUID
+
+data class ActiveDownload(
+    val id: String,
+    val fileName: String,
+    val url: String,
+    val domain: String,
+    val mimeType: String,
+    val totalBytes: Long,
+    val downloadedBytes: Long,
+    val speedBps: Long,
+    val status: String, // QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, CANCELLED
+    val fileUri: String,
+    val isIncognito: Boolean,
+    val userAgent: String = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36",
+    val job: Job? = null
+)
+
+class AppDownloadManager(
+    private val context: Context,
+    private val repository: DownloadRepository,
+    private val scope: CoroutineScope
+) {
+    private val _activeDownloads = MutableStateFlow<Map<String, ActiveDownload>>(emptyMap())
+    val activeDownloads: StateFlow<Map<String, ActiveDownload>> = _activeDownloads.asStateFlow()
+
+    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private val channelId = "alex_browser_downloads"
+
+    init {
+        createNotificationChannel()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Downloads",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "File download progress and results"
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun resolveWritableDownloadsDir(): File {
+        val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        try {
+            if (!publicDir.exists()) publicDir.mkdirs()
+            if (publicDir.exists() && publicDir.canWrite()) {
+                return publicDir
+            }
+        } catch (_: Exception) {}
+
+        val appExtDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        if (appExtDir != null) {
+            if (!appExtDir.exists()) appExtDir.mkdirs()
+            if (appExtDir.exists() && appExtDir.canWrite()) {
+                return appExtDir
+            }
+        }
+
+        return File(context.filesDir, "downloads").apply {
+            if (!exists()) mkdirs()
+        }
+    }
+
+    fun startDownload(
+        url: String,
+        userAgent: String,
+        fileName: String,
+        mimeType: String,
+        domain: String,
+        isIncognito: Boolean
+    ) {
+        val id = UUID.randomUUID().toString()
+        val downloadsDir = resolveWritableDownloadsDir()
+        val sanitizedName = sanitizeFileName(fileName)
+        
+        // Find a unique file name if it already exists to avoid corrupting previous downloads
+        var finalFile = File(downloadsDir, sanitizedName)
+        var finalName = sanitizedName
+        if (finalFile.exists()) {
+            val baseName = sanitizedName.substringBeforeLast(".")
+            val extension = if (sanitizedName.contains(".")) "." + sanitizedName.substringAfterLast(".") else ""
+            var count = 1
+            while (finalFile.exists()) {
+                finalName = "$baseName ($count)$extension"
+                finalFile = File(downloadsDir, finalName)
+                count++
+            }
+        }
+
+        val newDownload = ActiveDownload(
+            id = id,
+            fileName = finalName,
+            url = url,
+            domain = domain.ifBlank { "local" },
+            mimeType = mimeType,
+            totalBytes = 0L,
+            downloadedBytes = 0L,
+            speedBps = 0L,
+            status = "QUEUED",
+            fileUri = finalFile.absolutePath,
+            isIncognito = isIncognito,
+            userAgent = userAgent,
+            job = null
+        )
+        
+        _activeDownloads.update { it + (id to newDownload) }
+        saveToDb(newDownload)
+
+        val job = scope.launch(Dispatchers.IO) {
+            executeDownload(id, url, userAgent, finalFile, isResume = false)
+        }
+        
+        _activeDownloads.update { it.mapValues { entry -> 
+            if (entry.key == id) entry.value.copy(job = job) else entry.value 
+        } }
+    }
+
+    private suspend fun executeDownload(
+        id: String,
+        url: String,
+        userAgent: String,
+        destFile: File,
+        isResume: Boolean = false
+    ) {
+        val currentDownload = _activeDownloads.value[id] ?: return
+        
+        _activeDownloads.update { it + (id to currentDownload.copy(status = "DOWNLOADING")) }
+        saveToDb(currentDownload.copy(status = "DOWNLOADING"))
+
+        try {
+            // Support data: URI downloads (e.g. Base64 images saved from WebView)
+            if (url.startsWith("data:", ignoreCase = true)) {
+                val commaIndex = url.indexOf(',')
+                if (commaIndex == -1) throw Exception("Invalid data URI")
+                val meta = url.substring(5, commaIndex)
+                val payload = url.substring(commaIndex + 1)
+                val bytes = if (meta.contains(";base64", ignoreCase = true)) {
+                    android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                } else {
+                    java.net.URLDecoder.decode(payload, "UTF-8").toByteArray(Charsets.UTF_8)
+                }
+                destFile.writeBytes(bytes)
+                val size = bytes.size.toLong()
+                _activeDownloads.update {
+                    val current = it[id] ?: return@update it
+                    it + (id to current.copy(
+                        downloadedBytes = size,
+                        totalBytes = size,
+                        speedBps = 0L,
+                        status = "COMPLETED"
+                    ))
+                }
+                _activeDownloads.value[id]?.let { finalDownload ->
+                    saveToDb(finalDownload)
+                    updateNotification(finalDownload)
+                }
+                return
+            }
+
+            val cookieHeader = try {
+                android.webkit.CookieManager.getInstance().getCookie(url)
+            } catch (_: Exception) {
+                null
+            }
+
+            // Establish target metadata of source URL using quick Range check
+            val downloadUrl = URL(url)
+            val testConn = downloadUrl.openConnection() as HttpURLConnection
+            testConn.setRequestProperty("User-Agent", userAgent)
+            if (!cookieHeader.isNullOrBlank()) {
+                testConn.setRequestProperty("Cookie", cookieHeader)
+            }
+            testConn.connectTimeout = 10000
+            testConn.readTimeout = 10000
+            testConn.requestMethod = "GET"
+            testConn.setRequestProperty("Range", "bytes=0-0")
+            testConn.connect()
+
+            val responseCode = testConn.responseCode
+            val supportsRange = (responseCode == HttpURLConnection.HTTP_PARTIAL)
+            val totalSize = if (supportsRange) {
+                testConn.getHeaderField("Content-Range")?.substringAfter("/")?.toLongOrNull() ?: testConn.contentLengthLong
+            } else {
+                testConn.contentLengthLong
+            }
+            testConn.disconnect()
+
+            // Safe Scoped-Storage/Low-Storage Check
+            val parentDir = destFile.parentFile ?: resolveWritableDownloadsDir()
+            val usableSpace = parentDir.usableSpace
+            if (totalSize > 0 && usableSpace > 0 && usableSpace < totalSize + (10 * 1024 * 1024)) { // check space with 10MB safety margin
+                throw Exception("Insufficient storage space. Need ${formatSize(totalSize)} but only ${formatSize(usableSpace)} is available.")
+            }
+
+            val segmentCount = 4
+            if (supportsRange && totalSize > 1024 * 1024) {  // Segmented multi-part parallel download for sizes > 1 MB
+                val segmentSize = totalSize / segmentCount
+                
+                _activeDownloads.update { 
+                    val current = it[id] ?: return@update it
+                    it + (id to current.copy(totalBytes = totalSize))
+                }
+
+                val progressJob = scope.launch(Dispatchers.IO) {
+                    var lastUpdateTime = System.currentTimeMillis()
+                    var lastDownloaded = 0L
+                    while (isActive) {
+                        delay(600)
+                        val totalDownloaded = (0 until segmentCount).sumOf { i ->
+                            File(destFile.absolutePath + ".part$i").let { if (it.exists()) it.length() else 0L }
+                        }
+                        val now = System.currentTimeMillis()
+                        val duration = (now - lastUpdateTime) / 1000.0
+                        val speed = if (duration > 0) ((totalDownloaded - lastDownloaded) / duration).toLong() else 0L
+                        lastDownloaded = totalDownloaded
+                        lastUpdateTime = now
+
+                        _activeDownloads.update { 
+                            val current = it[id] ?: return@update it
+                            it + (id to current.copy(
+                                downloadedBytes = totalDownloaded, 
+                                speedBps = speed,
+                                status = "DOWNLOADING"
+                            ))
+                        }
+                        _activeDownloads.value[id]?.let { download ->
+                            updateNotification(download)
+                        }
+                    }
+                }
+
+                try {
+                    coroutineScope {
+                        (0 until segmentCount).map { i ->
+                            val startBytes = segmentSize * i
+                            val endBytes = if (i == segmentCount - 1) totalSize - 1 else (segmentSize * (i + 1)) - 1
+                            launch(Dispatchers.IO) {
+                                downloadSegmentPart(url, userAgent, destFile, i, startBytes, endBytes)
+                            }
+                        }
+                    }
+                    progressJob.cancel()
+
+                    // Ensure all parts downloaded successfully matching total count
+                    val finalDownloaded = (0 until segmentCount).sumOf { i ->
+                        File(destFile.absolutePath + ".part$i").let { if (it.exists()) it.length() else 0L }
+                    }
+
+                    if (finalDownloaded == totalSize) {
+                        mergeSegmentParts(destFile, segmentCount)
+                        
+                        _activeDownloads.update { 
+                            val current = it[id] ?: return@update it
+                            it + (id to current.copy(
+                                downloadedBytes = totalSize,
+                                totalBytes = totalSize,
+                                speedBps = 0L,
+                                status = "COMPLETED"
+                            ))
+                        }
+                        _activeDownloads.value[id]?.let { finalDownload ->
+                            saveToDb(finalDownload)
+                            updateNotification(finalDownload)
+                        }
+                    } else {
+                        throw Exception("Segment sync size mismatch: expected $totalSize, got $finalDownloaded")
+                    }
+
+                } catch (ce: CancellationException) {
+                    progressJob.cancel()
+                    throw ce
+                } catch (e: Exception) {
+                    progressJob.cancel()
+                    throw e
+                }
+
+            } else {
+                // Sequential fallback downloading
+                var connection: HttpURLConnection? = null
+                var inputStream: InputStream? = null
+                var randomAccessFile: RandomAccessFile? = null
+
+                try {
+                    val resumeFromFile = isResume && destFile.exists()
+                    val downloadedBefore = if (resumeFromFile) destFile.length() else 0L
+
+                    connection = downloadUrl.openConnection() as HttpURLConnection
+                    connection.setRequestProperty("User-Agent", userAgent)
+                    if (!cookieHeader.isNullOrBlank()) {
+                        connection.setRequestProperty("Cookie", cookieHeader)
+                    }
+                    connection.connectTimeout = 10000
+                    connection.readTimeout = 10000
+
+                    if (resumeFromFile && downloadedBefore > 0) {
+                        connection.setRequestProperty("Range", "bytes=$downloadedBefore-")
+                    }
+
+                    connection.connect()
+
+                    val seqResponseCode = connection.responseCode
+                    val isPartial = seqResponseCode == HttpURLConnection.HTTP_PARTIAL
+                    val isOk = seqResponseCode == HttpURLConnection.HTTP_OK
+
+                    if (!isOk && !isPartial) {
+                        throw Exception("Server connection error HTTP $seqResponseCode")
+                    }
+
+                    val contentLength = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+                    val totalSeqSize = if (isPartial) downloadedBefore + contentLength else contentLength
+
+                    _activeDownloads.update { 
+                        val current = it[id] ?: return@update it
+                        it + (id to current.copy(totalBytes = totalSeqSize, downloadedBytes = downloadedBefore))
+                    }
+
+                    inputStream = connection.inputStream
+                    randomAccessFile = RandomAccessFile(destFile, "rw")
+                    if (isPartial) {
+                        randomAccessFile.seek(downloadedBefore)
+                    } else {
+                        randomAccessFile.setLength(0)
+                    }
+
+                    val buffer = ByteArray(8 * 1024)
+                    var bytesRead: Int
+                    var totalDownloaded = if (isPartial) downloadedBefore else 0L
+                    var lastUpdateTime = System.currentTimeMillis()
+                    var speedLastTotal = totalDownloaded
+
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        yield()
+                        randomAccessFile.write(buffer, 0, bytesRead)
+                        totalDownloaded += bytesRead
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdateTime >= 500) {
+                            val speed = ((totalDownloaded - speedLastTotal) / ((now - lastUpdateTime) / 1000.0)).toLong()
+                            speedLastTotal = totalDownloaded
+                            lastUpdateTime = now
+
+                            _activeDownloads.update { 
+                                val current = it[id] ?: return@update it
+                                it + (id to current.copy(
+                                    downloadedBytes = totalDownloaded, 
+                                    speedBps = speed,
+                                    status = "DOWNLOADING"
+                                ))
+                            }
+                            _activeDownloads.value[id]?.let { download ->
+                                updateNotification(download)
+                            }
+                        }
+                    }
+
+                    _activeDownloads.update { 
+                        val current = it[id] ?: return@update it
+                        it + (id to current.copy(
+                            downloadedBytes = totalDownloaded,
+                            totalBytes = totalDownloaded,
+                            speedBps = 0L,
+                            status = "COMPLETED"
+                        ))
+                    }
+                    _activeDownloads.value[id]?.let { finalDownload ->
+                        saveToDb(finalDownload)
+                        updateNotification(finalDownload)
+                    }
+
+                } finally {
+                    try { inputStream?.close() } catch (e: Exception) {}
+                    try { randomAccessFile?.close() } catch (e: Exception) {}
+                    try { connection?.disconnect() } catch (e: Exception) {}
+                }
+            }
+
+        } catch (e: CancellationException) {
+            val state = _activeDownloads.value[id]?.status ?: "CANCELLED"
+            _activeDownloads.value[id]?.let { download ->
+                if (state == "PAUSED") {
+                    saveToDb(download)
+                    updateNotification(download)
+                } else if (state == "CANCELLED") {
+                    destFile.delete()
+                    (0..3).forEach { i -> File(destFile.absolutePath + ".part$i").delete() }
+                    saveToDb(download)
+                    notificationManager.cancel(id.hashCode())
+                }
+            }
+            throw e
+        } catch (e: Exception) {
+            _activeDownloads.update { 
+                val current = it[id] ?: return@update it
+                it + (id to current.copy(status = "FAILED"))
+            }
+            _activeDownloads.value[id]?.let { download ->
+                saveToDb(download)
+                updateNotification(download)
+            }
+        }
+    }
+
+    private suspend fun downloadSegmentPart(
+        url: String,
+        userAgent: String,
+        destFile: File,
+        partIndex: Int,
+        startBytes: Long,
+        endBytes: Long
+    ) {
+        val partFile = File(destFile.absolutePath + ".part$partIndex")
+        val currentLength = if (partFile.exists()) partFile.length() else 0L
+        val actualStartBytes = startBytes + currentLength
+
+        if (actualStartBytes >= endBytes) {
+            return // Segment already complete
+        }
+
+        var connection: HttpURLConnection? = null
+        var inputStream: InputStream? = null
+        var outputStream: FileOutputStream? = null
+
+        try {
+            val downloadUrl = URL(url)
+            connection = downloadUrl.openConnection() as HttpURLConnection
+            connection.setRequestProperty("User-Agent", userAgent)
+            val cookieHeader = try {
+                android.webkit.CookieManager.getInstance().getCookie(url)
+            } catch (_: Exception) {
+                null
+            }
+            if (!cookieHeader.isNullOrBlank()) {
+                connection.setRequestProperty("Cookie", cookieHeader)
+            }
+            connection.setRequestProperty("Range", "bytes=$actualStartBytes-$endBytes")
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.connect()
+
+            val responseCode = connection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_PARTIAL && responseCode != HttpURLConnection.HTTP_OK) {
+                throw Exception("Segment $partIndex request denied: HTTP $responseCode")
+            }
+
+            inputStream = connection.inputStream
+            outputStream = FileOutputStream(partFile, true)
+
+            val buffer = ByteArray(8 * 1024)
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                yield()
+                outputStream.write(buffer, 0, bytesRead)
+            }
+        } finally {
+            try { inputStream?.close() } catch (e: Exception) {}
+            try { outputStream?.close() } catch (e: Exception) {}
+            try { connection?.disconnect() } catch (e: Exception) {}
+        }
+    }
+
+    private fun mergeSegmentParts(destFile: File, segmentCount: Int) {
+        val outputStream = FileOutputStream(destFile)
+        try {
+            val buffer = ByteArray(64 * 1024)
+            for (i in 0 until segmentCount) {
+                val partFile = File(destFile.absolutePath + ".part$i")
+                val inputStream = partFile.inputStream()
+                try {
+                    var bytesRead: Int
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                    }
+                } finally {
+                    inputStream.close()
+                }
+                partFile.delete()
+            }
+        } finally {
+            outputStream.close()
+        }
+    }
+
+    fun pauseDownload(id: String) {
+        val download = _activeDownloads.value[id] ?: return
+        if (download.status == "DOWNLOADING") {
+            _activeDownloads.update { it + (id to download.copy(status = "PAUSED")) }
+            download.job?.cancel()
+        }
+    }
+
+    fun resumeDownload(id: String) {
+        val download = _activeDownloads.value[id] ?: return
+        if (download.status == "PAUSED" || download.status == "FAILED") {
+            val job = scope.launch(Dispatchers.IO) {
+                executeDownload(id, download.url, download.userAgent, File(download.fileUri), isResume = true)
+            }
+            _activeDownloads.update { it + (id to download.copy(job = job, status = "QUEUED")) }
+        }
+    }
+
+    fun cancelDownload(id: String) {
+        val download = _activeDownloads.value[id] ?: return
+        _activeDownloads.update { it + (id to download.copy(status = "CANCELLED")) }
+        download.job?.cancel()
+    }
+    
+    fun removeActiveDownloadEntry(id: String) {
+        _activeDownloads.update { it - id }
+    }
+
+    private fun saveToDb(download: ActiveDownload) {
+        scope.launch {
+            repository.insertOrUpdate(
+                DownloadItem(
+                    id = download.id,
+                    fileName = download.fileName,
+                    url = download.url,
+                    domain = download.domain,
+                    mimeType = download.mimeType,
+                    totalBytes = download.totalBytes,
+                    downloadedBytes = download.downloadedBytes,
+                    status = download.status,
+                    fileUri = download.fileUri,
+                    isIncognito = download.isIncognito,
+                    completedAt = if (download.status == "COMPLETED") System.currentTimeMillis() else 0L
+                )
+            )
+        }
+    }
+
+    private fun updateNotification(download: ActiveDownload) {
+        try {
+            val builder = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle(download.fileName)
+                .setOnlyAlertOnce(true)
+                .setOngoing(download.status == "DOWNLOADING")
+
+            when (download.status) {
+                "DOWNLOADING" -> {
+                    val progress = if (download.totalBytes > 0) (download.downloadedBytes * 100 / download.totalBytes).toInt() else 0
+                    builder.setProgress(100, progress, download.totalBytes <= 0)
+                    builder.setContentText("Downloading... ${progress}% (${formatSize(download.speedBps)}/s)")
+                }
+                "PAUSED" -> {
+                    builder.setContentText("Paused")
+                    builder.setSmallIcon(android.R.drawable.ic_media_pause)
+                }
+                "COMPLETED" -> {
+                    builder.setContentText("Download completed")
+                    builder.setProgress(0, 0, false)
+                    builder.setSmallIcon(android.R.drawable.stat_sys_download_done)
+                }
+                "FAILED" -> {
+                    builder.setContentText("Download failed")
+                    builder.setProgress(0, 0, false)
+                    builder.setSmallIcon(android.R.drawable.stat_notify_error)
+                }
+            }
+
+            val notificationId = download.id.hashCode()
+            notificationManager.notify(notificationId, builder.build())
+        } catch (e: Exception) {
+            // Suppressed to prevent edge failures in background
+        }
+    }
+
+    private fun formatSize(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val z = (63 - java.lang.Long.numberOfLeadingZeros(bytes)) / 10
+        return String.format("%.1f %sB", bytes.toDouble() / (1L shl (z * 10)), " KMGTPE"[z])
+    }
+
+    private fun sanitizeFileName(name: String): String {
+        return name
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank { "download.bin" }
+            .take(180)
+    }
+}
