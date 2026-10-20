@@ -377,15 +377,175 @@ object SecurityGuardEngine {
         return TRUSTED_REGISTRABLE_DOMAINS.any { clean == it || clean.endsWith(".$it") }
     }
 
-    private fun isLocalOrPrivateAddress(host: String): Boolean {
-        val clean = normalizeHost(host)
-        return clean == "localhost" ||
+    internal fun isLocalOrPrivateAddress(host: String): Boolean {
+        val clean = normalizeHost(host).removeSurrounding("[", "]")
+        if (clean.isEmpty()) return false
+        if (clean == "localhost" ||
+            clean.endsWith(".localhost") ||
             clean == "127.0.0.1" ||
+            clean.startsWith("127.") ||
             clean == "0.0.0.0" ||
+            clean == "::1" ||
             clean.startsWith("192.168.") ||
             clean.startsWith("10.") ||
+            clean.startsWith("169.254.") ||
             clean.endsWith(".local") ||
             clean.endsWith(".internal")
+        ) {
+            return true
+        }
+        // RFC 1918 172.16.0.0/12
+        if (clean.startsWith("172.")) {
+            val parts = clean.split(".")
+            val second = parts.getOrNull(1)?.toIntOrNull()
+            if (second != null && second in 16..31) return true
+        }
+        return false
+    }
+
+    private val ALLOWED_EXTERNAL_SCHEMES = setOf(
+        "intent", "market", "whatsapp", "tel", "mailto", "sms", "geo", "tg"
+    )
+
+    private val DANGEROUS_INTERNAL_SCHEMES = setOf(
+        "javascript", "vbscript", "data", "file", "content", "blob", "filesystem", "jar", "chrome"
+    )
+
+    fun isAllowedExternalScheme(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        val colonIdx = trimmed.indexOf(':')
+        if (colonIdx <= 0) return false
+        val scheme = trimmed.substring(0, colonIdx).lowercase(Locale.US)
+        return scheme in ALLOWED_EXTERNAL_SCHEMES
+    }
+
+    fun isDangerousInternalScheme(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        val colonIdx = trimmed.indexOf(':')
+        if (colonIdx <= 0) return false
+        val scheme = trimmed.substring(0, colonIdx).lowercase(Locale.US)
+        if (scheme == "about") {
+            return !trimmed.equals("about:blank", ignoreCase = true)
+        }
+        return scheme in DANGEROUS_INTERNAL_SCHEMES
+    }
+
+    /**
+     * Builds a sanitized external Intent from an untrusted URL or `intent://` URI.
+     * Prevents OWASP MASVS Intent Redirection, arbitrary action execution, internal component hijacking,
+     * self-package targeting, and ContentProvider URI permission leakage.
+     */
+    fun buildSafeExternalIntent(context: Context, rawUrl: String): android.content.Intent? {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty() || trimmed.length > 2048) return null
+        if (!isAllowedExternalScheme(trimmed)) return null
+
+        return try {
+            val parsed = if (trimmed.startsWith("intent://", ignoreCase = true)) {
+                android.content.Intent.parseUri(trimmed, android.content.Intent.URI_INTENT_SCHEME)
+            } else {
+                android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(trimmed))
+            }
+
+            // Force ACTION_VIEW only — block arbitrary actions like ACTION_DELETE, ACTION_CALL, ACTION_SEND, or custom actions
+            parsed.action = android.content.Intent.ACTION_VIEW
+            parsed.addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+            parsed.component = null
+            parsed.selector = null
+            parsed.clipData = null
+
+            // Strip all URI permission flags and dangerous activity launch flags
+            val forbiddenFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            parsed.flags = parsed.flags and forbiddenFlags.inv()
+
+            // Block targeting our own application package (prevents internal loop / confused deputy)
+            val targetPkg = parsed.`package`
+            if (!targetPkg.isNullOrBlank() && targetPkg.equals(context.packageName, ignoreCase = true)) {
+                return null
+            }
+
+            // Validate embedded data URI scheme inside parsed intent://
+            val dataUri = parsed.data
+            if (dataUri != null) {
+                val dataScheme = dataUri.scheme?.lowercase(Locale.US).orEmpty()
+                if (dataScheme in DANGEROUS_INTERNAL_SCHEMES || dataScheme == "about") {
+                    return null
+                }
+            }
+
+            parsed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Safely extracts and validates `browser_fallback_url` from an `intent://` string or Intent.
+     * Only allows external HTTP(S) URLs and rejects loopback/private network addresses or dangerous schemes.
+     */
+    fun extractSafeFallbackUrl(rawUrl: String): String? {
+        val trimmed = rawUrl.trim()
+        if (!trimmed.startsWith("intent://", ignoreCase = true) || trimmed.length > 2048) return null
+        return try {
+            val parsed = android.content.Intent.parseUri(trimmed, android.content.Intent.URI_INTENT_SCHEME)
+            val fallback = parsed.getStringExtra("browser_fallback_url")?.trim() ?: return null
+            if (fallback.isEmpty() || fallback.length > 2048) return null
+            if (!fallback.startsWith("https://", ignoreCase = true) &&
+                !fallback.startsWith("http://", ignoreCase = true)
+            ) {
+                return null
+            }
+            val host = extractHost(fallback)
+            if (host.isEmpty() || isLocalOrPrivateAddress(host)) return null
+            fallback
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Validates URIs returned to WebChromeClient.onShowFileChooser (`mFilePickerLauncher`)
+     * to prevent malicious chooser targets from returning `file://` URIs or internal app
+     * ContentProvider URIs (`${packageName}.fileprovider`, `${packageName}.renderconfig`).
+     */
+    fun isSafeFileChooserResultUri(
+        context: Context,
+        uri: Uri?,
+        allowedCameraUri: Uri? = null
+    ): Boolean {
+        if (uri == null) return false
+        if (allowedCameraUri != null && uri == allowedCameraUri) return true
+
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: return false
+        if (scheme != "content") return false
+
+        val authority = uri.authority?.lowercase(Locale.US)?.trim().orEmpty()
+        if (authority.isEmpty()) return false
+
+        val pkgLower = context.packageName.lowercase(Locale.US)
+        if (authority == "$pkgLower.fileprovider" ||
+            authority == "$pkgLower.renderconfig" ||
+            authority == pkgLower ||
+            authority.startsWith("$pkgLower.")
+        ) {
+            return false
+        }
+
+        val rawPath = uri.path?.lowercase(Locale.US).orEmpty()
+        if (rawPath.contains("..") ||
+            rawPath.contains("/data/data/$pkgLower") ||
+            rawPath.contains("/$pkgLower/shared_prefs") ||
+            rawPath.contains("/$pkgLower/databases")
+        ) {
+            return false
+        }
+
+        return true
     }
 
     fun extractHost(url: String?): String {
@@ -400,3 +560,4 @@ object SecurityGuardEngine {
     private fun normalizeHost(host: String): String =
         host.trim().lowercase(Locale.US).removePrefix("www.")
 }
+

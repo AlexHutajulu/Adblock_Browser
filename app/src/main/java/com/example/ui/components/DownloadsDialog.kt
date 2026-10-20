@@ -473,9 +473,20 @@ private fun ChromeDownloadItemCard(
 
 private fun openDownloadedFile(context: android.content.Context, item: DownloadItem) {
     try {
-        val file = File(item.fileUri)
-        if (!file.exists()) {
+        val file = File(item.fileUri).canonicalFile
+        if (!file.exists() || !file.isFile) {
             Toast.makeText(context, "File no longer exists on device", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val allowedRoots = listOfNotNull(
+            context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)?.canonicalFile,
+            File(context.filesDir, "downloads").canonicalFile
+        )
+        val isInsideAllowedRoot = allowedRoots.any { root ->
+            file.path.startsWith(root.path + File.separator)
+        }
+        if (!isInsideAllowedRoot) {
+            Toast.makeText(context, "Blocked opening file outside secure download directory", Toast.LENGTH_SHORT).show()
             return
         }
         val uri = FileProvider.getUriForFile(
@@ -486,6 +497,9 @@ private fun openDownloadedFile(context: android.content.Context, item: DownloadI
         val mime = item.mimeType.ifBlank { "*/*" }
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mime)
+            component = null
+            selector = null
+            clipData = null
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(Intent.createChooser(intent, "Open with"))

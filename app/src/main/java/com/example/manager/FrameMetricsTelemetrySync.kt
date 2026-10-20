@@ -174,12 +174,14 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
-     * Layer 2: Verifies APK signing certificate integrity & blocks repackaged patcher certificates.
+     * Layer 2: Verifies APK signing certificate integrity, enforces key rotation trust model,
+     * and blocks repackaged patcher certificates.
      */
-    private fun verifyBinaryAndSignatureIntegrity(context: Context): Boolean {
+    internal fun verifyBinaryAndSignatureIntegrity(context: Context): Boolean {
         return try {
             val pm = context.packageManager
-            val certBytesList = mutableListOf<ByteArray>()
+            val activeCertBytes = mutableListOf<ByteArray>()
+            val historyCertBytes = mutableListOf<ByteArray>()
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val pkgInfo = pm.getPackageInfo(
@@ -187,56 +189,106 @@ object FrameMetricsTelemetrySync {
                     PackageManager.GET_SIGNING_CERTIFICATES
                 )
                 val signingInfo = pkgInfo.signingInfo ?: return false
-                val sigs = if (signingInfo.hasMultipleSigners()) {
-                    signingInfo.apkContentsSigners
-                } else {
-                    signingInfo.signingCertificateHistory
-                }
-                if (sigs.isNullOrEmpty()) return false
-                sigs.forEach { certBytesList.add(it.toByteArray()) }
+                val activeSigs = signingInfo.apkContentsSigners
+                if (activeSigs.isNullOrEmpty()) return false
+                activeSigs.forEach { activeCertBytes.add(it.toByteArray()) }
+
+                val historySigs = signingInfo.signingCertificateHistory
+                historySigs?.forEach { historyCertBytes.add(it.toByteArray()) }
             } else {
                 @Suppress("DEPRECATION")
                 val pkgInfo = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
                 @Suppress("DEPRECATION")
                 val sigs = pkgInfo.signatures
                 if (sigs.isNullOrEmpty()) return false
-                sigs.forEach { certBytesList.add(it.toByteArray()) }
+                sigs.forEach {
+                    activeCertBytes.add(it.toByteArray())
+                    historyCertBytes.add(it.toByteArray())
+                }
             }
 
-            if (certBytesList.isEmpty()) return false
+            if (activeCertBytes.isEmpty()) return false
 
             val cf = CertificateFactory.getInstance("X.509")
-            for (rawCert in certBytesList) {
+
+            // 1. Blacklist & Release/Debug policy validation across all active & historical certificates
+            val allCertBytes = (activeCertBytes + historyCertBytes).distinctBy { it.contentHashCode() }
+            for (rawCert in allCertBytes) {
                 val cert = cf.generateCertificate(ByteArrayInputStream(rawCert)) as? X509Certificate
                     ?: return false
-                val subject = (cert.subjectDN?.name ?: "").lowercase().replace(" ", "")
-                val issuer = (cert.issuerDN?.name ?: "").lowercase().replace(" ", "")
 
-                for (badToken in CERT_BLACKLIST) {
-                    val token = d(badToken)
-                    if (subject.contains(token) || issuer.contains(token)) {
-                        return false
-                    }
+                if (isBlacklistedIssuerOrSubject(cert.subjectDN?.name) ||
+                    isBlacklistedIssuerOrSubject(cert.issuerDN?.name)
+                ) {
+                    return false
                 }
 
-                // Lock certificate SHA-256 digest in internal prefs on first boot;
-                // if an attacker hot-patches or swaps signatures over an existing data dir, it fails.
-                val sha256 = MessageDigest.getInstance("SHA-256")
-                    .digest(rawCert)
-                    .joinToString("") { "%02x".format(it) }
-
-                val prefs = context.getSharedPreferences("sys_frame_hw_cache", Context.MODE_PRIVATE)
-                val lockedSig = prefs.getString("hw_pipe_token", null)
-                if (lockedSig == null) {
-                    prefs.edit().putString("hw_pipe_token", sha256).apply()
-                } else if (lockedSig != sha256) {
+                // In production release builds, reject development debug certificates
+                if (!com.example.BuildConfig.DEBUG && isDebugCertificate(cert)) {
                     return false
                 }
             }
+
+            // 2. Compute canonical SHA-256 fingerprints
+            val activeSha256List = activeCertBytes.map { computeSha256(it) }.sorted()
+            val activeFingerprint = activeSha256List.joinToString(",")
+            val historySha256Set = historyCertBytes.map { computeSha256(it) }.toSet()
+
+            // 3. Cryptographic lock & key-rotation verification
+            val prefs = context.getSharedPreferences("sys_frame_hw_cache", Context.MODE_PRIVATE)
+            val lockedSig = prefs.getString("hw_pipe_token", null)
+
+            if (lockedSig == null) {
+                // Initial launch: record trusted signing certificate fingerprint
+                prefs.edit().putString("hw_pipe_token", activeFingerprint).apply()
+            } else {
+                if (lockedSig == activeFingerprint) {
+                    // Exact match: active signing key unchanged
+                    return true
+                }
+
+                // If active signing key changed, verify if the previously locked key is part of
+                // the authentic signing certificate lineage (v3 APK Signature Scheme key rotation)
+                val lockedHashes = lockedSig.split(",").toSet()
+                val isLegitimateRotation = lockedHashes.any { it in historySha256Set }
+
+                if (isLegitimateRotation) {
+                    // Legitimate rotation proven: migrate lock to new active signing key
+                    prefs.edit().putString("hw_pipe_token", activeFingerprint).apply()
+                } else {
+                    // Signature mismatch without valid cryptographic lineage (tampering/hot-swap)
+                    return false
+                }
+            }
+
             true
         } catch (_: Throwable) {
             false
         }
+    }
+
+    internal fun isBlacklistedIssuerOrSubject(dn: String?): Boolean {
+        if (dn.isNullOrBlank()) return false
+        val cleanDn = dn.lowercase().replace(" ", "")
+        for (badToken in CERT_BLACKLIST) {
+            val token = d(badToken)
+            if (cleanDn.contains(token)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    internal fun isDebugCertificate(cert: X509Certificate): Boolean {
+        val subject = cert.subjectDN?.name?.lowercase() ?: ""
+        val issuer = cert.issuerDN?.name?.lowercase() ?: ""
+        return subject.contains("android debug") || issuer.contains("android debug")
+    }
+
+    internal fun computeSha256(bytes: ByteArray): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
     }
 
     /**
@@ -310,22 +362,12 @@ object FrameMetricsTelemetrySync {
 
     /**
      * Background check for local Frida server ports (27042 / 27043).
+     * Probes each port independently so a closed port does not abort checking other ports.
      */
     fun verifyNativeTransportAsync() {
         if (isUnitTestEnvironment()) return
         Thread {
-            try {
-                val ports = intArrayOf(27042, 27043)
-                for (port in ports) {
-                    Socket().use { socket ->
-                        socket.connect(InetSocketAddress("127.0.0.1", port), 120)
-                        // If connection succeeds, Frida server is listening locally
-                        abortSilently()
-                    }
-                }
-            } catch (_: Throwable) {
-                // Clean: port closed
-            }
+            checkSuspiciousPorts(intArrayOf(27042, 27043))
         }.apply {
             isDaemon = true
             start()
@@ -333,9 +375,38 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
+     * Probes each candidate port independently.
+     */
+    internal fun checkSuspiciousPorts(
+        ports: IntArray,
+        host: String = "127.0.0.1",
+        timeoutMs: Int = 120,
+        onPortDetected: () -> Unit = { abortSilently() }
+    ) {
+        for (port in ports) {
+            var open = false
+            try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(host, port), timeoutMs)
+                    open = true
+                }
+            } catch (_: Throwable) {
+                // Clean state: this specific port is closed or timed out.
+                // Loop continues to inspect subsequent candidate ports.
+            }
+            if (open) {
+                onPortDetected()
+            }
+        }
+    }
+
+    /**
      * Silent, immediate process termination with zero log output.
      */
     private fun abortSilently(): Nothing {
+        if (isUnitTestEnvironment()) {
+            throw SecurityException("Security check failed (tampering detected)")
+        }
         try {
             Process.killProcess(Process.myPid())
         } catch (_: Throwable) {}

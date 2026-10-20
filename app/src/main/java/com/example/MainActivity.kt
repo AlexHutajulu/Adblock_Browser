@@ -44,7 +44,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (mFilePathCallback != null) {
-            val results: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
+            val rawResults: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
                 val data = result.data
                 if (data != null && (data.data != null || data.clipData != null)) {
                     val dataString = data.dataString
@@ -62,7 +62,17 @@ class MainActivity : ComponentActivity() {
             } else {
                 null
             }
-            mFilePathCallback?.onReceiveValue(results)
+            val safeResults = rawResults
+                ?.filter { uri ->
+                    com.example.manager.SecurityGuardEngine.isSafeFileChooserResultUri(
+                        context = this,
+                        uri = uri,
+                        allowedCameraUri = mCameraPhotoUri
+                    )
+                }
+                ?.takeIf { it.isNotEmpty() }
+                ?.toTypedArray()
+            mFilePathCallback?.onReceiveValue(safeResults)
             mFilePathCallback = null
             mCameraPhotoUri = null
         }

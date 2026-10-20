@@ -100,15 +100,114 @@ class AppDownloadManager(
             val parsed = URL(trimmed)
             val protocol = parsed.protocol.lowercase()
             if (protocol != "http" && protocol != "https") return false
-            val host = parsed.host.lowercase()
-            if (host.isBlank() || host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" ||
-                host == "::1" || host.startsWith("169.254.")
+            val host = parsed.host.lowercase().removeSurrounding("[", "]")
+            if (host.isBlank()) return false
+
+            // Block loopback, local domains, IPv6 unique-local/link-local, and link-local targets
+            if (host == "localhost" || host.endsWith(".local") || host == "127.0.0.1" ||
+                host == "0.0.0.0" || host == "::1" || host == "0:0:0:0:0:0:0:1" ||
+                host.startsWith("169.254.") || host.startsWith("127.") ||
+                host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd") ||
+                host.startsWith("::ffff:127.") || host.startsWith("::ffff:10.") ||
+                host.startsWith("::ffff:192.168.") || host.startsWith("::ffff:169.254.")
             ) {
                 return false
             }
+
+            // Block private IPv4 subnets (RFC 1918 & RFC 3927)
+            val ipv4Part = if (host.startsWith("::ffff:")) host.removePrefix("::ffff:") else host
+            val parts = ipv4Part.split(".")
+            if (parts.size == 4 && parts.all { it.isNotEmpty() && it.all { char -> char.isDigit() } }) {
+                val ip0 = parts[0].toIntOrNull() ?: return false
+                val ip1 = parts[1].toIntOrNull() ?: return false
+                if (ip0 == 10) return false // 10.0.0.0/8
+                if (ip0 == 172 && ip1 in 16..31) return false // 172.16.0.0/12
+                if (ip0 == 192 && ip1 == 168) return false // 192.168.0.0/16
+                if (ip0 == 127) return false // 127.0.0.0/8
+                if (ip0 == 169 && ip1 == 254) return false // 169.254.0.0/16
+                if (ip0 == 0) return false // 0.0.0.0/8
+            }
+
             true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun isPathWithinDirectory(file: File, baseDir: File): Boolean {
+        return try {
+            val canonicalDirPath = baseDir.canonicalFile.path
+            val canonicalFilePath = file.canonicalFile.path
+            val dirPrefix = if (canonicalDirPath.endsWith(File.separator)) {
+                canonicalDirPath
+            } else {
+                canonicalDirPath + File.separator
+            }
+            canonicalFilePath.startsWith(dirPrefix)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun openSafeConnection(
+        initialUrl: String,
+        userAgent: String,
+        rangeHeader: String? = null,
+        maxRedirects: Int = 5
+    ): HttpURLConnection {
+        var currentUrl = initialUrl
+        var redirects = 0
+        while (true) {
+            if (!isSafeDownloadUrl(currentUrl)) {
+                throw SecurityException("Blocked unsafe download URL or private network redirect target")
+            }
+            val urlObj = URL(currentUrl)
+            val conn = (urlObj.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 10000
+                readTimeout = 10000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", userAgent)
+                if (!rangeHeader.isNullOrBlank()) {
+                    setRequestProperty("Range", rangeHeader)
+                }
+                val scopedCookie = try {
+                    android.webkit.CookieManager.getInstance().getCookie(currentUrl)
+                } catch (_: Exception) {
+                    null
+                }
+                if (!scopedCookie.isNullOrBlank()) {
+                    setRequestProperty("Cookie", scopedCookie)
+                }
+            }
+            conn.connect()
+            val code = conn.responseCode
+            if (code in intArrayOf(
+                    HttpURLConnection.HTTP_MOVED_PERM,
+                    HttpURLConnection.HTTP_MOVED_TEMP,
+                    HttpURLConnection.HTTP_SEE_OTHER,
+                    307,
+                    308
+                )
+            ) {
+                val location = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (location.isNullOrBlank()) {
+                    throw Exception("Redirect response HTTP $code missing Location header")
+                }
+                if (++redirects > maxRedirects) {
+                    throw SecurityException("Too many HTTP redirects (max $maxRedirects)")
+                }
+                val nextUrlObj = URL(urlObj, location)
+                if (urlObj.protocol.equals("https", ignoreCase = true) &&
+                    nextUrlObj.protocol.equals("http", ignoreCase = true)
+                ) {
+                    throw SecurityException("Blocked unsafe HTTPS to HTTP redirect downgrade")
+                }
+                currentUrl = nextUrlObj.toString()
+                continue
+            }
+            return conn
         }
     }
 
@@ -137,6 +236,11 @@ class AppDownloadManager(
                 finalFile = File(downloadsDir, finalName)
                 count++
             }
+        }
+
+        // Canonical directory traversal guard with strict separator check
+        if (!isPathWithinDirectory(finalFile, downloadsDir)) {
+            return
         }
 
         val newDownload = ActiveDownload(
@@ -181,8 +285,15 @@ class AppDownloadManager(
 
         try {
             if (!isSafeDownloadUrl(url)) {
-                throw SecurityException("Blocked unsafe download URL scheme or loopback target")
+                throw SecurityException("Blocked unsafe download URL scheme or private network target")
             }
+            
+            // Canonical directory traversal guard with strict separator check
+            val parentDir = destFile.parentFile ?: resolveWritableDownloadsDir()
+            if (!isPathWithinDirectory(destFile, parentDir)) {
+                throw SecurityException("Path traversal attempt detected in download target")
+            }
+
             // Support data: URI downloads (e.g. Base64 images saved from WebView)
             if (url.startsWith("data:", ignoreCase = true)) {
                 val commaIndex = url.indexOf(',')
@@ -212,36 +323,24 @@ class AppDownloadManager(
                 return
             }
 
-            val cookieHeader = try {
-                android.webkit.CookieManager.getInstance().getCookie(url)
-            } catch (_: Exception) {
-                null
+            // Establish target metadata of source URL using quick Range check with safe redirect validation
+            var testConn: HttpURLConnection? = null
+            var supportsRange = false
+            var totalSize = -1L
+            try {
+                testConn = openSafeConnection(url, userAgent, rangeHeader = "bytes=0-0")
+                val responseCode = testConn.responseCode
+                supportsRange = (responseCode == HttpURLConnection.HTTP_PARTIAL)
+                totalSize = if (supportsRange) {
+                    testConn.getHeaderField("Content-Range")?.substringAfter("/")?.toLongOrNull() ?: testConn.contentLengthLong
+                } else {
+                    testConn.contentLengthLong
+                }
+            } finally {
+                try { testConn?.disconnect() } catch (_: Exception) {}
             }
-
-            // Establish target metadata of source URL using quick Range check
-            val downloadUrl = URL(url)
-            val testConn = downloadUrl.openConnection() as HttpURLConnection
-            testConn.setRequestProperty("User-Agent", userAgent)
-            if (!cookieHeader.isNullOrBlank()) {
-                testConn.setRequestProperty("Cookie", cookieHeader)
-            }
-            testConn.connectTimeout = 10000
-            testConn.readTimeout = 10000
-            testConn.requestMethod = "GET"
-            testConn.setRequestProperty("Range", "bytes=0-0")
-            testConn.connect()
-
-            val responseCode = testConn.responseCode
-            val supportsRange = (responseCode == HttpURLConnection.HTTP_PARTIAL)
-            val totalSize = if (supportsRange) {
-                testConn.getHeaderField("Content-Range")?.substringAfter("/")?.toLongOrNull() ?: testConn.contentLengthLong
-            } else {
-                testConn.contentLengthLong
-            }
-            testConn.disconnect()
 
             // Safe Scoped-Storage/Low-Storage Check
-            val parentDir = destFile.parentFile ?: resolveWritableDownloadsDir()
             val usableSpace = parentDir.usableSpace
             if (totalSize > 0 && usableSpace > 0 && usableSpace < totalSize + (10 * 1024 * 1024)) { // check space with 10MB safety margin
                 throw Exception("Insufficient storage space. Need ${formatSize(totalSize)} but only ${formatSize(usableSpace)} is available.")
@@ -339,19 +438,12 @@ class AppDownloadManager(
                     val resumeFromFile = isResume && destFile.exists()
                     val downloadedBefore = if (resumeFromFile) destFile.length() else 0L
 
-                    connection = downloadUrl.openConnection() as HttpURLConnection
-                    connection.setRequestProperty("User-Agent", userAgent)
-                    if (!cookieHeader.isNullOrBlank()) {
-                        connection.setRequestProperty("Cookie", cookieHeader)
+                    val rangeHeader = if (resumeFromFile && downloadedBefore > 0) {
+                        "bytes=$downloadedBefore-"
+                    } else {
+                        null
                     }
-                    connection.connectTimeout = 10000
-                    connection.readTimeout = 10000
-
-                    if (resumeFromFile && downloadedBefore > 0) {
-                        connection.setRequestProperty("Range", "bytes=$downloadedBefore-")
-                    }
-
-                    connection.connect()
+                    connection = openSafeConnection(url, userAgent, rangeHeader = rangeHeader)
 
                     val seqResponseCode = connection.responseCode
                     val isPartial = seqResponseCode == HttpURLConnection.HTTP_PARTIAL
@@ -476,21 +568,11 @@ class AppDownloadManager(
         var outputStream: FileOutputStream? = null
 
         try {
-            val downloadUrl = URL(url)
-            connection = downloadUrl.openConnection() as HttpURLConnection
-            connection.setRequestProperty("User-Agent", userAgent)
-            val cookieHeader = try {
-                android.webkit.CookieManager.getInstance().getCookie(url)
-            } catch (_: Exception) {
-                null
-            }
-            if (!cookieHeader.isNullOrBlank()) {
-                connection.setRequestProperty("Cookie", cookieHeader)
-            }
-            connection.setRequestProperty("Range", "bytes=$actualStartBytes-$endBytes")
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.connect()
+            connection = openSafeConnection(
+                initialUrl = url,
+                userAgent = userAgent,
+                rangeHeader = "bytes=$actualStartBytes-$endBytes"
+            )
 
             val responseCode = connection.responseCode
             if (responseCode != HttpURLConnection.HTTP_PARTIAL && responseCode != HttpURLConnection.HTTP_OK) {
@@ -627,11 +709,23 @@ class AppDownloadManager(
     }
 
     private fun sanitizeFileName(name: String): String {
-        return name
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        var decoded = name
+        repeat(2) {
+            decoded = try {
+                java.net.URLDecoder.decode(decoded, "UTF-8")
+            } catch (_: Exception) {
+                decoded
+            }
+        }
+        val cleanName = decoded
+            .replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\x7F]"), "_")
+            .replace(Regex("\\.\\.+"), "_")
             .replace(Regex("\\s+"), " ")
             .trim()
+            .trimStart('.')
             .ifBlank { "download.bin" }
             .take(180)
+
+        return if (cleanName.isBlank()) "download.bin" else cleanName
     }
 }

@@ -492,36 +492,22 @@ fun BrowserScreen(
             text = { Text("Situs ini ingin membuka aplikasi di luar AlexBrowser:\n${url.take(180)}") },
             confirmButton = {
                 Button(onClick = {
-                    try {
-                        val intent = if (url.startsWith("intent://", ignoreCase = true)) {
-                            Intent.parseUri(url, Intent.URI_INTENT_SCHEME).apply {
-                                // OWASP MASVS Intent Hardening: prevent internal component hijacking & URI permission leaks
-                                addCategory(Intent.CATEGORY_BROWSABLE)
-                                component = null
-                                selector = null
-                                flags = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION.inv() and Intent.FLAG_GRANT_WRITE_URI_PERMISSION.inv()
-                            }
-                        } else {
-                            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                addCategory(Intent.CATEGORY_BROWSABLE)
-                                component = null
-                                selector = null
-                            }
-                        }
+                    val safeIntent = com.example.manager.SecurityGuardEngine.buildSafeExternalIntent(context, url)
+                    if (safeIntent != null) {
                         try {
-                            context.startActivity(intent)
+                            context.startActivity(safeIntent)
                         } catch (_: android.content.ActivityNotFoundException) {
-                            val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                            if (!fallbackUrl.isNullOrBlank() &&
-                                (fallbackUrl.startsWith("https://", ignoreCase = true) || fallbackUrl.startsWith("http://", ignoreCase = true))
-                            ) {
+                            val fallbackUrl = com.example.manager.SecurityGuardEngine.extractSafeFallbackUrl(url)
+                            if (fallbackUrl != null) {
                                 viewModel.navigateTo(fallbackUrl)
                             } else {
                                 Toast.makeText(context, "Aplikasi eksternal tidak ditemukan di perangkat", Toast.LENGTH_SHORT).show()
                             }
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Tidak dapat membuka tautan aplikasi eksternal", Toast.LENGTH_SHORT).show()
                         }
-                    } catch (_: Exception) {
-                        Toast.makeText(context, "Tidak dapat membuka tautan aplikasi eksternal", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Tautan aplikasi eksternal diblokir karena alasan keamanan", Toast.LENGTH_SHORT).show()
                     }
                     viewModel.clearIntentToOpen()
                 }) {

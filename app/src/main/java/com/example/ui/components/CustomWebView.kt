@@ -812,14 +812,33 @@ fun CustomWebView(
                             request: WebResourceRequest?
                         ): Boolean {
                             val url = request?.url?.toString() ?: return false
-                            
-                            // 1. Block Intent and schema redirects
-                            if (url.startsWith("intent://") || url.startsWith("market://") || url.startsWith("whatsapp://") || url.startsWith("tel:") || url.startsWith("mailto:")) {
+                            val hasGesture = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) request.hasGesture() else true
+
+                            // 1. Block dangerous internal/executable schemes (file://, content://, javascript:, data:, etc.)
+                            if (com.example.manager.SecurityGuardEngine.isDangerousInternalScheme(url)) {
+                                Log.w(TAG, "Blocked dangerous internal scheme navigation: $url")
+                                return true
+                            }
+
+                            // 2. Validate external app schemes & Intent redirects
+                            if (com.example.manager.SecurityGuardEngine.isAllowedExternalScheme(url)) {
+                                if (!hasGesture && (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value)) {
+                                    Log.w(TAG, "Blocked unprompted external intent without user gesture: $url")
+                                    return true
+                                }
                                 viewModel.requestOpenIntent(url)
                                 return true
                             }
+
+                            // Block any other unknown non-HTTP(S) scheme
+                            if (!url.startsWith("https://", ignoreCase = true) &&
+                                !url.startsWith("http://", ignoreCase = true)
+                            ) {
+                                Log.w(TAG, "Blocked unsupported navigation scheme: $url")
+                                return true
+                            }
                             
-                            // 2. Main-frame Security Guard (HTTPS-Only upgrade, Phishing detector, Ad Redirect blocker)
+                            // 3. Main-frame Security Guard (HTTPS-Only upgrade, Phishing detector, Ad Redirect blocker)
                             if (request.isForMainFrame) {
                                 val targetHost = com.example.manager.SecurityGuardEngine.extractHost(url)
                                 val isTrustedHost = com.example.manager.SecurityGuardEngine.isHostUserTrusted(view?.context ?: context, targetHost)
@@ -849,7 +868,6 @@ fun CustomWebView(
                                 val latestTab = viewModel.tabs.value.find { it.id == tab.id }
                                 val mainPageUrl = latestTab?.url ?: ""
                                 val currentMode = viewModel.adBlockMode.value
-                                val hasGesture = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) request.hasGesture() else true
                                 
                                 if (currentMode != com.example.manager.AdBlockMode.OFF && (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value)) {
                                     syncAlexShieldV5State()
@@ -884,11 +902,22 @@ fun CustomWebView(
                             newWebView.webViewClient = object : WebViewClient() {
                                 private fun openAndDestroy(targetView: WebView?, url: String?): Boolean {
                                     if (!url.isNullOrBlank() && url != "about:blank" && handled.compareAndSet(false, true)) {
-                                        if (viewModel.openPopupsInNewTab.value) {
-                                            viewModel.addNewTab(url, isPrivate = tab.isPrivate)
+                                        val trimmedUrl = url.trim()
+                                        if (com.example.manager.SecurityGuardEngine.isAllowedExternalScheme(trimmedUrl)) {
+                                            if (isUserGesture) {
+                                                viewModel.requestOpenIntent(trimmedUrl)
+                                            }
+                                        } else if (trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                                            trimmedUrl.startsWith("http://", ignoreCase = true)
+                                        ) {
+                                            if (viewModel.openPopupsInNewTab.value) {
+                                                viewModel.addNewTab(trimmedUrl, isPrivate = tab.isPrivate)
+                                            } else {
+                                                // Keep navigation in the same tab so Back button history works step-by-step!
+                                                view.loadUrl(trimmedUrl, mapOf("DNT" to "1"))
+                                            }
                                         } else {
-                                            // Keep navigation in the same tab so Back button history works step-by-step!
-                                            view.loadUrl(url, mapOf("DNT" to "1"))
+                                            Log.w(TAG, "Blocked unsafe popup scheme: $trimmedUrl")
                                         }
                                         targetView?.stopLoading()
                                         targetView?.destroy()

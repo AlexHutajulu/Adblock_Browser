@@ -306,7 +306,10 @@ object BrowserExtensionManager {
                     wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,17,21,0.96);color:#fff;overflow-y:auto;padding:18px;font-family:sans-serif;';
                     var top = document.createElement('div');
                     top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;';
-                    top.innerHTML = '<b style="font-size:16px">Ekstraktor Gambar (' + urls.length + ')</b>';
+                    var titleEl = document.createElement('b');
+                    titleEl.style.fontSize = '16px';
+                    titleEl.textContent = 'Ekstraktor Gambar (' + urls.length + ')';
+                    top.appendChild(titleEl);
                     var cls = document.createElement('button');
                     cls.textContent = 'Tutup ✕';
                     cls.style.cssText = 'padding:7px 14px;background:#8ab4f8;color:#111;border:none;border-radius:99px;font-weight:bold;';
@@ -319,8 +322,13 @@ object BrowserExtensionManager {
                         var card = document.createElement('a');
                         card.href = u;
                         card.target = '_blank';
+                        card.rel = 'noopener noreferrer';
                         card.style.cssText = 'display:block;background:#20232a;padding:6px;border-radius:10px;text-align:center;color:#8ab4f8;text-decoration:none;font-size:11px;';
-                        card.innerHTML = '<img src="' + u + '" style="width:100%;height:100px;object-fit:contain;border-radius:6px;margin-bottom:4px;"/>Buka Ukuran Penuh';
+                        var imgEl = document.createElement('img');
+                        imgEl.src = u;
+                        imgEl.style.cssText = 'width:100%;height:100px;object-fit:contain;border-radius:6px;margin-bottom:4px;display:block;';
+                        card.appendChild(imgEl);
+                        card.appendChild(document.createTextNode('Buka Ukuran Penuh'));
                         grid.appendChild(card);
                     });
                     wrap.appendChild(grid);
@@ -354,8 +362,14 @@ object BrowserExtensionManager {
                     closeBtn.textContent = '✕ Tutup Mode Baca';
                     closeBtn.style.cssText = 'position:fixed;top:14px;right:14px;padding:8px 14px;background:#8ab4f8;color:#111;border:none;border-radius:99px;font-family:sans-serif;font-weight:bold;font-size:13px;';
                     closeBtn.onclick = function() { modal.remove(); };
-                    inner.innerHTML = '<h1 style="font-family:sans-serif;font-size:24px;line-height:1.35;margin-bottom:16px;">' + document.title + '</h1>' + target.innerHTML;
-                    inner.querySelectorAll('script,iframe,nav,aside,footer,form').forEach(function(n) { n.remove(); });
+                    var heading = document.createElement('h1');
+                    heading.style.cssText = 'font-family:sans-serif;font-size:24px;line-height:1.35;margin-bottom:16px;';
+                    heading.textContent = document.title || '';
+                    var contentBox = document.createElement('div');
+                    contentBox.innerHTML = target.innerHTML;
+                    contentBox.querySelectorAll('script,iframe,object,embed,nav,aside,footer,form').forEach(function(n) { n.remove(); });
+                    inner.appendChild(heading);
+                    inner.appendChild(contentBox);
                     modal.appendChild(closeBtn);
                     modal.appendChild(inner);
                     document.body.appendChild(modal);
@@ -573,6 +587,10 @@ object BrowserExtensionManager {
             }
             if (typeof window.GM_xmlhttpRequest === 'undefined') {
                 window.GM_xmlhttpRequest = function(details) {
+                    if (!details || typeof details.url !== 'string' || !/^https?:\/\//i.test(details.url.trim())) {
+                        if (details && details.onerror) details.onerror(new Error('Blocked unsafe GM_xmlhttpRequest scheme'));
+                        return;
+                    }
                     fetch(details.url, { method: details.method || 'GET', headers: details.headers || {}, body: details.data })
                         .then(function(r) { return r.text().then(function(t) { if (details.onload) details.onload({ status: r.status, responseText: t }); }); })
                         .catch(function(e) { if (details.onerror) details.onerror(e); });
@@ -666,7 +684,7 @@ object BrowserExtensionManager {
                     val jsArr = cs.optJSONArray("js")
                     if (jsArr != null) {
                         for (j in 0 until jsArr.length()) {
-                            val fileKey = jsArr.optString(j, "").removePrefix("./").removePrefix("/")
+                            val fileKey = sanitizeZipEntryName(jsArr.optString(j, "")) ?: continue
                             val content = findBundledFile(bundledFiles, fileKey)
                             if (!content.isNullOrBlank()) {
                                 jsBuilder.append("\n/* --- ").append(fileKey).append(" --- */\n").append(content)
@@ -676,7 +694,7 @@ object BrowserExtensionManager {
                     val cssArr = cs.optJSONArray("css")
                     if (cssArr != null) {
                         for (j in 0 until cssArr.length()) {
-                            val fileKey = cssArr.optString(j, "").removePrefix("./").removePrefix("/")
+                            val fileKey = sanitizeZipEntryName(cssArr.optString(j, "")) ?: continue
                             val content = findBundledFile(bundledFiles, fileKey)
                             if (!content.isNullOrBlank()) {
                                 cssBuilder.append("\n/* --- ").append(fileKey).append(" --- */\n").append(content)
@@ -731,8 +749,86 @@ object BrowserExtensionManager {
         }
     }
 
+    private const val MAX_ZIP_ENTRIES = 64
+    private const val MAX_SINGLE_ENTRY_BYTES = 1_500_000
+    private const val MAX_TOTAL_ARCHIVE_BYTES = 4_500_000
+    private const val MAX_RAW_EXTENSION_BYTES = 2_000_000
+
+    /**
+     * Normalizes and validates a ZIP archive entry path, returning null if it contains
+     * directory traversal (`..`), null bytes, control characters, or invalid segments.
+     */
+    internal fun sanitizeZipEntryName(rawName: String): String? {
+        if (rawName.isBlank() || rawName.contains('\u0000')) return null
+        val normalized = rawName.replace('\\', '/').trim()
+            .removePrefix("./")
+            .trimStart('/')
+        if (normalized.isEmpty()) return null
+        val segments = normalized.split('/')
+        if (segments.any { it.isEmpty() || it == "." || it == ".." || it.any { ch -> ch.isISOControl() } }) {
+            return null
+        }
+        return segments.joinToString("/")
+    }
+
+    /**
+     * Validates that a remote extension URL uses HTTPS exclusively and does not target
+     * loopback, RFC 1918 private networks, link-local / cloud metadata, or IPv6 local ranges.
+     */
+    internal fun isSafeRemoteExtensionUrl(url: String): Boolean {
+        val trimmed = url.trim()
+        return try {
+            val parsed = URL(trimmed)
+            if (!parsed.protocol.equals("https", ignoreCase = true)) return false
+            val host = parsed.host.lowercase(Locale.US).removeSurrounding("[", "]")
+            if (host.isBlank()) return false
+
+            if (host == "localhost" || host.endsWith(".local") || host == "127.0.0.1" ||
+                host == "0.0.0.0" || host == "::1" || host == "0:0:0:0:0:0:0:1" ||
+                host.startsWith("169.254.") || host.startsWith("127.") ||
+                host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd") ||
+                host.startsWith("::ffff:127.") || host.startsWith("::ffff:10.") ||
+                host.startsWith("::ffff:192.168.") || host.startsWith("::ffff:169.254.")
+            ) {
+                return false
+            }
+
+            val ipv4Part = if (host.startsWith("::ffff:")) host.removePrefix("::ffff:") else host
+            val parts = ipv4Part.split(".")
+            if (parts.size == 4 && parts.all { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }) {
+                val ip0 = parts[0].toIntOrNull() ?: return false
+                val ip1 = parts[1].toIntOrNull() ?: return false
+                if (ip0 == 10) return false
+                if (ip0 == 172 && ip1 in 16..31) return false
+                if (ip0 == 192 && ip1 == 168) return false
+                if (ip0 == 127) return false
+                if (ip0 == 169 && ip1 == 254) return false
+                if (ip0 == 0) return false
+            }
+
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    internal fun readBoundedUtf8Text(stream: java.io.InputStream, maxBytes: Int = MAX_RAW_EXTENSION_BYTES): String {
+        val baos = ByteArrayOutputStream()
+        val buffer = ByteArray(4096)
+        var totalRead = 0
+        var count: Int
+        while (stream.read(buffer).also { count = it } != -1) {
+            totalRead += count
+            if (totalRead > maxBytes) {
+                throw SecurityException("Ukuran file ekstensi melebihi batas keamanan maksimum (${maxBytes / 1024} KB)")
+            }
+            baos.write(buffer, 0, count)
+        }
+        return baos.toString("UTF-8")
+    }
+
     private fun findBundledFile(bundledFiles: Map<String, String>, targetPath: String): String? {
-        val cleanTarget = targetPath.trim().removePrefix("./").removePrefix("/")
+        val cleanTarget = sanitizeZipEntryName(targetPath) ?: return null
         bundledFiles[cleanTarget]?.let { return it }
         return bundledFiles.entries.firstOrNull { (k, _) ->
             k.equals(cleanTarget, ignoreCase = true) || k.endsWith("/$cleanTarget", ignoreCase = true)
@@ -750,21 +846,32 @@ object BrowserExtensionManager {
                     val filesMap = mutableMapOf<String, String>()
                     context.contentResolver.openInputStream(uri)?.use { rawStream ->
                         ZipInputStream(rawStream).use { zis ->
+                            var entryCount = 0
+                            var cumulativeBytes = 0
                             var entry = zis.nextEntry
                             while (entry != null) {
+                                if (++entryCount > MAX_ZIP_ENTRIES) {
+                                    throw SecurityException("Arsip ZIP memiliki terlalu banyak entri (maks $MAX_ZIP_ENTRIES)")
+                                }
                                 if (!entry.isDirectory) {
-                                    val entryName = entry.name.removePrefix("./").removePrefix("/")
-                                    if (entryName.endsWith(".json", true) ||
-                                        entryName.endsWith(".js", true) ||
-                                        entryName.endsWith(".css", true)
+                                    val entryName = sanitizeZipEntryName(entry.name)
+                                    if (entryName != null && (
+                                            entryName.endsWith(".json", true) ||
+                                                entryName.endsWith(".js", true) ||
+                                                entryName.endsWith(".css", true)
+                                            )
                                     ) {
                                         val baos = ByteArrayOutputStream()
                                         val buffer = ByteArray(4096)
                                         var count: Int
-                                        var totalRead = 0
-                                        while (zis.read(buffer).also { count = it } != -1 && totalRead < 1_500_000) {
+                                        var entryBytes = 0
+                                        while (zis.read(buffer).also { count = it } != -1) {
+                                            entryBytes += count
+                                            cumulativeBytes += count
+                                            if (entryBytes > MAX_SINGLE_ENTRY_BYTES || cumulativeBytes > MAX_TOTAL_ARCHIVE_BYTES) {
+                                                throw SecurityException("Ukuran ekstraksi ZIP melebihi batas memori aman")
+                                            }
                                             baos.write(buffer, 0, count)
-                                            totalRead += count
                                         }
                                         filesMap[entryName] = baos.toString("UTF-8")
                                     }
@@ -799,7 +906,7 @@ object BrowserExtensionManager {
                     emptyList()
                 } else {
                     val textContent = context.contentResolver.openInputStream(uri)?.use { stream ->
-                        BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).readText()
+                        readBoundedUtf8Text(stream, MAX_RAW_EXTENSION_BYTES)
                     } ?: return@withContext emptyList()
 
                     parseExtensionFromRawText(textContent, displayName, ExtensionSourceType.EXTERNAL_FILE, "")
@@ -811,34 +918,90 @@ object BrowserExtensionManager {
         }
 
     /**
-     * Downloads and parses an extension from an external HTTP/HTTPS URL (`.user.js`, `.js`, `.css`, `.json`).
+     * Downloads and parses an extension from an external HTTPS URL (`.user.js`, `.js`, `.css`, `.json`).
+     * Enforces HTTPS-only, SSRF private-subnet blocking, safe redirect validation, and payload size bounds.
      */
     suspend fun importExtensionFromUrl(urlStr: String): Result<List<BrowserExtension>> =
         withContext(Dispatchers.IO) {
             try {
                 val cleanUrl = urlStr.trim()
-                if (!cleanUrl.startsWith("http://", true) && !cleanUrl.startsWith("https://", true)) {
-                    return@withContext Result.failure(IllegalArgumentException("URL harus diawali https:// atau http://"))
+                if (!cleanUrl.startsWith("https://", true)) {
+                    return@withContext Result.failure(
+                        IllegalArgumentException("Demi keamanan, impor ekstensi jarak jauh wajib menggunakan protokol terenkripsi https://")
+                    )
                 }
-                val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10000
-                    readTimeout = 10000
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) Chrome/124.0.0.0 Mobile Safari/537.36")
+                if (!isSafeRemoteExtensionUrl(cleanUrl)) {
+                    return@withContext Result.failure(
+                        SecurityException("URL ekstensi ditolak oleh pelindung jaringan (SSRF / alamat lokal tidak diizinkan)")
+                    )
                 }
-                val status = conn.responseCode
-                if (status !in 200..299) {
-                    return@withContext Result.failure(IllegalStateException("Gagal mengunduh ekstensi (HTTP $status)"))
+
+                var currentUrl = cleanUrl
+                var redirects = 0
+                val maxRedirects = 3
+                var conn: HttpURLConnection
+
+                while (true) {
+                    if (!isSafeRemoteExtensionUrl(currentUrl)) {
+                        return@withContext Result.failure(
+                            SecurityException("Target pengalihan (redirect) ekstensi tidak aman atau mengarah ke jaringan lokal")
+                        )
+                    }
+                    val urlObj = URL(currentUrl)
+                    conn = (urlObj.openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = 10000
+                        readTimeout = 10000
+                        requestMethod = "GET"
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) Chrome/124.0.0.0 Mobile Safari/537.36")
+                    }
+                    val status = conn.responseCode
+                    if (status in intArrayOf(
+                            HttpURLConnection.HTTP_MOVED_PERM,
+                            HttpURLConnection.HTTP_MOVED_TEMP,
+                            HttpURLConnection.HTTP_SEE_OTHER,
+                            307,
+                            308
+                        )
+                    ) {
+                        val location = conn.getHeaderField("Location")
+                        conn.disconnect()
+                        if (location.isNullOrBlank()) {
+                            return@withContext Result.failure(IllegalStateException("Pengalihan HTTP $status tanpa header Location"))
+                        }
+                        if (++redirects > maxRedirects) {
+                            return@withContext Result.failure(SecurityException("Terlalu banyak pengalihan URL (maks $maxRedirects)"))
+                        }
+                        val nextUrl = URL(urlObj, location).toString()
+                        if (!isSafeRemoteExtensionUrl(nextUrl)) {
+                            return@withContext Result.failure(
+                                SecurityException("Pengalihan ke protokol non-HTTPS atau jaringan lokal diblokir")
+                            )
+                        }
+                        currentUrl = nextUrl
+                        continue
+                    }
+                    if (status !in 200..299) {
+                        conn.disconnect()
+                        return@withContext Result.failure(IllegalStateException("Gagal mengunduh ekstensi (HTTP $status)"))
+                    }
+                    break
                 }
-                val rawText = conn.inputStream.use { stream ->
-                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).readText()
+
+                val rawText = try {
+                    conn.inputStream.use { stream ->
+                        readBoundedUtf8Text(stream, MAX_RAW_EXTENSION_BYTES)
+                    }
+                } finally {
+                    conn.disconnect()
                 }
-                val fileName = Uri.parse(cleanUrl).lastPathSegment ?: "Remote_Extension.js"
+
+                val fileName = Uri.parse(currentUrl).lastPathSegment ?: "Remote_Extension.js"
                 val parsed = parseExtensionFromRawText(
                     rawText = rawText,
                     fileName = fileName,
                     sourceType = ExtensionSourceType.EXTERNAL_URL,
-                    sourceUrl = cleanUrl
+                    sourceUrl = currentUrl
                 )
                 if (parsed.isEmpty()) {
                     Result.failure(IllegalArgumentException("Konten URL tidak berisi kode ekstensi JS/CSS/JSON yang valid"))
@@ -910,7 +1073,7 @@ object BrowserExtensionManager {
         if (host.isEmpty()) return false
         return extension.matches.any { pattern ->
             val clean = pattern.lowercase(Locale.US).trim().removePrefix("*.").removePrefix("www.")
-            clean == "*" || host == clean || host.endsWith(".$clean") || url.lowercase(Locale.US).contains(clean)
+            clean == "*" || host == clean || host.endsWith(".$clean")
         }
     }
 
@@ -988,6 +1151,7 @@ object BrowserExtensionManager {
                     extension.jsCode.toByteArray(Charsets.UTF_8),
                     Base64.NO_WRAP
                 )
+                val quotedExtErrorPrefix = JSONObject.quote("Extension error [${extension.name}]:")
                 val jsWrapper = """
                     (function() {
                         try {
@@ -997,7 +1161,7 @@ object BrowserExtensionManager {
                             var out = fn();
                             return out !== undefined && out !== null ? String(out) : 'Ekstensi dijalankan';
                         } catch (err) {
-                            console.error('Extension error [${extension.name}]:', err);
+                            console.error($quotedExtErrorPrefix, err);
                             return 'Error: ' + (err && err.message ? err.message : String(err));
                         }
                     })();

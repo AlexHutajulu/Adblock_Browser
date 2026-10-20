@@ -72,14 +72,12 @@ object SearchEngineManager {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return selectedEngine.homeUrl
 
-        // Scheme check (HTTP, HTTPS, FILE, ABOUT, CONTENT, JAVASCRIPT)
-        val hasScheme = trimmed.startsWith("http://", ignoreCase = true) ||
-                trimmed.startsWith("https://", ignoreCase = true) ||
-                trimmed.startsWith("file://", ignoreCase = true) ||
-                trimmed.startsWith("about:", ignoreCase = true) ||
-                trimmed.startsWith("content://", ignoreCase = true) ||
-                trimmed.startsWith("javascript:", ignoreCase = true)
-        if (hasScheme) return trimmed
+        // Only allow safe web schemes (http://, https://) and about:blank.
+        // Dangerous schemes (javascript:, file://, content://, data:, intent://) are treated as search queries.
+        if (trimmed.equals("about:blank", ignoreCase = true)) return "about:blank"
+        val hasSafeWebScheme = trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true)
+        if (hasSafeWebScheme) return trimmed
 
         // Localhost and IPv4 address check (e.g. 192.168.1.1, 10.0.0.1, 127.0.0.1:8080)
         val isLocalhost = trimmed.startsWith("localhost", ignoreCase = true)
