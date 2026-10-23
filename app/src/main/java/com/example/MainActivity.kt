@@ -112,8 +112,10 @@ class MainActivity : ComponentActivity() {
         // Start TabPersistenceService to track if the application is swiped away/killed from recent task manager
         try {
             startService(android.content.Intent(this, com.example.manager.TabPersistenceService::class.java))
+        } catch (e: SecurityException) {
+            com.example.manager.SecurityLogger.logPermissionDenied("MainActivity", "TabPersistenceService")
         } catch (e: Exception) {
-            e.printStackTrace()
+            com.example.manager.SecurityLogger.logServiceError("MainActivity", "TabPersistenceService", e)
         }
 
         setContent {
@@ -294,12 +296,24 @@ class MainActivity : ComponentActivity() {
         try {
             val settingsManager = com.example.manager.SettingsManager(this)
             if (settingsManager.clearCookiesOnExit) {
-                android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                android.webkit.CookieManager.getInstance().removeAllCookies { success ->
+                    if (!success) {
+                        com.example.manager.SecurityLogger.logCookieClearFailed(
+                            "MainActivity",
+                            Exception("CookieManager.removeAllCookies failed")
+                        )
+                    }
+                }
                 android.webkit.CookieManager.getInstance().flush() // Ensure written to disk
                 android.webkit.WebStorage.getInstance().deleteAllData() // Clear cache/storage too for safety
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            com.example.manager.SecurityLogger.logSecurityEvent(
+                type = com.example.manager.SecurityLogger.EventType.COOKIE_CLEAR_FAILED,
+                component = "MainActivity",
+                message = "Failed to clear cookies on exit",
+                exception = e
+            )
         }
         
         // Safe releases of callbacks on lifecycle disposal
