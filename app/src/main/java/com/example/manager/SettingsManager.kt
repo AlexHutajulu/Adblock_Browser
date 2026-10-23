@@ -20,7 +20,8 @@ enum class PrivacyShieldMode {
 }
 
 class SettingsManager(private val context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("alex_browser_prefs", Context.MODE_PRIVATE)
+    // AUDIT FIX: CWE-312 - Use encrypted preferences instead of plaintext
+    private fun getEncryptedPrefs() = EncryptedPreferencesManager.getPreferences(context)
 
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
