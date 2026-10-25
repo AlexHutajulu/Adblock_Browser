@@ -9,7 +9,7 @@ class DevToolsJsBridge(
     private val onConsoleBridgeMessage: (ConsoleEntry) -> Unit
 ) {
     private val TAG = "DevToolsJsBridge"
-    private val MAX_BRIDGE_PAYLOAD_LENGTH = 32_768
+    private val MAX_BRIDGE_PAYLOAD_LENGTH = 16_384
     private val ELEMENT_SELECT_COOLDOWN_MS = 80L
     private val MAX_CONSOLE_MESSAGES_PER_WINDOW = 60
     private val CONSOLE_WINDOW_MS = 1000L
@@ -106,12 +106,12 @@ class DevToolsJsBridge(
             val levelStr = root.optString("level", "LOG")
             val level = runCatching { ConsoleLevel.valueOf(levelStr) }.getOrDefault(ConsoleLevel.LOG)
             
-            val sourceIdVal = if (root.isNull("sourceId")) null else root.optString("sourceId").takeIf { it.isNotEmpty() && it != "null" }?.take(300)
+            val sourceIdVal = if (root.isNull("sourceId")) null else root.optString("sourceId").takeIf { it.isNotEmpty() && it != "null" }?.take(256)
             val entry = ConsoleEntry(
                 id = java.util.UUID.randomUUID().toString(),
                 timestamp = now,
                 level = level,
-                message = root.optString("message", "").take(4000),
+                message = root.optString("message", "").take(2000),
                 sourceId = sourceIdVal,
                 lineNumber = if (root.has("lineNumber") && !root.isNull("lineNumber")) root.optInt("lineNumber") else null
             )

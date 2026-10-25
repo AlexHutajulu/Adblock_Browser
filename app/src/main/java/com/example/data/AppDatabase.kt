@@ -9,11 +9,32 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.manager.EncryptedPreferencesManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+
+enum class DatabaseEncryptionStatus(
+    val title: String,
+    val detail: String,
+    val isEncrypted: Boolean
+) {
+    ENCRYPTED_SQLCIPHER(
+        title = "Terenkripsi (SQLCipher AES-256)",
+        detail = "Riwayat, markah, dan unduhan dienkripsi di penyimpanan menggunakan SQLCipher 256-bit.",
+        isEncrypted = true
+    ),
+    DEGRADED_RECOVERY_IN_MEMORY(
+        title = "Mode Pemulihan Sesi (Memori Sementara)",
+        detail = "Database terenkripsi atau kunci SQLCipher tidak dapat diakses saat ini. File terenkripsi lama dipertahankan utuh dan sesi berjalan di memori.",
+        isEncrypted = false
+    ),
+    PLAINTEXT_FALLBACK(
+        title = "Database Lokal Standar (Tanpa SQLCipher)",
+        detail = "Runtime asli SQLCipher tidak tersedia pada lingkungan ini; menggunakan penyimpanan Room lokal aplikasi.",
+        isEncrypted = false
+    )
+}
 
 @Database(entities = [HistoryItem::class, BookmarkItem::class, DownloadItem::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
@@ -23,12 +44,21 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         private const val TAG = "AppDatabase"
-        private const val LEGACY_DB_NAME = "alex_browser_database"
-        private const val ENCRYPTED_DB_NAME = "alex_browser_database_encrypted"
-        private const val KEY_SQLCIPHER_MIGRATED = "db_migrated_to_sqlcipher_v1"
+        internal const val LEGACY_DB_NAME = "alex_browser_database"
+        internal const val ENCRYPTED_DB_NAME = "alex_browser_database_encrypted"
+        internal const val KEY_SQLCIPHER_MIGRATED = "db_migrated_to_sqlcipher_v1"
 
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        private val _encryptionStatus = MutableStateFlow(DatabaseEncryptionStatus.PLAINTEXT_FALLBACK)
+        val encryptionStatusFlow: StateFlow<DatabaseEncryptionStatus> = _encryptionStatus.asStateFlow()
+
+        fun getEncryptionStatus(): DatabaseEncryptionStatus = _encryptionStatus.value
+
+        internal fun setEncryptionStatusForTest(status: DatabaseEncryptionStatus) {
+            _encryptionStatus.value = status
+        }
 
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -69,30 +99,49 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private fun buildDatabaseWithOptionalEncryption(appContext: Context): AppDatabase {
+            val encryptedDbFile = appContext.getDatabasePath(ENCRYPTED_DB_NAME)
+            val encryptedFileExists = encryptedDbFile.exists() && encryptedDbFile.length() > 0L
+
             if (!isUnitTestEnvironment()) {
                 try {
                     System.loadLibrary("sqlcipher")
-                    val passphrase = AppDatabaseEncrypted.getDatabasePassphrase(appContext)
+                    val passphrase = AppDatabaseEncrypted.getDatabasePassphrase(
+                        context = appContext,
+                        encryptedDbExistsOverride = encryptedFileExists
+                    )
                     val encryptedBuilder = Room.databaseBuilder(
                         appContext,
                         AppDatabase::class.java,
                         ENCRYPTED_DB_NAME
                     )
                         .addMigrations(MIGRATION_1_2)
-                        .openHelperFactory(SupportOpenHelperFactory(passphrase.toByteArray()))
+                        .openHelperFactory(SupportOpenHelperFactory(passphrase.toByteArray(Charsets.UTF_8)))
 
                     if (com.example.BuildConfig.DEBUG && System.getenv("ALLOW_DESTRUCTIVE_MIGRATION") != null) {
                         encryptedBuilder.fallbackToDestructiveMigration(true)
                     }
 
                     val encryptedDb = encryptedBuilder.build()
-                    migrateLegacyPlaintextDatabaseAsync(appContext, encryptedDb)
+                    // Eagerly open and verify the SQLCipher database before returning it to callers
+                    encryptedDb.openHelper.writableDatabase
+                    migrateLegacyPlaintextDatabaseSync(appContext, encryptedDb)
+                    _encryptionStatus.value = DatabaseEncryptionStatus.ENCRYPTED_SQLCIPHER
                     return encryptedDb
                 } catch (t: Throwable) {
-                    Log.w(TAG, "SQLCipher native runtime unavailable, falling back to app-private Room database: ${t.message}")
+                    Log.e(TAG, "SQLCipher initialization error (encryptedFileExists=$encryptedFileExists): ${t.message}", t)
+                    if (encryptedFileExists || t is DatabaseKeyUnavailableException) {
+                        // CRITICAL: Do NOT delete the existing encrypted DB, do NOT overwrite the passphrase,
+                        // and do NOT silently write new browsing data to a plaintext file on disk when an encrypted DB already exists.
+                        _encryptionStatus.value = DatabaseEncryptionStatus.DEGRADED_RECOVERY_IN_MEMORY
+                        return Room.inMemoryDatabaseBuilder(
+                            appContext,
+                            AppDatabase::class.java
+                        ).build()
+                    }
                 }
             }
 
+            _encryptionStatus.value = DatabaseEncryptionStatus.PLAINTEXT_FALLBACK
             val builder = Room.databaseBuilder(
                 appContext,
                 AppDatabase::class.java,
@@ -105,43 +154,152 @@ abstract class AppDatabase : RoomDatabase() {
             return builder.build()
         }
 
-        private fun migrateLegacyPlaintextDatabaseAsync(appContext: Context, encryptedDb: AppDatabase) {
-            if (EncryptedPreferencesManager.getBoolean(appContext, KEY_SQLCIPHER_MIGRATED, false)) return
+        /**
+         * Synchronously and transactionally migrates records from `alex_browser_database` into `encryptedDb`.
+         * Never deletes the legacy database unless all records have been committed and verified in a single transaction.
+         */
+        internal fun migrateLegacyPlaintextDatabaseSync(appContext: Context, encryptedDb: AppDatabase): Boolean {
+            if (EncryptedPreferencesManager.getBoolean(appContext, KEY_SQLCIPHER_MIGRATED, false)) return true
             val legacyFile = appContext.getDatabasePath(LEGACY_DB_NAME)
-            if (!legacyFile.exists()) {
+            if (!legacyFile.exists() || legacyFile.length() == 0L) {
                 EncryptedPreferencesManager.putBoolean(appContext, KEY_SQLCIPHER_MIGRATED, true)
-                return
+                return true
             }
 
-            CoroutineScope(Dispatchers.IO).launch {
-                var legacyDb: AppDatabase? = null
-                try {
-                    legacyDb = Room.databaseBuilder(
-                        appContext,
-                        AppDatabase::class.java,
-                        LEGACY_DB_NAME
-                    ).addMigrations(MIGRATION_1_2).build()
+            var legacyDb: AppDatabase? = null
+            return try {
+                legacyDb = Room.databaseBuilder(
+                    appContext,
+                    AppDatabase::class.java,
+                    LEGACY_DB_NAME
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .allowMainThreadQueries()
+                    .build()
 
-                    val legacyHistory = legacyDb.historyDao().getAllHistory().first()
-                    legacyHistory.forEach { encryptedDb.historyDao().insertHistory(it) }
+                val sourceSqlite = legacyDb.openHelper.ReadableDatabaseCompat()
+                val targetSqlite = encryptedDb.openHelper.writableDatabase
 
-                    val legacyBookmarks = legacyDb.bookmarkDao().getAllBookmarks().first()
-                    legacyBookmarks.forEach { encryptedDb.bookmarkDao().insertBookmark(it) }
+                val migratedOk = migrateDatabaseContentsTransactionally(sourceSqlite, targetSqlite)
+                legacyDb.close()
+                legacyDb = null
 
-                    val legacyDownloads = legacyDb.downloadDao().getNonIncognitoDownloads().first()
-                    legacyDownloads.forEach { encryptedDb.downloadDao().insertOrUpdate(it) }
-
-                    legacyDb.close()
-                    legacyDb = null
+                if (migratedOk) {
                     appContext.deleteDatabase(LEGACY_DB_NAME)
                     EncryptedPreferencesManager.putBoolean(appContext, KEY_SQLCIPHER_MIGRATED, true)
                     Log.i(TAG, "Successfully migrated legacy plaintext database into SQLCipher encrypted database")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Legacy database migration warning: ${e.message}")
-                } finally {
-                    try { legacyDb?.close() } catch (_: Exception) {}
+                    true
+                } else {
+                    Log.w(TAG, "Legacy database migration did not pass verification; keeping legacy DB intact")
+                    false
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Legacy database migration aborted safely (legacy DB preserved): ${e.message}")
+                false
+            } finally {
+                try {
+                    legacyDb?.close()
+                } catch (_: Exception) {}
+            }
+        }
+
+        private fun androidx.sqlite.db.SupportSQLiteOpenHelper.ReadableDatabaseCompat(): SupportSQLiteDatabase =
+            this.writableDatabase
+
+        /**
+         * Copies history, bookmarks, and non-incognito downloads from [sourceDb] into [targetDb]
+         * inside a single atomic transaction on [targetDb], verifying row counts before committing.
+         * If any operation fails, the transaction rolls back and returns `false` (or throws), preserving [sourceDb].
+         */
+        internal fun migrateDatabaseContentsTransactionally(
+            sourceDb: SupportSQLiteDatabase,
+            targetDb: SupportSQLiteDatabase
+        ): Boolean {
+            var historySourceCount = 0
+            var bookmarksSourceCount = 0
+            var downloadsSourceCount = 0
+
+            targetDb.beginTransaction()
+            try {
+                sourceDb.query("SELECT id, title, url, timestamp FROM history").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getInt(0)
+                        val title = cursor.getString(1) ?: ""
+                        val url = cursor.getString(2) ?: ""
+                        val timestamp = cursor.getLong(3)
+                        targetDb.execSQL(
+                            "INSERT OR REPLACE INTO history (id, title, url, timestamp) VALUES (?, ?, ?, ?)",
+                            arrayOf<Any>(id, title, url, timestamp)
+                        )
+                        historySourceCount++
+                    }
+                }
+
+                sourceDb.query("SELECT id, title, url, timestamp FROM bookmarks").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getInt(0)
+                        val title = cursor.getString(1) ?: ""
+                        val url = cursor.getString(2) ?: ""
+                        val timestamp = cursor.getLong(3)
+                        targetDb.execSQL(
+                            "INSERT OR REPLACE INTO bookmarks (id, title, url, timestamp) VALUES (?, ?, ?, ?)",
+                            arrayOf<Any>(id, title, url, timestamp)
+                        )
+                        bookmarksSourceCount++
+                    }
+                }
+
+                sourceDb.query(
+                    "SELECT id, fileName, url, domain, mimeType, totalBytes, downloadedBytes, status, fileUri, createdAt, completedAt, failureReason, isIncognito FROM downloads WHERE isIncognito = 0"
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getString(0) ?: continue
+                        val fileName = cursor.getString(1) ?: ""
+                        val url = cursor.getString(2) ?: ""
+                        val domain = cursor.getString(3) ?: ""
+                        val mimeType = cursor.getString(4) ?: ""
+                        val totalBytes = cursor.getLong(5)
+                        val downloadedBytes = cursor.getLong(6)
+                        val status = cursor.getString(7) ?: ""
+                        val fileUri = cursor.getString(8) ?: ""
+                        val createdAt = cursor.getLong(9)
+                        val completedAt = cursor.getLong(10)
+                        val failureReason = cursor.getString(11) ?: ""
+                        val isIncognito = cursor.getInt(12)
+                        targetDb.execSQL(
+                            "INSERT OR REPLACE INTO downloads (id, fileName, url, domain, mimeType, totalBytes, downloadedBytes, status, fileUri, createdAt, completedAt, failureReason, isIncognito) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            arrayOf<Any>(
+                                id, fileName, url, domain, mimeType, totalBytes, downloadedBytes,
+                                status, fileUri, createdAt, completedAt, failureReason, isIncognito
+                            )
+                        )
+                        downloadsSourceCount++
+                    }
+                }
+
+                val targetHistoryCount = queryRowCount(targetDb, "SELECT COUNT(*) FROM history")
+                val targetBookmarksCount = queryRowCount(targetDb, "SELECT COUNT(*) FROM bookmarks")
+                val targetDownloadsCount = queryRowCount(targetDb, "SELECT COUNT(*) FROM downloads WHERE isIncognito = 0")
+
+                if (targetHistoryCount < historySourceCount ||
+                    targetBookmarksCount < bookmarksSourceCount ||
+                    targetDownloadsCount < downloadsSourceCount
+                ) {
+                    return false
+                }
+
+                targetDb.setTransactionSuccessful()
+                return true
+            } finally {
+                targetDb.endTransaction()
+            }
+        }
+
+        private fun queryRowCount(db: SupportSQLiteDatabase, sql: String): Int {
+            db.query(sql).use { cursor ->
+                return if (cursor.moveToFirst()) cursor.getInt(0) else 0
             }
         }
     }
 }
+

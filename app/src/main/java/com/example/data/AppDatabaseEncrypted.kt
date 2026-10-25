@@ -10,6 +10,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.manager.EncryptedPreferencesManager
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
+class DatabaseKeyUnavailableException(
+    message: String,
+    cause: Throwable? = null
+) : IllegalStateException(message, cause)
+
 /**
  * Secure Room Database with SQLCipher encryption.
  *
@@ -24,6 +29,9 @@ abstract class AppDatabaseEncrypted : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
 
     companion object {
+        internal const val ENCRYPTED_DB_NAME = "alex_browser_database_encrypted"
+        internal const val KEY_DB_PASSPHRASE = "db_passphrase"
+
         @Volatile
         private var INSTANCE: AppDatabaseEncrypted? = null
 
@@ -55,25 +63,29 @@ abstract class AppDatabaseEncrypted : RoomDatabase() {
          */
         fun getDatabase(context: Context): AppDatabaseEncrypted {
             return INSTANCE ?: synchronized(this) {
-                try {
-                    val passphrase = getDatabasePassphrase(context)
-                    
+                INSTANCE ?: try {
+                    val appContext = context.applicationContext ?: context
+                    val passphrase = getDatabasePassphrase(appContext)
+
                     val builder = Room.databaseBuilder(
-                        context.applicationContext,
+                        appContext,
                         AppDatabaseEncrypted::class.java,
-                        "alex_browser_database_encrypted"
+                        ENCRYPTED_DB_NAME
                     ).addMigrations(MIGRATION_1_2)
 
                     // Use official SQLCipher SupportOpenHelperFactory
-                    builder.openHelperFactory(SupportOpenHelperFactory(passphrase.toByteArray()))
+                    builder.openHelperFactory(SupportOpenHelperFactory(passphrase.toByteArray(Charsets.UTF_8)))
 
-                    if (com.example.BuildConfig.DEBUG && 
-                        System.getenv("ALLOW_DESTRUCTIVE_MIGRATION") != null) {
+                    if (com.example.BuildConfig.DEBUG &&
+                        System.getenv("ALLOW_DESTRUCTIVE_MIGRATION") != null
+                    ) {
                         builder.fallbackToDestructiveMigration(true)
                         Log.w("AppDatabaseEncrypted", "WARNING: Destructive migration allowed in DEBUG mode")
                     }
 
                     val instance = builder.build()
+                    // Eagerly verify that SQLCipher can open the database with the passphrase
+                    instance.openHelper.writableDatabase
                     INSTANCE = instance
                     Log.i("AppDatabaseEncrypted", "Database initialized with SQLCipher encryption")
                     instance
@@ -85,23 +97,53 @@ abstract class AppDatabaseEncrypted : RoomDatabase() {
         }
 
         /**
-         * Generate or retrieve secure passphrase for database encryption.
-         * Stored securely via EncryptedPreferencesManager.
+         * Retrieve existing database passphrase or generate one ONLY when no encrypted database file exists yet.
+         * Never overwrites or generates a new passphrase if `alex_browser_database_encrypted` already exists on disk.
          */
-        fun getDatabasePassphrase(context: Context): String {
-            return try {
-                val stored = EncryptedPreferencesManager.getString(context, "db_passphrase", "") ?: ""
-                if (stored.isNotEmpty()) {
-                    stored
-                } else {
-                    val newPassphrase = java.util.UUID.randomUUID().toString()
-                    EncryptedPreferencesManager.putString(context, "db_passphrase", newPassphrase)
-                    newPassphrase
-                }
+        fun getDatabasePassphrase(
+            context: Context,
+            encryptedDbExistsOverride: Boolean? = null
+        ): String {
+            val appContext = context.applicationContext ?: context
+            val encryptedFile = appContext.getDatabasePath(ENCRYPTED_DB_NAME)
+            val encryptedDbExists = encryptedDbExistsOverride
+                ?: (encryptedFile.exists() && encryptedFile.length() > 0L)
+
+            val prefs = try {
+                EncryptedPreferencesManager.getPreferences(appContext)
             } catch (e: Exception) {
-                Log.e("AppDatabaseEncrypted", "Error getting database passphrase", e)
-                throw RuntimeException("Critical: Cannot obtain database encryption key", e)
+                throw DatabaseKeyUnavailableException("Tidak dapat mengakses penyimpanan kunci terenkripsi", e)
             }
+
+            val stored = try {
+                prefs.getString(KEY_DB_PASSPHRASE, null)?.trim().orEmpty()
+            } catch (e: Exception) {
+                throw DatabaseKeyUnavailableException("Gagal membaca passphrase database dari penyimpanan kunci", e)
+            }
+
+            if (stored.isNotEmpty()) {
+                return stored
+            }
+
+            // CRITICAL: If the encrypted database file already exists on disk, NEVER generate a new passphrase!
+            if (encryptedDbExists) {
+                Log.e(
+                    "AppDatabaseEncrypted",
+                    "Passphrase missing while encrypted database file already exists; refusing to overwrite key"
+                )
+                throw DatabaseKeyUnavailableException(
+                    "Passphrase untuk database terenkripsi yang sudah ada tidak ditemukan; kunci tidak ditimpa demi mencegah kerusakan data."
+                )
+            }
+
+            val newPassphrase = java.util.UUID.randomUUID().toString() + "-" + java.util.UUID.randomUUID().toString()
+            val committed = prefs.edit().putString(KEY_DB_PASSPHRASE, newPassphrase).commit()
+            val verified = prefs.getString(KEY_DB_PASSPHRASE, null)
+            if (!committed || verified != newPassphrase) {
+                throw DatabaseKeyUnavailableException("Gagal menyimpan passphrase database baru secara persisten")
+            }
+            return newPassphrase
         }
     }
 }
+

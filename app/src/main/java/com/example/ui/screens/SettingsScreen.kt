@@ -359,9 +359,13 @@ fun SettingsScreen(
                             viewModel.clearAllBookmarks()
                             Toast.makeText(context, "Bookmarks cleared", Toast.LENGTH_SHORT).show()
                         },
+                        onClearCacheOnly = {
+                            viewModel.clearBrowserCacheOnly(context)
+                            Toast.makeText(context, "Browser cache cleared (cookies preserved)", Toast.LENGTH_SHORT).show()
+                        },
                         onClearCache = {
-                            viewModel.clearCacheAndCookies(context)
-                            Toast.makeText(context, "Cache and cookies cleared", Toast.LENGTH_SHORT).show()
+                            viewModel.clearCacheAndCookies(context, closeTabs = false)
+                            Toast.makeText(context, "Cookies, site data & cache cleared", Toast.LENGTH_SHORT).show()
                         }
                     )
 
@@ -782,7 +786,7 @@ fun PrivacySettingsModule(
             Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                 Text("WebRTC IP leak protection", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 Text(
-                    "Prevent local IP discovery over WebRTC connections",
+                    "Wraps WebRTC peer connections at page load (onPageStarted) to restrict local IP candidate exposure",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -821,12 +825,48 @@ fun PrivacySettingsModule(
             Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                 Text("Clear cookies & site data on exit", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 Text(
-                    "Automatically wipe cookies when closing the browser",
+                    "Automatically wipe cookies, site storage, and saved tabs when closing the browser",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Switch(checked = clearCookiesOnExit, onCheckedChange = onClearCookiesOnExitToggle)
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        val dbEncryptionStatus by com.example.data.AppDatabase.encryptionStatusFlow.collectAsState()
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = if (dbEncryptionStatus.isEncrypted) Icons.Outlined.Lock else Icons.Outlined.Info,
+                    contentDescription = null,
+                    tint = if (dbEncryptionStatus.isEncrypted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Status Database: ${dbEncryptionStatus.title}",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = dbEncryptionStatus.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -916,21 +956,31 @@ fun FastInternetModule(
 fun DataCleanersModule(
     onClearHistory: () -> Unit,
     onClearBookmarks: () -> Unit,
+    onClearCacheOnly: () -> Unit = {},
     onClearCache: () -> Unit
 ) {
     ChromeSettingsSectionCard(title = "Clear Browsing Data") {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = onClearCache,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                ),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(Icons.Outlined.DeleteSweep, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Clear Cache & Cookies")
+                FilledTonalButton(
+                    onClick = onClearCacheOnly,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Clear Cache Only", textAlign = TextAlign.Center)
+                }
+                Button(
+                    onClick = onClearCache,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Clear Cookies & Site Data", textAlign = TextAlign.Center)
+                }
             }
 
             Row(
@@ -979,7 +1029,7 @@ fun SettingsAboutBanner() {
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Fast, lightweight, and responsive modern web browser powered by the Singularity engine with built-in AdShield protection.",
+                text = "Fast, lightweight, and responsive modern web browser with built-in AdShield protection. External connections are limited to your selected search engine, Android Safe Browsing, HTTPS AdBlock filter list updates (EasyList, EasyPrivacy, Peter Lowe), and URLs you explicitly open.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center

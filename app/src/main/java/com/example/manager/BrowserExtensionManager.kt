@@ -44,6 +44,7 @@ data class BrowserExtension(
     val runAt: ExtensionRunAt = ExtensionRunAt.DOCUMENT_END,
     val isEnabled: Boolean = true,
     val isPinnedToToolbar: Boolean = false,
+    val allowInPrivate: Boolean = false,
     val sourceType: ExtensionSourceType = ExtensionSourceType.CUSTOM_CODE,
     val sourceUrl: String = ""
 )
@@ -472,6 +473,7 @@ object BrowserExtensionManager {
                 put("runAt", ext.runAt.name)
                 put("isEnabled", ext.isEnabled)
                 put("isPinnedToToolbar", ext.isPinnedToToolbar)
+                put("allowInPrivate", ext.allowInPrivate)
                 put("sourceType", ext.sourceType.name)
                 put("sourceUrl", ext.sourceUrl)
             }
@@ -531,6 +533,16 @@ object BrowserExtensionManager {
                     ExtensionSourceType.CUSTOM_CODE
                 }
 
+                val normalizedMatches = matchesList
+                    .map { normalizeMatchPattern(it) }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .ifEmpty { listOf("*") }
+
+                val isExternalSource = sourceType == ExtensionSourceType.EXTERNAL_FILE ||
+                    sourceType == ExtensionSourceType.EXTERNAL_URL
+                val defaultEnabled = !isExternalSource
+
                 result.add(
                     BrowserExtension(
                         id = obj.optString("id", UUID.randomUUID().toString()).ifBlank { UUID.randomUUID().toString() },
@@ -541,10 +553,11 @@ object BrowserExtensionManager {
                         iconName = obj.optString("iconName", "Extension"),
                         jsCode = jsCode,
                         cssCode = cssCode,
-                        matches = matchesList,
+                        matches = normalizedMatches,
                         runAt = runAt,
-                        isEnabled = obj.optBoolean("isEnabled", true),
+                        isEnabled = obj.optBoolean("isEnabled", defaultEnabled),
                         isPinnedToToolbar = obj.optBoolean("isPinnedToToolbar", true),
+                        allowInPrivate = obj.optBoolean("allowInPrivate", false),
                         sourceType = sourceType,
                         sourceUrl = obj.optString("sourceUrl", "")
                     )
@@ -612,12 +625,45 @@ object BrowserExtensionManager {
 
         if (matches.isEmpty()) matches.add("*")
 
-        // Provide GM_* compatibility shim so external Tampermonkey scripts work smoothly
-        val gmShim = """
+        // Provide hardened GM_* compatibility shim with SSRF & host-scope enforcement
+        val gmShim = buildSafeGmXhrShim(matches)
+
+        return BrowserExtension(
+            id = "ext_user_" + UUID.randomUUID().toString().take(8),
+            name = name.take(45),
+            version = version.take(16),
+            description = description.take(180),
+            author = author.take(40),
+            iconName = "Terminal",
+            jsCode = "$gmShim\n$code",
+            cssCode = "",
+            matches = matches,
+            runAt = runAt,
+            isEnabled = false,
+            isPinnedToToolbar = true,
+            allowInPrivate = false,
+            sourceType = ExtensionSourceType.EXTERNAL_FILE
+        )
+    }
+
+    /**
+     * Builds a hardened `GM_*` compatibility shim for userscripts (`F3-02`):
+     * - Restricts `GM_xmlhttpRequest` to `http:` / `https:` URLs only.
+     * - Blocks all private/loopback/link-local/RFC1918/CGNAT/IPv6-local addresses.
+     * - Requires target host to match either the active page origin or the extension's `matches` scope.
+     * - Forces `credentials: 'omit'`, `cache: 'no-store'`, `redirect: 'error'`, and strips sensitive headers.
+     */
+    internal fun buildSafeGmXhrShim(allowedMatches: List<String>): String {
+        val cleanMatches = allowedMatches
+            .map { normalizeMatchPattern(it) }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf("*") }
+        val matchesJson = JSONArray(cleanMatches).toString()
+        return """
             if (typeof window.GM_addStyle === 'undefined') {
                 window.GM_addStyle = function(css) {
                     var s = document.createElement('style');
-                    s.textContent = css;
+                    s.textContent = String(css || '');
                     (document.head || document.documentElement).appendChild(s);
                     return s;
                 };
@@ -634,33 +680,137 @@ object BrowserExtensionManager {
                 };
             }
             if (typeof window.GM_xmlhttpRequest === 'undefined') {
-                window.GM_xmlhttpRequest = function(details) {
-                    if (!details || typeof details.url !== 'string' || !/^https?:\/\//i.test(details.url.trim())) {
-                        if (details && details.onerror) details.onerror(new Error('Blocked unsafe GM_xmlhttpRequest scheme'));
-                        return;
+                (function() {
+                    var allowedScopes = $matchesJson;
+                    function isPrivateOrLocalHost(h) {
+                        if (!h) return true;
+                        var host = h.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+                        if (!host || host === 'localhost' || host.endsWith('.localhost') ||
+                            host.endsWith('.local') || host.endsWith('.internal') ||
+                            host.endsWith('.home.arpa') || host.endsWith('.lan')) {
+                            return true;
+                        }
+                        if (host.indexOf(':') !== -1) {
+                            if (host === '::1' || host === '0:0:0:0:0:0:0:1' || host === '::' ||
+                                /^fe[89ab][0-9a-f]:/i.test(host) || /^f[cd][0-9a-f]{2}:/i.test(host)) {
+                                return true;
+                            }
+                        }
+                        var ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+                        if (ipv4) {
+                            var a = parseInt(ipv4[1], 10), b = parseInt(ipv4[2], 10);
+                            if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
+                            if (a === 169 && b === 254) return true;
+                            if (a === 192 && b === 168) return true;
+                            if (a === 172 && b >= 16 && b <= 31) return true;
+                            if (a === 100 && b >= 64 && b <= 127) return true;
+                        }
+                        return false;
                     }
-                    fetch(details.url, { method: details.method || 'GET', headers: details.headers || {}, body: details.data })
-                        .then(function(r) { return r.text().then(function(t) { if (details.onload) details.onload({ status: r.status, responseText: t }); }); })
-                        .catch(function(e) { if (details.onerror) details.onerror(e); });
-                };
+                    function isHostInScope(targetHost) {
+                        var th = targetHost.toLowerCase().replace(/^www\./, '');
+                        var pageHost = (window.location && window.location.hostname || '').toLowerCase().replace(/^www\./, '');
+                        if (pageHost && (th === pageHost || th.endsWith('.' + pageHost))) return true;
+                        for (var i = 0; i < allowedScopes.length; i++) {
+                            var pat = String(allowedScopes[i] || '').toLowerCase().replace(/^\*\./, '').replace(/^www\./, '');
+                            if (pat === '*' || th === pat || (pat && th.endsWith('.' + pat))) return true;
+                        }
+                        return false;
+                    }
+                    window.GM_xmlhttpRequest = function(details) {
+                        if (!details || typeof details.url !== 'string') return;
+                        var parsed;
+                        try {
+                            parsed = new URL(details.url.trim(), window.location.href);
+                        } catch (e) {
+                            if (details.onerror) details.onerror(new Error('Invalid GM_xmlhttpRequest URL'));
+                            return;
+                        }
+                        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+                            if (details.onerror) details.onerror(new Error('Blocked unsafe GM_xmlhttpRequest scheme'));
+                            return;
+                        }
+                        var targetHost = (parsed.hostname || '').toLowerCase();
+                        if (isPrivateOrLocalHost(targetHost)) {
+                            if (details.onerror) details.onerror(new Error('Blocked GM_xmlhttpRequest to private/local address'));
+                            return;
+                        }
+                        if (!isHostInScope(targetHost)) {
+                            if (details.onerror) details.onerror(new Error('Blocked GM_xmlhttpRequest outside extension host scope'));
+                            return;
+                        }
+                        var safeHeaders = {};
+                        if (details.headers && typeof details.headers === 'object') {
+                            Object.keys(details.headers).forEach(function(k) {
+                                var lk = String(k).toLowerCase().trim();
+                                if (lk && lk !== 'cookie' && lk !== 'cookie2' &&
+                                    lk !== 'authorization' && lk !== 'proxy-authorization' &&
+                                    lk !== 'host' && lk !== 'origin' && lk !== 'referer' &&
+                                    lk.indexOf('sec-') !== 0 && lk.indexOf('proxy-') !== 0) {
+                                    safeHeaders[k] = String(details.headers[k]);
+                                }
+                            });
+                        }
+                        fetch(parsed.href, {
+                            method: details.method || 'GET',
+                            headers: safeHeaders,
+                            body: details.data,
+                            credentials: 'omit',
+                            cache: 'no-store',
+                            redirect: 'error',
+                            mode: 'cors'
+                        })
+                            .then(function(r) {
+                                return r.text().then(function(t) {
+                                    var bounded = (t && t.length > 1048576) ? t.slice(0, 1048576) : t;
+                                    if (details.onload) details.onload({ status: r.status, responseText: bounded });
+                                });
+                            })
+                            .catch(function(e) { if (details.onerror) details.onerror(e); });
+                    };
+                })();
             }
         """.trimIndent()
+    }
 
-        return BrowserExtension(
-            id = "ext_user_" + UUID.randomUUID().toString().take(8),
-            name = name.take(45),
-            version = version.take(16),
-            description = description.take(180),
-            author = author.take(40),
-            iconName = "Terminal",
-            jsCode = "$gmShim\n$code",
-            cssCode = "",
-            matches = matches,
-            runAt = runAt,
-            isEnabled = true,
-            isPinnedToToolbar = true,
-            sourceType = ExtensionSourceType.EXTERNAL_FILE
-        )
+    /**
+     * Validates whether a `GM_xmlhttpRequest` target URL is safe and within the extension's host scope (`F3-02`).
+     */
+    fun isAllowedGmXhrUrl(
+        targetUrl: String,
+        pageUrl: String?,
+        extensionMatches: List<String>
+    ): Boolean {
+        val trimmed = targetUrl.trim()
+        if (!SecurityGuardEngine.isSafeWebNavigationUrl(trimmed)) return false
+        if (SecurityGuardEngine.isCriticalProtectedHost(trimmed)) return false
+
+        val targetHost = try {
+            Uri.parse(trimmed).host?.lowercase(Locale.US)?.removeSurrounding("[", "]")?.trimEnd('.') ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+        if (targetHost.isBlank()) return false
+        if (SecurityGuardEngine.isLocalOrPrivateAddress(targetHost)) return false
+
+        val cleanTargetHost = targetHost.removePrefix("www.")
+        val pageHost = try {
+            if (!pageUrl.isNullOrBlank()) {
+                Uri.parse(pageUrl).host?.lowercase(Locale.US)?.removeSurrounding("[", "]")?.trimEnd('.')?.removePrefix("www.") ?: ""
+            } else ""
+        } catch (_: Exception) {
+            ""
+        }
+        if (pageHost.isNotEmpty() && !SecurityGuardEngine.isLocalOrPrivateAddress(pageHost)) {
+            if (cleanTargetHost == pageHost || cleanTargetHost.endsWith(".$pageHost")) {
+                return true
+            }
+        }
+
+        return extensionMatches.any { rawPattern ->
+            val clean = normalizeMatchPattern(rawPattern)
+            clean.isNotEmpty() && (clean == "*" || cleanTargetHost == clean || cleanTargetHost.endsWith(".$clean"))
+        }
     }
 
     /**
@@ -688,8 +838,9 @@ object BrowserExtensionManager {
             cssCode = css,
             matches = listOf("*"),
             runAt = ExtensionRunAt.DOCUMENT_START,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = true,
+            allowInPrivate = false,
             sourceType = ExtensionSourceType.EXTERNAL_FILE
         )
     }
@@ -787,8 +938,9 @@ object BrowserExtensionManager {
                 cssCode = finalCss,
                 matches = matches,
                 runAt = runAt,
-                isEnabled = true,
+                isEnabled = false,
                 isPinnedToToolbar = true,
+                allowInPrivate = false,
                 sourceType = ExtensionSourceType.EXTERNAL_FILE
             )
         } catch (e: Exception) {
@@ -828,46 +980,11 @@ object BrowserExtensionManager {
         return try {
             val parsed = URL(trimmed)
             if (!parsed.protocol.equals("https", ignoreCase = true)) return false
-            val host = parsed.host.lowercase(Locale.US).removeSurrounding("[", "]")
+            val host = parsed.host.lowercase(Locale.US).removeSurrounding("[", "]").trimEnd('.')
             if (host.isBlank()) return false
 
-            if (host == "localhost" ||
-                host.endsWith(".localhost") ||
-                host.endsWith(".local") ||
-                host.endsWith(".internal") ||
-                host.endsWith(".localdomain") ||
-                host == "127.0.0.1" ||
-                host == "0.0.0.0" ||
-                host == "::1" ||
-                host == "0:0:0:0:0:0:0:1" ||
-                host.startsWith("169.254.") ||
-                host.startsWith("127.") ||
-                host.startsWith("fe80:") ||
-                host.startsWith("fc") ||
-                host.startsWith("fd") ||
-                host.startsWith("::ffff:127.") ||
-                host.startsWith("::ffff:10.") ||
-                host.startsWith("::ffff:192.168.") ||
-                host.startsWith("::ffff:169.254.") ||
-                host.all { it.isDigit() } ||
-                host.startsWith("0x")
-            ) {
+            if (SecurityGuardEngine.isLocalOrPrivateAddress(host)) {
                 return false
-            }
-
-            val ipv4Part = if (host.startsWith("::ffff:")) host.removePrefix("::ffff:") else host
-            val parts = ipv4Part.split(".")
-            if (parts.size == 4 && parts.all { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }) {
-                if (parts.any { it.length > 1 && it.startsWith("0") }) return false
-                val ip0 = parts[0].toIntOrNull() ?: return false
-                val ip1 = parts[1].toIntOrNull() ?: return false
-                if (ip0 == 10) return false
-                if (ip0 == 172 && ip1 in 16..31) return false
-                if (ip0 == 192 && ip1 == 168) return false
-                if (ip0 == 127) return false
-                if (ip0 == 169 && ip1 == 254) return false
-                if (ip0 == 100 && ip1 in 64..127) return false
-                if (ip0 == 0 || ip0 >= 224) return false
             }
 
             if (resolveDns) {
@@ -970,8 +1087,9 @@ object BrowserExtensionManager {
                                 jsCode = combinedJs,
                                 cssCode = combinedCss,
                                 sourceType = ExtensionSourceType.EXTERNAL_FILE,
-                                isEnabled = true,
-                                isPinnedToToolbar = true
+                                isEnabled = false,
+                                isPinnedToToolbar = true,
+                                allowInPrivate = false
                             )
                         )
                     }
@@ -1022,6 +1140,7 @@ object BrowserExtensionManager {
                     val urlObj = URL(currentUrl)
                     conn = (urlObj.openConnection() as HttpURLConnection).apply {
                         instanceFollowRedirects = false
+                        useCaches = false
                         connectTimeout = 10000
                         readTimeout = 10000
                         requestMethod = "GET"
@@ -1099,7 +1218,11 @@ object BrowserExtensionManager {
         if (lowerName.endsWith(".json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
             val fromJson = parseExtensionsJson(trimmed)
             if (fromJson.isNotEmpty()) {
-                return fromJson.map { it.copy(sourceType = sourceType, sourceUrl = sourceUrl.ifBlank { it.sourceUrl }) }
+                return fromJson.map { ext ->
+                    enforceExternalImportSafety(
+                        ext.copy(sourceType = sourceType, sourceUrl = sourceUrl.ifBlank { ext.sourceUrl })
+                    )
+                }
             }
         }
 
@@ -1107,55 +1230,115 @@ object BrowserExtensionManager {
         if (lowerName.endsWith(".css")) {
             val cssExt = parseCssExtension(trimmed, fileName)
             if (cssExt != null) {
-                return listOf(cssExt.copy(sourceType = sourceType, sourceUrl = sourceUrl))
+                return listOf(
+                    enforceExternalImportSafety(
+                        cssExt.copy(sourceType = sourceType, sourceUrl = sourceUrl)
+                    )
+                )
             }
         }
 
         // 3. Parse as Userscript (.user.js) or standard JavaScript (.js)
         val jsExt = parseUserScriptOrJs(trimmed, fileName)
         return if (jsExt != null) {
-            listOf(jsExt.copy(sourceType = sourceType, sourceUrl = sourceUrl))
+            listOf(
+                enforceExternalImportSafety(
+                    jsExt.copy(sourceType = sourceType, sourceUrl = sourceUrl)
+                )
+            )
         } else {
             emptyList()
         }
     }
 
-    private fun normalizeMatchPattern(rawPattern: String): String {
+    /**
+     * Enforces safe defaults for newly imported external extensions (`F3-01`):
+     * - External extensions (`EXTERNAL_FILE` / `EXTERNAL_URL`) are disabled on import (`isEnabled = false`)
+     *   so the user must review the target host scope (`matches`) before enabling automatic execution.
+     * - External extensions are never auto-enabled in Private/Incognito tabs (`allowInPrivate = false`).
+     */
+    internal fun enforceExternalImportSafety(ext: BrowserExtension): BrowserExtension {
+        if (ext.sourceType == ExtensionSourceType.BUILT_IN) return ext
+        val isExternalImport = ext.sourceType == ExtensionSourceType.EXTERNAL_FILE ||
+            ext.sourceType == ExtensionSourceType.EXTERNAL_URL
+        val hasWildcardAllSites = ext.matches.isEmpty() || ext.matches.contains("*")
+        return ext.copy(
+            isEnabled = if (isExternalImport || hasWildcardAllSites) false else ext.isEnabled,
+            allowInPrivate = false
+        )
+    }
+
+    internal fun normalizeMatchPattern(rawPattern: String): String {
         val p = rawPattern.trim()
-        if (p == "*" || p == "<all_urls>" || p == "*://*/*" || p == "http://*/*" || p == "https://*/*") {
+        if (p.isEmpty()) return ""
+        if (p == "*" || p.equals("<all_urls>", ignoreCase = true) ||
+            p == "*://*/*" || p == "http://*/*" || p == "https://*/*" ||
+            p == "*://*" || p == "http://*" || p == "https://*"
+        ) {
             return "*"
         }
         return try {
-            val withoutScheme = p.removePrefix("https://").removePrefix("http://").removePrefix("*://")
-            val hostPart = withoutScheme.substringBefore("/").removePrefix("*.").removePrefix("www.").trim()
-            if (hostPart.isBlank() || hostPart == "*") "*" else hostPart.lowercase(Locale.US)
+            val withoutScheme = p
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .removePrefix("*://")
+            val hostPart = withoutScheme
+                .substringBefore("/")
+                .substringBefore("?")
+                .substringBefore("#")
+                .substringBefore(":")
+                .removePrefix("*.")
+                .removePrefix("www.")
+                .trim()
+                .trimEnd('.')
+                .lowercase(Locale.US)
+            if (hostPart.isBlank() || hostPart == "*") {
+                ""
+            } else if (hostPart.any { it.isWhitespace() || it in charArrayOf('<', '>', '"', '\'', ';', '\\') }) {
+                ""
+            } else {
+                hostPart
+            }
         } catch (_: Exception) {
-            "*"
+            ""
         }
     }
 
     fun doesExtensionMatchUrl(extension: BrowserExtension, url: String?): Boolean {
         if (url.isNullOrBlank() || url == "about:blank") return false
         if (!SecurityGuardEngine.isSafeWebNavigationUrl(url)) return false
-        val host = try {
-            Uri.parse(url).host?.lowercase(Locale.US)?.removePrefix("www.") ?: ""
+        val rawHost = try {
+            Uri.parse(url).host?.lowercase(Locale.US)?.removeSurrounding("[", "]")?.trimEnd('.') ?: ""
         } catch (_: Exception) {
             ""
         }
+        val host = rawHost.removePrefix("www.")
         if (host.isEmpty()) return false
-        if (extension.matches.isEmpty() || extension.matches.contains("*")) return true
+        if (extension.sourceType != ExtensionSourceType.BUILT_IN &&
+            SecurityGuardEngine.isLocalOrPrivateAddress(rawHost)
+        ) {
+            return false
+        }
+        if (extension.matches.isEmpty()) return false
         return extension.matches.any { pattern ->
-            val clean = pattern.lowercase(Locale.US).trim().removePrefix("*.").removePrefix("www.")
-            clean == "*" || host == clean || host.endsWith(".$clean")
+            val clean = normalizeMatchPattern(pattern)
+            clean.isNotEmpty() && (clean == "*" || host == clean || host.endsWith(".$clean"))
         }
     }
 
     /**
      * Checks whether automatic extension injection (`DOCUMENT_START` / `DOCUMENT_END`) is permitted
-     * for the given `extension` and `url`. Blocks automatic execution on critical banking/payment/SSO/CAPTCHA hosts.
+     * for the given `extension` and `url`.
+     * - Blocks automatic execution on critical banking/payment/SSO/CAPTCHA hosts.
+     * - Blocks automatic execution in Private/Incognito tabs unless `extension.allowInPrivate` is explicitly true (`F3-01`).
      */
-    fun canAutoInjectExtensionOnUrl(extension: BrowserExtension, url: String?): Boolean {
+    fun canAutoInjectExtensionOnUrl(
+        extension: BrowserExtension,
+        url: String?,
+        isPrivate: Boolean = false
+    ): Boolean {
         if (!extension.isEnabled || extension.runAt == ExtensionRunAt.MANUAL_ONLY) return false
+        if (isPrivate && !extension.allowInPrivate) return false
         if (!doesExtensionMatchUrl(extension, url)) return false
         if (SecurityGuardEngine.isCriticalProtectedHost(url)) return false
         return true
@@ -1168,14 +1351,15 @@ object BrowserExtensionManager {
         webView: WebView?,
         url: String?,
         extensions: List<BrowserExtension>,
-        stage: ExtensionRunAt
+        stage: ExtensionRunAt,
+        isPrivate: Boolean = false
     ) {
         if (webView == null || url.isNullOrBlank() || url == "about:blank") return
         if (!SecurityGuardEngine.isSafeWebNavigationUrl(url) || SecurityGuardEngine.isCriticalProtectedHost(url)) {
             return
         }
         extensions.forEach { ext ->
-            if (ext.runAt == stage && canAutoInjectExtensionOnUrl(ext, url)) {
+            if (ext.runAt == stage && canAutoInjectExtensionOnUrl(ext, url, isPrivate = isPrivate)) {
                 executeExtensionInWebView(webView, ext, isManualTrigger = false, onResult = null)
             }
         }

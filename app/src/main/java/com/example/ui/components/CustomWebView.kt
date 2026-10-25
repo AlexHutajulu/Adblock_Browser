@@ -100,12 +100,16 @@ fun CustomWebView(
     }
 
     val isElementZapperActive by viewModel.isElementZapperActive.collectAsState()
+    val zapperSessionToken by viewModel.zapperSessionToken.collectAsState()
     val zapperRulesVersion by viewModel.zapperRulesVersion.collectAsState()
 
-    LaunchedEffect(tab.id, isElementZapperActive) {
+    LaunchedEffect(tab.id, isElementZapperActive, zapperSessionToken) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         webView.evaluateJavascript(
-            com.yourbrowser.adblock.AdBlockWebViewClient.buildElementZapperToggleScript(isElementZapperActive),
+            com.yourbrowser.adblock.AdBlockWebViewClient.buildElementZapperToggleScript(
+                enable = isElementZapperActive,
+                sessionToken = zapperSessionToken
+            ),
             null
         )
     }
@@ -148,7 +152,10 @@ fun CustomWebView(
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         val shouldAllowThirdPartyCookies = !tab.isPrivate &&
             privacyShieldMode != com.example.manager.PrivacyShieldMode.STRICT
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, shouldAllowThirdPartyCookies)
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, shouldAllowThirdPartyCookies)
+        webView.settings.domStorageEnabled = !tab.isPrivate
     }
 
     LaunchedEffect(tab.id, tab.isMuted) {
@@ -178,7 +185,7 @@ fun CustomWebView(
 
                     settings.apply {
                         javaScriptEnabled = true
-                        domStorageEnabled = true
+                        domStorageEnabled = !tab.isPrivate
                         useWideViewPort = true
                         loadWithOverviewMode = true
                         builtInZoomControls = true
@@ -218,11 +225,12 @@ fun CustomWebView(
 
                     // For private/incognito tabs, disable third-party cookies for security isolation
                     // Also disable if in STRICT privacy mode
-                    if (tab.isPrivate || privacyShieldMode == com.example.manager.PrivacyShieldMode.STRICT) {
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
-                    } else {
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                    }
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(
+                        this,
+                        !tab.isPrivate && privacyShieldMode != com.example.manager.PrivacyShieldMode.STRICT
+                    )
 
                     // Update properties that can change dynamically using update block
                     // Private tabs always enforce LOAD_NO_CACHE regardless of Data Saver setting
@@ -263,6 +271,7 @@ fun CustomWebView(
                         @Volatile private var lastTrapReportTimestamp = 0L
                         @Volatile private var lastAudioStateTimestamp = 0L
                         @Volatile private var lastWebRtcToastTimestamp = 0L
+                        @Volatile private var lastBlobDownloadTimestamp = 0L
 
                         @android.webkit.JavascriptInterface
                         fun openUrlInNewTab(url: String) {
@@ -338,15 +347,14 @@ fun CustomWebView(
                         }
 
                         @android.webkit.JavascriptInterface
-                        fun onElementZapperSelected(selector: String, tag: String) {
+                        fun onElementZapperSelected(selector: String, tag: String, token: String) {
                             if (!viewModel.isElementZapperActive.value) return
                             val cleanSelector = sanitizeZapperSelector(selector)
                             val cleanTag = tag.trim().lowercase().take(32)
-                            if (cleanSelector.isBlank()) return
+                            val cleanToken = token.trim()
+                            if (cleanSelector.isBlank() || cleanToken.isBlank()) return
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                if (viewModel.isElementZapperActive.value) {
-                                    viewModel.onZapperElementSelected(cleanSelector, cleanTag)
-                                }
+                                viewModel.verifyAndSelectZapperElement(cleanToken, cleanSelector, cleanTag)
                             }
                         }
 
@@ -376,6 +384,40 @@ fun CustomWebView(
                                     "Koneksi WebRTC diblokir oleh Mode Privasi Ketat. Ubah WebRTC ke 'Standar' di Pengaturan jika panggilan video gagal.",
                                     android.widget.Toast.LENGTH_LONG
                                 ).show()
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun downloadVerifiedBlob(blobUrl: String, dataUri: String, fileName: String, mimeType: String) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastBlobDownloadTimestamp < 1000L) return
+                            lastBlobDownloadTimestamp = now
+                            val activePageUrl = currentPageUrlRef.get()
+                            if (!com.example.manager.SecurityGuardEngine.isSafeBlobUrlForContext(blobUrl, activePageUrl)) {
+                                Log.w(TAG, "Blocked unverified blob download in JS bridge: $blobUrl (page=$activePageUrl)")
+                                return
+                            }
+                            if (!dataUri.startsWith("data:", ignoreCase = true) ||
+                                dataUri.length > com.example.manager.AppDownloadManager.MAX_DATA_URI_LENGTH
+                            ) {
+                                Log.w(TAG, "Blocked invalid or oversized blob data URI payload")
+                                return
+                            }
+                            val originHost = com.example.manager.SecurityGuardEngine.extractHost(activePageUrl)
+                            val cleanName = fileName.ifBlank {
+                                android.webkit.URLUtil.guessFileName(blobUrl, null, mimeType)
+                            }
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                val started = viewModel.downloadManager.startDownload(
+                                    url = dataUri,
+                                    userAgent = "AlexBrowser/BlobDownload",
+                                    fileName = cleanName,
+                                    mimeType = mimeType.ifBlank { "application/octet-stream" },
+                                    domain = originHost.ifBlank { "blob" },
+                                    isIncognito = tab.isPrivate
+                                )
+                                val msg = if (started) "Downloading..." else "Download blocked: Unsafe URL"
+                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                             }
                         }
                     }, "AlexBrowserNative")
@@ -436,6 +478,12 @@ fun CustomWebView(
                             currentPageUrlRef.set(url.orEmpty())
                             syncAlexShieldV5State(syncZapperRules = true)
                             if (view != null && !url.isNullOrBlank()) {
+                                if (tab.isPrivate) {
+                                    view.evaluateJavascript(
+                                        com.example.manager.SecurityGuardEngine.buildIncognitoStorageIsolationScript(),
+                                        null
+                                    )
+                                }
                                 alexShieldV5Client.onPageStarted(view, url, favicon)
                                 com.example.manager.SecurityGuardEngine.injectClientSecurityScript(
                                     webView = view,
@@ -446,7 +494,8 @@ fun CustomWebView(
                                     webView = view,
                                     url = url,
                                     extensions = viewModel.extensions.value,
-                                    stage = com.example.manager.ExtensionRunAt.DOCUMENT_START
+                                    stage = com.example.manager.ExtensionRunAt.DOCUMENT_START,
+                                    isPrivate = tab.isPrivate
                                 )
                             }
                             viewModel.clearTabActivePermissions(tab.id)
@@ -472,12 +521,11 @@ fun CustomWebView(
                                 }
                             }
                             
-                            // WebRTC Leak Protection
+                            // WebRTC Leak Protection & Anti-Fingerprinting with strict domain boundary validation
                             val host = try { android.net.Uri.parse(url ?: "").host?.lowercase() ?: "" } catch (e: Exception) { "" }
-                            val isGoogleOrDiscord = host.endsWith("google.com") || host.endsWith("google.co.id") || host.endsWith("discord.com") || host.endsWith("discordapp.com") || host.contains("google") || host.contains("discord") || host.contains("meet") || host.contains("zoom")
+                            val isAfpBypass = com.example.manager.SecurityGuardEngine.isAfpBypassDomain(host)
                             val isWhitelisted = viewModel.adBlockDisabledDomains.value.contains(host) || viewModel.adBlockDisabledDomains.value.any { host.endsWith(".$it") }
 
-                            // WebRTC Leak Protection
                             if (preventWebRtcLeak && !isWhitelisted) {
                                 val webRtcScript = com.example.manager.SecurityGuardEngine.buildWebRtcProtectionScript(
                                     preventWebRtcLeak = preventWebRtcLeak,
@@ -489,52 +537,12 @@ fun CustomWebView(
                             }
                             
                             // Anti-Fingerprinting (Compatible / Selective Spoofing aligned with DisplayMode)
-                            if (!isWhitelisted && !isGoogleOrDiscord && !alexShieldV5Client.isCriticalBypassDomain(host)) {
-                                val targetPlatform = if (viewModel.displayMode.value != DisplayMode.MOBILE) "Linux x86_64" else "Linux armv81"
-                                val standardAfp = """
-                                    (function() {
-                                        try {
-                                            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
-                                            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4, configurable: true });
-                                            Object.defineProperty(navigator, 'platform', { get: () => '$targetPlatform', configurable: true });
-                                        } catch(e) {}
-                                    })();
-                                """.trimIndent()
-                                view?.evaluateJavascript(standardAfp, null)
-                                
-                                // Strict: Deterministic per-origin Canvas noise + Audio fingerprint protection
-                                if (privacyShieldMode == com.example.manager.PrivacyShieldMode.STRICT) {
-                                    val strictAfp = """
-                                        (function() {
-                                            if (window.__asStrictAfpInstalled) return;
-                                            window.__asStrictAfpInstalled = true;
-                                            const hostSeed = (window.location && window.location.hostname ? window.location.hostname.length : 7) % 3 + 1;
-                                            const origGetContext = HTMLCanvasElement.prototype.getContext;
-                                            HTMLCanvasElement.prototype.getContext = function(type, contextAttributes) {
-                                                const ctx = origGetContext.call(this, type, contextAttributes);
-                                                if (ctx && type === '2d' && !ctx.__asPatched) {
-                                                    ctx.__asPatched = true;
-                                                    const origGetImageData = ctx.getImageData;
-                                                    ctx.getImageData = function(x, y, w, h) {
-                                                        const data = origGetImageData.call(this, x, y, w, h);
-                                                        for (let i = 0; i < data.data.length; i += 16) {
-                                                            data.data[i] = (data.data[i] ^ hostSeed) & 0xFF;
-                                                        }
-                                                        return data;
-                                                    };
-                                                }
-                                                return ctx;
-                                            };
-                                            if (window.AudioContext || window.webkitAudioContext) {
-                                                const ac = window.AudioContext || window.webkitAudioContext;
-                                                ac.prototype.createOscillator = function() {
-                                                    return { connect: () => {}, start: () => {}, stop: () => {}, frequency: { value: 440, setValueAtTime: () => {} }, type: 'sine' };
-                                                };
-                                            }
-                                        })();
-                                    """.trimIndent()
-                                    view?.evaluateJavascript(strictAfp, null)
-                                }
+                            if (!isWhitelisted && !isAfpBypass && !alexShieldV5Client.isCriticalBypassDomain(host)) {
+                                val afpScript = com.example.manager.SecurityGuardEngine.buildAntiFingerprintingScript(
+                                    isDesktopMode = viewModel.displayMode.value != DisplayMode.MOBILE,
+                                    isStrictMode = privacyShieldMode == com.example.manager.PrivacyShieldMode.STRICT
+                                )
+                                view?.evaluateJavascript(afpScript, null)
                             }
                         }
 
@@ -642,13 +650,15 @@ fun CustomWebView(
                                 com.example.manager.CustomJsToolbarManager.runAutoScriptsForUrl(
                                     webView = view,
                                     url = url,
-                                    scripts = viewModel.customJsScripts.value
+                                    scripts = viewModel.customJsScripts.value,
+                                    isPrivate = tab.isPrivate
                                 )
                                 com.example.manager.BrowserExtensionManager.injectMatchingExtensions(
                                     webView = view,
                                     url = url,
                                     extensions = viewModel.extensions.value,
-                                    stage = com.example.manager.ExtensionRunAt.DOCUMENT_END
+                                    stage = com.example.manager.ExtensionRunAt.DOCUMENT_END,
+                                    isPrivate = tab.isPrivate
                                 )
                             }
 
@@ -826,7 +836,17 @@ fun CustomWebView(
                             val url = request?.url?.toString() ?: return false
                             val hasGesture = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) request.hasGesture() else true
 
-                            // 1. Block dangerous internal/executable schemes (file://, content://, javascript:, data:, etc.)
+                            // 1. Allow blob: preview ONLY when verified to originate from the active HTTPS page origin
+                            if (url.startsWith("blob:", ignoreCase = true)) {
+                                val activePageUrl = view?.url ?: currentPageUrlRef.get()
+                                if (com.example.manager.SecurityGuardEngine.isSafeBlobUrlForContext(url, activePageUrl)) {
+                                    return false
+                                }
+                                Log.w(TAG, "Blocked unverified blob: navigation: $url (activePage=$activePageUrl)")
+                                return true
+                            }
+
+                            // 2. Block dangerous internal/executable schemes (file://, content://, javascript:, data:, etc.)
                             if (com.example.manager.SecurityGuardEngine.isDangerousInternalScheme(url)) {
                                 Log.w(TAG, "Blocked dangerous internal scheme navigation: $url")
                                 return true
@@ -1084,13 +1104,15 @@ fun CustomWebView(
                                         android.webkit.ConsoleMessage.MessageLevel.TIP -> com.example.devtools.ConsoleLevel.INFO
                                         else -> com.example.devtools.ConsoleLevel.INFO
                                     }
+                                    val boundedMsg = (it.message() ?: "").take(BrowserViewModel.MAX_CONSOLE_MESSAGE_LENGTH)
+                                    val boundedSrc = it.sourceId()?.take(BrowserViewModel.MAX_CONSOLE_SOURCE_LENGTH)
                                     viewModel.addConsoleEntry(tab.id, com.example.devtools.ConsoleEntry(
                                         id = java.util.UUID.randomUUID().toString(),
                                         timestamp = System.currentTimeMillis(),
                                         level = level,
-                                        message = it.message(),
+                                        message = boundedMsg,
                                         lineNumber = it.lineNumber(),
-                                        sourceId = it.sourceId()
+                                        sourceId = boundedSrc
                                     ))
                                 }
                             }
@@ -1142,6 +1164,32 @@ fun CustomWebView(
                     // Setup fast internet download listener
                     setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
                         val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
+                        if (url.startsWith("blob:", ignoreCase = true)) {
+                            val activePageUrl = this.url ?: currentPageUrlRef.get()
+                            if (com.example.manager.SecurityGuardEngine.isSafeBlobUrlForContext(url, activePageUrl)) {
+                                val quotedBlobUrl = org.json.JSONObject.quote(url)
+                                val quotedFileName = org.json.JSONObject.quote(fileName)
+                                val quotedMime = org.json.JSONObject.quote(mimetype ?: "application/octet-stream")
+                                val blobExtractorJs = """
+                                    (function() {
+                                        fetch($quotedBlobUrl).then(function(r) { return r.blob(); }).then(function(b) {
+                                            if (b.size > 15 * 1024 * 1024) return;
+                                            var reader = new FileReader();
+                                            reader.onloadend = function() {
+                                                if (typeof reader.result === 'string' && window.AlexBrowserNative && window.AlexBrowserNative.downloadVerifiedBlob) {
+                                                    window.AlexBrowserNative.downloadVerifiedBlob($quotedBlobUrl, reader.result, $quotedFileName, b.type || $quotedMime);
+                                                }
+                                            };
+                                            reader.readAsDataURL(b);
+                                        }).catch(function(e) {});
+                                    })();
+                                """.trimIndent()
+                                this.evaluateJavascript(blobExtractorJs, null)
+                            } else {
+                                android.widget.Toast.makeText(context, "Download blocked: Unsafe URL", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            return@setDownloadListener
+                        }
                         val started = viewModel.downloadManager.startDownload(
                             url = url,
                             userAgent = userAgent,
@@ -1276,6 +1324,17 @@ fun CustomWebView(
                 }
             }
 
+            val expectedDomStorage = !tab.isPrivate
+            if (webView.settings.domStorageEnabled != expectedDomStorage) {
+                webView.settings.domStorageEnabled = expectedDomStorage
+            }
+
+            val shouldAllowThirdPartyCookies = !tab.isPrivate &&
+                privacyShieldMode != com.example.manager.PrivacyShieldMode.STRICT
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.setAcceptCookie(true)
+            cookieManager.setAcceptThirdPartyCookies(webView, shouldAllowThirdPartyCookies)
+
             val expectedCacheMode = when {
                 tab.isPrivate -> WebSettings.LOAD_NO_CACHE
                 dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
@@ -1407,15 +1466,7 @@ private fun isHostInSet(host: String, domains: Set<String>): Boolean {
 
 private fun sanitizeZapperSelector(raw: String): String {
     val trimmed = raw.trim().take(160)
-    if (trimmed.isEmpty()) return ""
-    // Block CSS rule breakouts, imports, or HTML tags
-    if (trimmed.contains('{') || trimmed.contains('}') || trimmed.contains(';') ||
-        trimmed.contains('<') || trimmed.contains('>') || trimmed.contains('@') ||
-        trimmed.contains('\n') || trimmed.contains('\r')
-    ) {
-        return ""
-    }
-    return trimmed
+    return if (BrowserViewModel.isValidZapperSelector(trimmed)) trimmed else ""
 }
 
 private fun createDevToolsJsBridge(

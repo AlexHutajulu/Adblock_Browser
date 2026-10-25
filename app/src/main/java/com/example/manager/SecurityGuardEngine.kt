@@ -268,23 +268,23 @@ object SecurityGuardEngine {
                 )
             }
 
-            // 2. IDN Homograph / Punycode Spoofing (xn--)
-            if (host.contains("xn--")) {
+            // 2. IDN Homograph / Punycode Spoofing (selective homograph & brand-spoof detection)
+            if (isSuspiciousIdnHomograph(host)) {
                 threatsBlockedCounter.incrementAndGet()
                 return SecurityThreatAssessment(
                     url = url,
                     host = host,
                     severity = ThreatSeverity.SUSPICIOUS_PHISHING,
                     title = "Terdeteksi Penyamaran Domain (IDN Homograph)",
-                    reason = "Situs '$host' menggunakan karakter khusus (Punycode xn--) yang sering dipakai untuk meniru tampilan alamat situs resmi.",
+                    reason = "Situs '$host' menggunakan kombinasi karakter lintas aksara atau homograf (Punycode xn--) yang meniru tampilan alamat situs resmi.",
                     recommendation = "Kembali ke halaman aman kecuali Anda benar-benar mengenali domain ini."
                 )
             }
 
-            // 3. Brand Impersonation / Typosquatting Check
+            // 3. Brand Impersonation / Typosquatting Check with strict dot-boundary domain verification
             val compactHost = host.replace("-", "").replace(".", "")
             for ((spoofKeyword, officialDomain) in BRAND_IMPERSONATION_TARGETS) {
-                if (compactHost.contains(spoofKeyword) && !host.endsWith(officialDomain)) {
+                if (compactHost.contains(spoofKeyword) && !isSameOrSubdomainOf(host, officialDomain)) {
                     threatsBlockedCounter.incrementAndGet()
                     return SecurityThreatAssessment(
                         url = url,
@@ -327,6 +327,122 @@ object SecurityGuardEngine {
         }
 
         return SecurityThreatAssessment(url, host, ThreatSeverity.SAFE)
+    }
+
+    /**
+     * Checks whether [host] is strictly equal to [officialDomain] or a valid dot-separated subdomain of it.
+     * Prevents substring suffix bypasses such as `evilbca.co.id` or `klikbca-bca.co.id`.
+     */
+    fun isSameOrSubdomainOf(host: String, officialDomain: String): Boolean {
+        val cleanHost = normalizeHost(host).removeSurrounding("[", "]")
+        val cleanOfficial = normalizeHost(officialDomain).removeSurrounding("[", "]")
+        if (cleanHost.isEmpty() || cleanOfficial.isEmpty()) return false
+        return cleanHost == cleanOfficial || cleanHost.endsWith(".$cleanOfficial")
+    }
+
+    private val CONFUSABLE_HOMOGLYPH_MAP = mapOf(
+        // Cyrillic homoglyphs
+        'а' to 'a', 'е' to 'e', 'о' to 'o', 'р' to 'p', 'с' to 'c', 'х' to 'x',
+        'у' to 'y', 'і' to 'i', 'ї' to 'i', 'ј' to 'j', 'к' to 'k', 'м' to 'm',
+        'н' to 'h', 'т' to 't', 'в' to 'b', 'ѕ' to 's', 'ґ' to 'g', 'ӏ' to 'l',
+        // Greek homoglyphs
+        'α' to 'a', 'β' to 'b', 'ε' to 'e', 'ι' to 'i', 'κ' to 'k', 'ν' to 'v',
+        'ο' to 'o', 'ρ' to 'p', 'τ' to 't', 'υ' to 'u', 'χ' to 'x',
+        // Latin lookalikes
+        'ɑ' to 'a', 'ɡ' to 'g', 'ı' to 'i', 'ł' to 'l', 'ø' to 'o'
+    )
+
+    private val PROTECTED_BRAND_ROOTS = setOf(
+        "google", "youtube", "gmail", "apple", "icloud", "microsoft", "office", "live",
+        "paypal", "amazon", "facebook", "instagram", "whatsapp", "telegram", "discord",
+        "github", "gitlab", "netflix", "spotify", "binance", "coinbase", "metamask",
+        "klikbca", "mybca", "bca", "bankmandiri", "livin", "bri", "brimo", "bni",
+        "cimbniaga", "jenius", "jago", "dana", "ovo", "gopay", "gojek", "grab",
+        "shopee", "shopeepay", "tokopedia", "bukalapak", "blibli", "traveloka"
+    )
+
+    /**
+     * Evaluates whether a hostname containing Punycode (`xn--`) or non-ASCII characters
+     * exhibits IDN homograph spoofing characteristics (mixed-script labels, Cyrillic/Greek
+     * lookalike substitution, or protected brand skeleton impersonation) without blindly
+     * blocking legitimate internationalized domains (e.g. `xn--mnchen-3ya.de`).
+     */
+    fun isSuspiciousIdnHomograph(host: String): Boolean {
+        val clean = normalizeHost(host).removeSurrounding("[", "]")
+        if (clean.isEmpty()) return false
+        val hasPunycode = clean.contains("xn--")
+        val hasNonAscii = clean.any { it.code > 127 }
+        if (!hasPunycode && !hasNonAscii) return false
+
+        val unicodeHost = try {
+            java.net.IDN.toUnicode(clean, java.net.IDN.ALLOW_UNASSIGNED).lowercase(Locale.US)
+        } catch (_: Exception) {
+            return true
+        }
+
+        // If IDN decoding failed to decode an xn-- label, treat as malformed/suspicious punycode
+        if (hasPunycode && unicodeHost == clean) return true
+
+        val labels = unicodeHost.split('.')
+        for (label in labels) {
+            if (label.isEmpty()) continue
+            var hasAsciiLetter = false
+            var hasCyrillicOrGreek = false
+            var hasConfusableHomoglyph = false
+
+            for (ch in label) {
+                if (ch in 'a'..'z') hasAsciiLetter = true
+                val block = Character.UnicodeBlock.of(ch)
+                if (block == Character.UnicodeBlock.CYRILLIC ||
+                    block == Character.UnicodeBlock.CYRILLIC_SUPPLEMENTARY ||
+                    block == Character.UnicodeBlock.GREEK ||
+                    block == Character.UnicodeBlock.GREEK_EXTENDED
+                ) {
+                    hasCyrillicOrGreek = true
+                }
+                if (CONFUSABLE_HOMOGLYPH_MAP.containsKey(ch)) {
+                    hasConfusableHomoglyph = true
+                }
+            }
+
+            // Mixed ASCII + Cyrillic/Greek or confusable lookalikes within the same label is a classic IDN homograph attack
+            if (hasAsciiLetter && (hasCyrillicOrGreek || hasConfusableHomoglyph)) {
+                return true
+            }
+        }
+
+        // Build ASCII skeleton from confusable homoglyphs and check if it impersonates a protected brand
+        var usedConfusable = false
+        val skeletonBuilder = StringBuilder(unicodeHost.length)
+        for (ch in unicodeHost) {
+            val mapped = CONFUSABLE_HOMOGLYPH_MAP[ch]
+            if (mapped != null) {
+                usedConfusable = true
+                skeletonBuilder.append(mapped)
+            } else {
+                skeletonBuilder.append(ch)
+            }
+        }
+        val skeletonHost = skeletonBuilder.toString()
+        val compactSkeleton = skeletonHost.replace("-", "").replace(".", "")
+
+        if (usedConfusable && PROTECTED_BRAND_ROOTS.any { compactSkeleton.contains(it) }) {
+            return true
+        }
+        for ((spoofKeyword, officialDomain) in BRAND_IMPERSONATION_TARGETS) {
+            if (compactSkeleton.contains(spoofKeyword) && !isSameOrSubdomainOf(clean, officialDomain)) {
+                return true
+            }
+        }
+
+        // Punycode combined with high-risk TLD or deceptive auth keyword
+        if (HIGH_RISK_TLDS.any { clean.endsWith(it) } ||
+            DECEPTIVE_AUTH_KEYWORDS.any { unicodeHost.contains(it) || clean.contains(it) }
+        ) {
+            return true
+        }
+
+        return false
     }
 
     /**
@@ -434,52 +550,274 @@ object SecurityGuardEngine {
         } catch (_: Exception) {}
     }
 
-    private fun isOfficialTrustedDomain(host: String): Boolean {
+    private val AFP_BYPASS_DOMAINS = setOf(
+        "google.com",
+        "google.co.id",
+        "discord.com",
+        "discordapp.com",
+        "zoom.us"
+    )
+
+    /**
+     * Checks whether [host] is an exact match or valid dot-separated subdomain of a known
+     * real-time collaboration / video-conferencing domain that requires unspoofed hardware metrics.
+     * Prevents substring bypasses such as `evil-google.com` or `zoom-tracker.xyz`.
+     */
+    fun isAfpBypassDomain(host: String): Boolean {
         val clean = normalizeHost(host)
-        return TRUSTED_REGISTRABLE_DOMAINS.any { clean == it || clean.endsWith(".$it") }
+        if (clean.isEmpty()) return false
+        return AFP_BYPASS_DOMAINS.any { domain -> isSameOrSubdomainOf(clean, domain) }
     }
 
-    internal fun isLocalOrPrivateAddress(host: String): Boolean {
+    /**
+     * Builds an ephemeral in-memory `localStorage` and `sessionStorage` polyfill for Private/Incognito
+     * tabs where `WebSettings.domStorageEnabled` is disabled (`false`) to prevent writing persistent
+     * DOM storage to disk while keeping web applications functional in memory during the tab session.
+     */
+    fun buildIncognitoStorageIsolationScript(): String = """
+        (function() {
+            if (window.__asIncognitoStorageIsolated) return;
+            window.__asIncognitoStorageIsolated = true;
+            function createMemoryStorage() {
+                var store = Object.create(null);
+                return {
+                    getItem: function(k) {
+                        var key = String(k);
+                        return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+                    },
+                    setItem: function(k, v) {
+                        store[String(k)] = String(v);
+                    },
+                    removeItem: function(k) {
+                        delete store[String(k)];
+                    },
+                    clear: function() {
+                        store = Object.create(null);
+                    },
+                    key: function(i) {
+                        var keys = Object.keys(store);
+                        return (i >= 0 && i < keys.length) ? keys[i] : null;
+                    },
+                    get length() {
+                        return Object.keys(store).length;
+                    }
+                };
+            }
+            try {
+                var testLs = window.localStorage;
+                if (!testLs) throw new Error('localStorage disabled');
+            } catch (e) {
+                try {
+                    var memLocal = createMemoryStorage();
+                    var memSession = createMemoryStorage();
+                    Object.defineProperty(window, 'localStorage', { get: function() { return memLocal; }, configurable: true });
+                    Object.defineProperty(window, 'sessionStorage', { get: function() { return memSession; }, configurable: true });
+                } catch (err) {}
+            }
+        })();
+    """.trimIndent()
+
+    /**
+     * Builds the Anti-Fingerprinting protection script for `onPageStarted` execution.
+     */
+    fun buildAntiFingerprintingScript(
+        isDesktopMode: Boolean,
+        isStrictMode: Boolean
+    ): String {
+        val targetPlatform = if (isDesktopMode) "Linux x86_64" else "Linux armv81"
+        val standardAfp = """
+            (function() {
+                if (!window.__asStandardAfpInstalled) {
+                    window.__asStandardAfpInstalled = true;
+                    try {
+                        Object.defineProperty(navigator, 'deviceMemory', { get: function() { return 8; }, configurable: true });
+                        Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 4; }, configurable: true });
+                        Object.defineProperty(navigator, 'platform', { get: function() { return '$targetPlatform'; }, configurable: true });
+                    } catch(e) {}
+                }
+            })();
+        """.trimIndent()
+        if (!isStrictMode) return standardAfp
+
+        val strictAfp = """
+            (function() {
+                if (window.__asStrictAfpInstalled) return;
+                window.__asStrictAfpInstalled = true;
+                var hostSeed = (window.location && window.location.hostname ? window.location.hostname.length : 7) % 3 + 1;
+                var origGetContext = HTMLCanvasElement.prototype.getContext;
+                HTMLCanvasElement.prototype.getContext = function(type, contextAttributes) {
+                    var ctx = origGetContext.call(this, type, contextAttributes);
+                    if (ctx && type === '2d' && !ctx.__asPatched) {
+                        ctx.__asPatched = true;
+                        var origGetImageData = ctx.getImageData;
+                        ctx.getImageData = function(x, y, w, h) {
+                            var data = origGetImageData.call(this, x, y, w, h);
+                            for (var i = 0; i < data.data.length; i += 16) {
+                                data.data[i] = (data.data[i] ^ hostSeed) & 0xFF;
+                            }
+                            return data;
+                        };
+                    }
+                    return ctx;
+                };
+                if (window.AudioContext || window.webkitAudioContext) {
+                    var ac = window.AudioContext || window.webkitAudioContext;
+                    ac.prototype.createOscillator = function() {
+                        return { connect: function() {}, start: function() {}, stop: function() {}, frequency: { value: 440, setValueAtTime: function() {} }, type: 'sine' };
+                    };
+                }
+            })();
+        """.trimIndent()
+        return "$standardAfp\n$strictAfp"
+    }
+
+    private fun isOfficialTrustedDomain(host: String): Boolean {
+        val clean = normalizeHost(host)
+        return TRUSTED_REGISTRABLE_DOMAINS.any { isSameOrSubdomainOf(clean, it) }
+    }
+
+    /**
+     * Checks if [host] is a valid 4-octet decimal IPv4 literal (e.g. `127.0.0.1`, `10.0.0.1`).
+     * Does NOT match domain names that merely start with digits (such as `10.example.com` or `100.example.com`).
+     */
+    fun isIpv4Literal(host: String): Boolean {
+        val clean = host.trim().removeSurrounding("[", "]").trimEnd('.')
+        val parts = clean.split('.')
+        if (parts.size != 4) return false
+        for (part in parts) {
+            if (part.isEmpty() || part.length > 3 || !part.all { it.isDigit() }) return false
+            if (part.length > 1 && part.startsWith('0')) return false
+            val num = part.toIntOrNull() ?: return false
+            if (num !in 0..255) return false
+        }
+        return true
+    }
+
+    /**
+     * Checks if [host] is an IPv6 literal. Valid DNS hostnames never contain `:`.
+     */
+    fun isIpv6Literal(host: String): Boolean {
+        val clean = host.trim().removeSurrounding("[", "]")
+        return clean.contains(':')
+    }
+
+    /**
+     * Checks whether [host] represents a local, loopback, link-local, RFC1918 private, CGNAT,
+     * non-standard integer/hex/octal IP, or IPv6 ULA/local address.
+     * Public domains starting with `fc`, `fd`, `10.`, or `100.` (e.g. `fdroid.org`, `fda.gov`, `100.example.com`)
+     * are properly recognized as public domain names and return `false`.
+     */
+    fun isLocalOrPrivateAddress(host: String): Boolean {
         val clean = normalizeHost(host).removeSurrounding("[", "]")
         if (clean.isEmpty()) return false
         if (clean == "localhost" ||
             clean.endsWith(".localhost") ||
-            clean == "127.0.0.1" ||
-            clean.startsWith("127.") ||
-            clean == "0.0.0.0" ||
-            clean == "::1" ||
-            clean.startsWith("192.168.") ||
-            clean.startsWith("10.") ||
-            clean.startsWith("169.254.") ||
             clean.endsWith(".local") ||
-            clean.endsWith(".internal")
+            clean.endsWith(".internal") ||
+            clean.endsWith(".localdomain")
         ) {
             return true
         }
-        // RFC 1918 172.16.0.0/12
-        if (clean.startsWith("172.")) {
-            val parts = clean.split(".")
-            val second = parts.getOrNull(1)?.toIntOrNull()
-            if (second != null && second in 16..31) return true
+
+        // Reject single-integer IP (e.g. 2130706433) or hex IP (0x7f000001) or octal-dotted IP (0177.0.0.1)
+        if (clean.all { it.isDigit() } || clean.startsWith("0x")) {
+            return true
         }
+        val dotParts = clean.split('.')
+        if (dotParts.size == 4 && dotParts.all { it.isNotEmpty() && it.all { ch -> ch.isDigit() || ch in 'a'..'f' || ch == 'x' } }) {
+            if (!isIpv4Literal(clean)) {
+                // 4 numeric/hex/octal parts that fail strict decimal IPv4 validation (e.g. 0177.0.0.1)
+                return true
+            }
+        }
+
+        // Check IPv6 literals ONLY when the host actually contains ':'
+        if (isIpv6Literal(clean)) {
+            val noZone = clean.substringBefore('%')
+            if (noZone == "::1" ||
+                noZone == "0:0:0:0:0:0:0:1" ||
+                noZone == "::" ||
+                noZone == "0:0:0:0:0:0:0:0" ||
+                noZone.startsWith("fe8") ||
+                noZone.startsWith("fe9") ||
+                noZone.startsWith("fea") ||
+                noZone.startsWith("feb") ||
+                noZone.startsWith("fc") ||
+                noZone.startsWith("fd") ||
+                noZone.startsWith("ff")
+            ) {
+                return true
+            }
+            if (noZone.startsWith("::ffff:")) {
+                val mappedIpv4 = noZone.removePrefix("::ffff:")
+                if (isLocalOrPrivateAddress(mappedIpv4)) return true
+            }
+            return try {
+                val addr = java.net.InetAddress.getByName(noZone)
+                FilterListManager.isRestrictedAddress(addr)
+            } catch (_: Exception) {
+                true
+            }
+        }
+
+        // Check IPv4 private/reserved ranges ONLY when the host is a 4-octet decimal IPv4 literal
+        if (isIpv4Literal(clean)) {
+            val octets = dotParts.map { it.toInt() }
+            val b0 = octets[0]
+            val b1 = octets[1]
+            if (b0 == 10) return true
+            if (b0 == 127) return true
+            if (b0 == 0 || b0 >= 224) return true
+            if (b0 == 169 && b1 == 254) return true
+            if (b0 == 172 && b1 in 16..31) return true
+            if (b0 == 192 && b1 == 168) return true
+            if (b0 == 100 && b1 in 64..127) return true
+            if (b0 == 198 && (b1 == 18 || b1 == 19)) return true
+        }
+
         return false
     }
 
-    private val ALLOWED_EXTERNAL_SCHEMES = setOf(
-        "intent", "market", "whatsapp", "tel", "mailto", "sms", "geo", "tg"
-    )
-
     private val DANGEROUS_INTERNAL_SCHEMES = setOf(
-        "javascript", "vbscript", "data", "file", "content", "blob", "filesystem", "jar", "chrome"
+        "javascript", "vbscript", "data", "file", "content", "blob", "filesystem", "jar", "chrome",
+        "chrome-extension", "view-source", "res", "android.resource", "wyciwyg", "ms-appx", "ms-appx-web"
     )
 
+    private val NON_EXTERNAL_WEB_OR_RESERVED_SCHEMES = setOf(
+        "http", "https", "ws", "wss", "ftp", "ftps", "about"
+    )
+
+    private val VALID_RFC3986_SCHEME_REGEX = Regex("^[a-z][a-z0-9+.-]{0,63}$")
+
+    /**
+     * Validates whether [url] uses an external application deep-link scheme that is eligible
+     * to be routed to the user confirmation dialog (`requestOpenIntent`).
+     * Uses a strict RFC 3986 scheme format check + explicit denylist of dangerous/internal/web schemes
+     * so legitimate payment, banking, e-wallet, and app deep links (e.g. `gopay://`, `ovo://`, `dana://`,
+     * `shopeepay://`, `bca://`, `market://`, `whatsapp://`, `intent://`, `tel:`, `mailto:`) work while
+     * dangerous schemes (`javascript:`, `file:`, `content:`, `data:`, `blob:`, etc.) are blocked.
+     */
     fun isAllowedExternalScheme(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
         val trimmed = url.trim()
+        if (trimmed.length > 2048 || trimmed.any { it.isISOControl() }) return false
         val colonIdx = trimmed.indexOf(':')
         if (colonIdx <= 0) return false
         val scheme = trimmed.substring(0, colonIdx).lowercase(Locale.US)
-        return scheme in ALLOWED_EXTERNAL_SCHEMES
+        if (!VALID_RFC3986_SCHEME_REGEX.matches(scheme)) return false
+        if (scheme in DANGEROUS_INTERNAL_SCHEMES || scheme in NON_EXTERNAL_WEB_OR_RESERVED_SCHEMES) {
+            return false
+        }
+        if (scheme == "intent") {
+            return try {
+                val parsed = android.content.Intent.parseUri(trimmed, android.content.Intent.URI_INTENT_SCHEME)
+                val embeddedScheme = parsed.data?.scheme?.lowercase(Locale.US)
+                embeddedScheme == null || (embeddedScheme !in DANGEROUS_INTERNAL_SCHEMES && embeddedScheme != "about")
+            } catch (_: Exception) {
+                false
+            }
+        }
+        return true
     }
 
     fun isDangerousInternalScheme(url: String?): Boolean {
@@ -492,6 +830,45 @@ object SecurityGuardEngine {
             return !trimmed.equals("about:blank", ignoreCase = true)
         }
         return scheme in DANGEROUS_INTERNAL_SCHEMES
+    }
+
+    /**
+     * Validates whether a `blob:` URL is safe to use for in-page document preview or download
+     * by verifying that its embedded origin is `https://`, points to a public non-private host,
+     * and strictly matches the origin (`scheme`, `host`, and effective port) of the currently active
+     * HTTPS page in the WebView.
+     *
+     * Note: `blob:` is NEVER allowed as direct user address-bar navigation (`isSafeWebNavigationUrl` returns `false`).
+     */
+    fun isSafeBlobUrlForContext(blobUrl: String?, activePageUrl: String?): Boolean {
+        if (blobUrl.isNullOrBlank() || activePageUrl.isNullOrBlank()) return false
+        val trimmedBlob = blobUrl.trim()
+        val trimmedPage = activePageUrl.trim()
+        if (trimmedBlob.length > 2048 || trimmedPage.length > 2048) return false
+        if (trimmedBlob.any { it.isISOControl() } || trimmedPage.any { it.isISOControl() }) return false
+        if (!trimmedBlob.startsWith("blob:", ignoreCase = true)) return false
+
+        val innerOriginUrl = trimmedBlob.substring(5).trim()
+        if (!innerOriginUrl.startsWith("https://", ignoreCase = true)) return false
+        if (!trimmedPage.startsWith("https://", ignoreCase = true)) return false
+        if (!isSafeWebNavigationUrl(innerOriginUrl) || !isSafeWebNavigationUrl(trimmedPage)) return false
+
+        return try {
+            val blobInnerUri = Uri.parse(innerOriginUrl)
+            val pageUri = Uri.parse(trimmedPage)
+
+            val blobHost = normalizeHost(blobInnerUri.host.orEmpty())
+            val pageHost = normalizeHost(pageUri.host.orEmpty())
+            if (blobHost.isEmpty() || pageHost.isEmpty()) return false
+            if (blobHost != pageHost) return false
+            if (isLocalOrPrivateAddress(blobHost)) return false
+
+            val blobPort = if (blobInnerUri.port != -1) blobInnerUri.port else 443
+            val pagePort = if (pageUri.port != -1) pageUri.port else 443
+            blobPort == pagePort
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
@@ -535,7 +912,13 @@ object SecurityGuardEngine {
             val dataUri = parsed.data
             if (dataUri != null) {
                 val dataScheme = dataUri.scheme?.lowercase(Locale.US).orEmpty()
-                if (dataScheme in DANGEROUS_INTERNAL_SCHEMES || dataScheme == "about") {
+                if (dataScheme.isNotEmpty() && (
+                        !VALID_RFC3986_SCHEME_REGEX.matches(dataScheme) ||
+                            dataScheme in DANGEROUS_INTERNAL_SCHEMES ||
+                            dataScheme == "about" ||
+                            dataScheme == "intent"
+                        )
+                ) {
                     return null
                 }
             }
@@ -572,7 +955,7 @@ object SecurityGuardEngine {
 
     /**
      * Verifies that a URL is strictly a safe HTTP/HTTPS web URL suitable for WebView.loadUrl,
-     * Context Menu navigation, or new-tab opening. Rejects javascript:, file:, content:, data:, intent:, etc.
+     * Context Menu navigation, or new-tab opening. Rejects javascript:, file:, content:, data:, blob:, intent:, etc.
      */
     fun isSafeWebNavigationUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
@@ -791,6 +1174,7 @@ object SecurityGuardEngine {
     }
 
     private fun normalizeHost(host: String): String =
-        host.trim().lowercase(Locale.US).removePrefix("www.")
+        host.trim().lowercase(Locale.US).removeSurrounding("[", "]").trimEnd('.').removePrefix("www.")
 }
+
 

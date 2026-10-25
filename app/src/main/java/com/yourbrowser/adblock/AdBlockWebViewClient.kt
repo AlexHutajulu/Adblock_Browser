@@ -271,7 +271,9 @@ class AdBlockWebViewClient(
                 if (rules.whitelistDomains.any { reqHost == it || reqHost.endsWith(".$it") }) return null
                 if (isDomainBlocked(reqHost, rules.blockDomains)) {
                     val isTrackerLike = lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
-                        lowerUrl.contains("pixel") || lowerUrl.contains("telemetry")
+                        lowerUrl.contains("pixel") || lowerUrl.contains("telemetry") ||
+                        TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") } ||
+                        TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }
                     if (isTrackerLike && !trackerEnabled) return null
                     return if (isTrackerLike) "easylist-tracker" else "easylist-domain"
                 }
@@ -1223,14 +1225,17 @@ class AdBlockWebViewClient(
 
         // ─── Interactive Custom Element Zapper Script ─────────────────────────
 
-        fun buildElementZapperToggleScript(enable: Boolean): String = """
+        fun buildElementZapperToggleScript(enable: Boolean, sessionToken: String = ""): String {
+            val quotedToken = org.json.JSONObject.quote(sessionToken)
+            return """
 (function(){
   if(!${enable}){
     if(window.__asZapperCleanup) window.__asZapperCleanup();
     return;
   }
-  if(window.__asZapperActive) return;
+  if(window.__asZapperCleanup) window.__asZapperCleanup();
   window.__asZapperActive=true;
+  var zapToken=$quotedToken;
   var selectedEl=null;
   var origOutline='';
 
@@ -1258,7 +1263,7 @@ class AdBlockWebViewClient(
       }
       cur=cur.parentElement;
     }
-    return parts.join(' > ');
+    return parts.join(' ');
   }
 
   function clearHighlight(){
@@ -1269,7 +1274,7 @@ class AdBlockWebViewClient(
   }
 
   function onClickCapture(e){
-    if(!window.__asZapperActive) return;
+    if(!window.__asZapperActive||!e||!e.isTrusted) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
@@ -1282,7 +1287,7 @@ class AdBlockWebViewClient(
     var sel=cssPath(target);
     try{
       if(window.AlexBrowserNative&&window.AlexBrowserNative.onElementZapperSelected){
-        window.AlexBrowserNative.onElementZapperSelected(sel, target.tagName.toLowerCase());
+        window.AlexBrowserNative.onElementZapperSelected(sel, target.tagName.toLowerCase(), zapToken);
       }
     }catch(err){}
     return false;
@@ -1299,12 +1304,14 @@ class AdBlockWebViewClient(
 
   window.__asZapperCleanup=function(){
     window.__asZapperActive=false;
+    zapToken='';
     clearHighlight();
     document.removeEventListener('click',onClickCapture,true);
   };
 
   document.addEventListener('click',onClickCapture,true);
 })();
-        """.trimIndent()
+            """.trimIndent()
+        }
     }
 }

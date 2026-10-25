@@ -76,14 +76,15 @@ object FilterListManager {
         val scheme = uri.scheme?.lowercase(Locale.US) ?: return false
         if (scheme != "https") return false
 
-        val host = uri.host?.lowercase(Locale.US)?.trim()?.removeSurrounding("[", "]") ?: return false
+        val host = uri.host?.lowercase(Locale.US)?.trim()?.removeSurrounding("[", "]")?.trimEnd('.') ?: return false
         if (host.isEmpty() ||
             host == "localhost" ||
             host.endsWith(".localhost") ||
             host.endsWith(".local") ||
             host.endsWith(".internal") ||
             host == "0.0.0.0" ||
-            host == "::1"
+            host == "::1" ||
+            SecurityGuardEngine.isLocalOrPrivateAddress(host)
         ) {
             return false
         }
@@ -215,6 +216,7 @@ object FilterListManager {
 
             val request = Request.Builder()
                 .url(currentUrl)
+                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
                 .header("User-Agent", "AlexBrowser/1.0 AdBlocker")
                 .build()
 

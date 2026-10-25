@@ -292,20 +292,22 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        // Clear cookies if requested
+        // Clear cookies only when the Activity is genuinely finishing (not on rotation / config change)
         try {
-            val settingsManager = com.example.manager.SettingsManager(this)
-            if (settingsManager.clearCookiesOnExit) {
-                android.webkit.CookieManager.getInstance().removeAllCookies { success ->
-                    if (!success) {
-                        com.example.manager.SecurityLogger.logCookieClearFailed(
-                            "MainActivity",
-                            Exception("CookieManager.removeAllCookies failed")
-                        )
+            if (isFinishing && !isChangingConfigurations) {
+                val settingsManager = com.example.manager.SettingsManager(this)
+                if (settingsManager.clearCookiesOnExit) {
+                    android.webkit.CookieManager.getInstance().removeAllCookies { success ->
+                        if (!success) {
+                            com.example.manager.SecurityLogger.logCookieClearFailed(
+                                "MainActivity",
+                                Exception("CookieManager.removeAllCookies failed")
+                            )
+                        }
                     }
+                    android.webkit.CookieManager.getInstance().flush() // Ensure written to disk
+                    android.webkit.WebStorage.getInstance().deleteAllData() // Clear cache/storage too for safety
                 }
-                android.webkit.CookieManager.getInstance().flush() // Ensure written to disk
-                android.webkit.WebStorage.getInstance().deleteAllData() // Clear cache/storage too for safety
             }
         } catch (e: Exception) {
             com.example.manager.SecurityLogger.logSecurityEvent(

@@ -49,7 +49,7 @@ object CosmeticFilterInjector {
         ".menu", ".btn", ".button", ".floating-btn", "video", "canvas", "form", "input",
         ":-abp-", ":has(", ":has-text", ":xpath", ":matches-css", ":upward", ":remove",
         "+js(", "{", "}", "@media", "@import", "url(", "expression(", "javascript:",
-        "/*", "*/", "\\", ";"
+        "/*", "*/", "\\", ";", "<"
     )
 
     internal fun isSafeCssSelector(selector: String): Boolean {

@@ -15,23 +15,23 @@ class TabPersistenceService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.d("TabPersistenceService", "onTaskRemoved: App swiped away from recent apps (Gulir membersihkan RAM/Memori)!")
+        Log.d("TabPersistenceService", "onTaskRemoved: App swiped away from recent apps")
         try {
             val settings = SettingsManager(applicationContext)
-            settings.clearPersistedTabs()
             if (settings.clearCookiesOnExit) {
+                settings.clearPersistedTabs()
                 try {
                     android.webkit.WebStorage.getInstance().deleteAllData()
                     val cookieManager = android.webkit.CookieManager.getInstance()
                     cookieManager.removeAllCookies(null)
                     cookieManager.flush()
-                    Log.d("TabPersistenceService", "Cleared cookies & web storage on exit as configured")
+                    Log.d("TabPersistenceService", "Cleared cookies, web storage, and persisted tabs on exit as configured")
                 } catch (e: Exception) {
                     Log.w("TabPersistenceService", "Failed to clear cookies on exit: ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            Log.e("TabPersistenceService", "Failed to clear persisted tabs on swipe away", e)
+            Log.e("TabPersistenceService", "Failed to handle task removal cleanup", e)
         }
         stopSelf()
     }

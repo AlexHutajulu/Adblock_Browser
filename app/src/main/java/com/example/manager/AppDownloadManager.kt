@@ -109,8 +109,8 @@ class AppDownloadManager(
     }
 
     internal fun isSameOrSubdomainHost(currentHost: String, initialHost: String): Boolean {
-        val cleanCurrent = currentHost.lowercase().trim().removeSurrounding("[", "]")
-        val cleanInitial = initialHost.lowercase().trim().removeSurrounding("[", "]")
+        val cleanCurrent = currentHost.lowercase().trim().removeSurrounding("[", "]").trimEnd('.')
+        val cleanInitial = initialHost.lowercase().trim().removeSurrounding("[", "]").trimEnd('.')
         if (cleanCurrent.isEmpty() || cleanInitial.isEmpty()) return false
         return cleanCurrent == cleanInitial || cleanCurrent.endsWith(".$cleanInitial")
     }
@@ -136,6 +136,7 @@ class AppDownloadManager(
             val urlObj = URL(currentUrl)
             val conn = (urlObj.openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
+                useCaches = false
                 connectTimeout = 10000
                 readTimeout = 10000
                 requestMethod = "GET"
@@ -429,7 +430,7 @@ class AppDownloadManager(
                     } else {
                         null
                     }
-                    connection = openSafeConnection(url, userAgent, isIncognito = isIncognito, rangeHeader = rangeHeader)
+                    connection = openSafeConnection(resolvedTargetUrl, userAgent, isIncognito = isIncognito, rangeHeader = rangeHeader)
 
                     val seqResponseCode = connection.responseCode
                     val isPartial = seqResponseCode == HttpURLConnection.HTTP_PARTIAL
@@ -623,7 +624,13 @@ class AppDownloadManager(
         val download = _activeDownloads.value[id] ?: return
         if (download.status == "PAUSED" || download.status == "FAILED") {
             val job = scope.launch(Dispatchers.IO) {
-                executeDownload(id, download.url, download.userAgent, File(download.fileUri), isResume = true)
+                executeDownload(
+                    id = id,
+                    url = download.url,
+                    userAgent = download.userAgent,
+                    destFile = File(download.fileUri),
+                    isResume = true
+                )
             }
             _activeDownloads.update { it + (id to download.copy(job = job, status = "QUEUED")) }
         }
@@ -728,49 +735,12 @@ class AppDownloadManager(
                 val parsed = URL(trimmed)
                 val protocol = parsed.protocol.lowercase()
                 if (protocol != "http" && protocol != "https") return false
-                val host = parsed.host.lowercase().removeSurrounding("[", "]")
+                val host = parsed.host.lowercase().removeSurrounding("[", "]").trimEnd('.')
                 if (host.isBlank()) return false
 
-                // Block loopback, local domains, IPv6 unique-local/link-local, and single-token integer/hex IPs
-                if (host == "localhost" ||
-                    host.endsWith(".localhost") ||
-                    host.endsWith(".local") ||
-                    host.endsWith(".internal") ||
-                    host.endsWith(".localdomain") ||
-                    host == "127.0.0.1" ||
-                    host == "0.0.0.0" ||
-                    host == "::1" ||
-                    host == "0:0:0:0:0:0:0:1" ||
-                    host.startsWith("169.254.") ||
-                    host.startsWith("127.") ||
-                    host.startsWith("fe80:") ||
-                    host.startsWith("fc") ||
-                    host.startsWith("fd") ||
-                    host.startsWith("::ffff:127.") ||
-                    host.startsWith("::ffff:10.") ||
-                    host.startsWith("::ffff:192.168.") ||
-                    host.startsWith("::ffff:169.254.") ||
-                    host.all { it.isDigit() } ||
-                    host.startsWith("0x")
-                ) {
+                // Delegate to unified address validator (only checks IPv6 fc/fd prefixes on actual IPv6 literals)
+                if (SecurityGuardEngine.isLocalOrPrivateAddress(host)) {
                     return false
-                }
-
-                // Block private IPv4 subnets (RFC 1918, RFC 3927, RFC 6598 Carrier NAT)
-                val ipv4Part = if (host.startsWith("::ffff:")) host.removePrefix("::ffff:") else host
-                val parts = ipv4Part.split(".")
-                if (parts.size == 4 && parts.all { it.isNotEmpty() && it.all { char -> char.isDigit() } }) {
-                    // Reject leading zeros (octal IP notation e.g. 0177.0.0.1)
-                    if (parts.any { it.length > 1 && it.startsWith("0") }) return false
-                    val ip0 = parts[0].toIntOrNull() ?: return false
-                    val ip1 = parts[1].toIntOrNull() ?: return false
-                    if (ip0 == 10) return false // 10.0.0.0/8
-                    if (ip0 == 172 && ip1 in 16..31) return false // 172.16.0.0/12
-                    if (ip0 == 192 && ip1 == 168) return false // 192.168.0.0/16
-                    if (ip0 == 127) return false // 127.0.0.0/8
-                    if (ip0 == 169 && ip1 == 254) return false // 169.254.0.0/16
-                    if (ip0 == 100 && ip1 in 64..127) return false // 100.64.0.0/10
-                    if (ip0 == 0 || ip0 >= 224) return false // 0.0.0.0/8 & multicast/reserved
                 }
 
                 if (resolveDns) {
@@ -785,6 +755,17 @@ class AppDownloadManager(
             } catch (_: Exception) {
                 false
             }
+        }
+
+        internal fun isSafeRedirectHop(currentUrl: String, nextUrl: String, resolveDns: Boolean = false): Boolean {
+            if (!isSafeDownloadUrl(currentUrl, resolveDns = resolveDns)) return false
+            if (!isSafeDownloadUrl(nextUrl, resolveDns = resolveDns)) return false
+            val fromHttps = currentUrl.trim().startsWith("https://", ignoreCase = true)
+            val toHttp = nextUrl.trim().startsWith("http://", ignoreCase = true)
+            if (fromHttps && toHttp) {
+                return false
+            }
+            return true
         }
 
         internal fun sanitizeFileName(name: String): String {

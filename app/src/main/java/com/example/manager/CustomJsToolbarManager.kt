@@ -740,12 +740,15 @@ object CustomJsToolbarManager {
 
     /**
      * Automatically runs matching scripts when a page finishes loading.
+     * Never auto-executes scripts inside Private/Incognito tabs (`F3-01`).
      */
     fun runAutoScriptsForUrl(
         webView: WebView?,
         url: String?,
-        scripts: List<CustomToolbarScript>
+        scripts: List<CustomToolbarScript>,
+        isPrivate: Boolean = false
     ): Int {
+        if (isPrivate) return 0
         if (webView == null || url.isNullOrBlank() || url == "about:blank") return 0
         if (!SecurityGuardEngine.isSafeWebNavigationUrl(url) || SecurityGuardEngine.isCriticalProtectedHost(url)) {
             return 0

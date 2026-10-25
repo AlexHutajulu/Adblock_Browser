@@ -395,10 +395,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val consoleRateLock = Any()
+    private var consoleWindowStartMs = 0L
+    private var consoleCountInWindow = 0
+
     fun addConsoleEntry(tabId: String, entry: ConsoleEntry) {
+        if (!_inspectToolsEnabled.value) return
+        val now = System.currentTimeMillis()
+        synchronized(consoleRateLock) {
+            if (now - consoleWindowStartMs > 1000L) {
+                consoleWindowStartMs = now
+                consoleCountInWindow = 0
+            }
+            if (++consoleCountInWindow > MAX_CONSOLE_ENTRIES_PER_SECOND) return
+        }
+        val boundedEntry = entry.copy(
+            message = entry.message.take(MAX_CONSOLE_MESSAGE_LENGTH),
+            sourceId = entry.sourceId?.take(MAX_CONSOLE_SOURCE_LENGTH)
+        )
         _devToolsStates.update { states ->
             val current = states[tabId] ?: DevToolsState()
-            val newEntries = (current.consoleEntries + entry).takeLast(300)
+            val newEntries = (current.consoleEntries + boundedEntry).takeLast(MAX_CONSOLE_ENTRIES_PER_TAB)
             states + (tabId to current.copy(consoleEntries = newEntries))
         }
     }
@@ -408,17 +425,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             id = java.util.UUID.randomUUID().toString(),
             timestamp = System.currentTimeMillis(),
             level = ConsoleLevel.DEBUG,
-            message = "> $command"
+            message = ("> $command").take(MAX_CONSOLE_MESSAGE_LENGTH)
         )
         val entryRes = ConsoleEntry(
             id = java.util.UUID.randomUUID().toString(),
             timestamp = System.currentTimeMillis(),
             level = ConsoleLevel.RESULT,
-            message = result
+            message = result.take(MAX_CONSOLE_MESSAGE_LENGTH)
         )
         _devToolsStates.update { states ->
             val current = states[tabId] ?: DevToolsState()
-            val newEntries = (current.consoleEntries + entryCmd + entryRes).takeLast(300)
+            val newEntries = (current.consoleEntries + entryCmd + entryRes).takeLast(MAX_CONSOLE_ENTRIES_PER_TAB)
             states + (tabId to current.copy(consoleEntries = newEntries))
         }
     }
@@ -535,7 +552,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 mixedContentMode = "MIXED_CONTENT_NEVER_ALLOW",
                 safeBrowsingEnabled = true,
                 javaScriptEnabled = true,
-                domStorageEnabled = true,
+                domStorageEnabled = !isPrivate,
                 fileAccessAllowed = false,
                 contentAccessAllowed = false,
                 thirdPartyCookiesAllowed = !isPrivate && (privacyShieldMode.value != com.example.manager.PrivacyShieldMode.STRICT),
@@ -632,6 +649,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _isElementZapperActive = MutableStateFlow(false)
     val isElementZapperActive = _isElementZapperActive.asStateFlow()
 
+    private val _zapperSessionToken = MutableStateFlow("")
+    val zapperSessionToken = _zapperSessionToken.asStateFlow()
+
     private val _zapperPreviewSelector = MutableStateFlow("")
     val zapperPreviewSelector = _zapperPreviewSelector.asStateFlow()
 
@@ -642,28 +662,50 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val zapperRulesVersion = _zapperRulesVersion.asStateFlow()
 
     fun setElementZapperActive(active: Boolean) {
-        _isElementZapperActive.value = active
-        if (!active) {
+        if (active) {
+            _zapperSessionToken.value = java.util.UUID.randomUUID().toString()
+            _isElementZapperActive.value = true
+        } else {
+            _isElementZapperActive.value = false
+            _zapperSessionToken.value = ""
             _zapperPreviewSelector.value = ""
             _zapperPreviewTag.value = ""
         }
     }
 
+    fun verifyAndSelectZapperElement(token: String, selector: String, tag: String): Boolean {
+        val activeToken = _zapperSessionToken.value
+        if (!_isElementZapperActive.value || activeToken.isBlank() || token != activeToken) {
+            return false
+        }
+        val cleanSel = selector.trim().take(160)
+        if (!isValidZapperSelector(cleanSel)) return false
+        val cleanTag = tag.trim().take(32).replace(Regex("[^a-zA-Z0-9_-]"), "")
+        _zapperPreviewSelector.value = cleanSel
+        _zapperPreviewTag.value = cleanTag
+        return true
+    }
+
     fun onZapperElementSelected(selector: String, tag: String) {
-        _zapperPreviewSelector.value = selector
-        _zapperPreviewTag.value = tag
+        val cleanSel = selector.trim().take(160)
+        if (!isValidZapperSelector(cleanSel)) return
+        _zapperPreviewSelector.value = cleanSel
+        _zapperPreviewTag.value = tag.trim().take(32).replace(Regex("[^a-zA-Z0-9_-]"), "")
     }
 
     fun getCustomZapperRulesForHost(host: String): List<String> {
-        return settings.getCustomZapperRules(host)
+        return settings.getCustomZapperRules(host).filter { isValidZapperSelector(it) }
     }
 
     fun addCustomZapperRule(host: String, selector: String) {
-        val norm = host.lowercase().trim().removePrefix("www.")
-        if (norm.isBlank() || selector.isBlank()) return
-        val current = settings.getCustomZapperRules(norm).toMutableList()
-        if (!current.contains(selector)) {
-            current.add(selector)
+        val norm = host.lowercase().trim().removeSurrounding("[", "]").trimEnd('.').removePrefix("www.")
+        val cleanSelector = selector.trim().take(160)
+        if (norm.isBlank() || !isValidZapperSelector(cleanSelector)) return
+        val current = settings.getCustomZapperRules(norm)
+            .filter { isValidZapperSelector(it) }
+            .toMutableList()
+        if (!current.contains(cleanSelector) && current.size < MAX_ZAPPER_RULES_PER_HOST) {
+            current.add(cleanSelector)
             settings.saveCustomZapperRules(norm, current)
             _zapperRulesVersion.update { it + 1 }
         }
@@ -920,11 +962,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             downloadRepository.clearIncognito()
         }
-        try {
-            android.webkit.CookieManager.getInstance().removeSessionCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
-        } catch (e: Exception) {
-            Log.w(TAG, "Session cookie cleanup warning: ${e.message}")
+        // Android WebView shares a single process-wide CookieManager across all WebView instances.
+        // Only purge global session cookies when no regular (non-private) web tabs have active pages,
+        // preventing private tab closure from destroying active logins in open regular tabs.
+        val hasActiveRegularWebTabs = _tabs.value.any {
+            !it.isPrivate && it.url.isNotBlank() && it.url != "about:blank"
+        }
+        if (!hasActiveRegularWebTabs) {
+            try {
+                android.webkit.CookieManager.getInstance().removeSessionCookies(null)
+                android.webkit.CookieManager.getInstance().flush()
+            } catch (e: Exception) {
+                Log.w(TAG, "Session cookie cleanup warning: ${e.message}")
+            }
         }
     }
 
@@ -1191,6 +1241,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearAllHistory() {
+        _tabHistoryStacks.value = emptyMap()
+        _closedTabs.clear()
         viewModelScope.launch(Dispatchers.IO) {
             repository.clearHistory()
         }
@@ -1373,24 +1425,43 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         setDisplayMode(if (isTablet) DisplayMode.DESKTOP else DisplayMode.MOBILE)
     }
 
-    // Clean browser cache, cookies, and local database storage
-    fun clearCacheAndCookies(context: Context) {
+    /**
+     * Clears only WebView HTTP/disk cache without deleting user login cookies, DOM storage, or open tabs.
+     */
+    fun clearBrowserCacheOnly(context: Context) {
         try {
             val tempWebView = android.webkit.WebView(context)
             tempWebView.clearCache(true)
             tempWebView.destroy()
+            Log.d(TAG, "Browser HTTP/disk cache cleared without touching cookies or tabs.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear browser cache", e)
+        }
+    }
+
+    /**
+     * Clears browser cache, cookies, and DOM storage (`WebStorage`).
+     * Does NOT close open tabs unless [closeTabs] is explicitly `true`.
+     */
+    fun clearCacheAndCookies(context: Context, closeTabs: Boolean = false) {
+        try {
+            val tempWebView = android.webkit.WebView(context)
+            tempWebView.clearCache(true)
+            tempWebView.destroy()
+            android.webkit.WebStorage.getInstance().deleteAllData()
             val cookieManager = android.webkit.CookieManager.getInstance()
             cookieManager.removeAllCookies(null)
             cookieManager.flush()
-            
-            // Also reset/clear open tabs when clearing cache and cookies, as per user's request!
-            settings.clearPersistedTabs()
-            val defaultTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
-            _tabs.value = listOf(defaultTab)
-            _activeTabId.value = defaultTab.id
-            _showTabsDialog.value = false
-            
-            Log.d(TAG, "Cache & cookies cleared successfully.")
+
+            if (closeTabs) {
+                settings.clearPersistedTabs()
+                val defaultTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
+                _tabs.value = listOf(defaultTab)
+                _activeTabId.value = defaultTab.id
+                _showTabsDialog.value = false
+            }
+
+            Log.d(TAG, "Cache, cookies & site storage cleared successfully (closeTabs=$closeTabs).")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear cache & cookies", e)
         }
@@ -1696,6 +1767,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _extensions.value = updated
     }
 
+    fun toggleExtensionAllowInPrivate(extensionId: String) {
+        val updated = _extensions.value.map {
+            if (it.id == extensionId) it.copy(allowInPrivate = !it.allowInPrivate) else it
+        }
+        com.example.manager.BrowserExtensionManager.saveExtensions(getApplication(), updated)
+        _extensions.value = updated
+    }
+
     fun saveOrUpdateExtension(extension: com.example.manager.BrowserExtension) {
         val current = _extensions.value.toMutableList()
         val idx = current.indexOfFirst { it.id == extension.id }
@@ -1782,5 +1861,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         super.onCleared()
         closeAllPrivateTabs()
+    }
+
+    companion object {
+        const val MAX_CONSOLE_MESSAGE_LENGTH = 2000
+        const val MAX_CONSOLE_SOURCE_LENGTH = 256
+        const val MAX_CONSOLE_ENTRIES_PER_TAB = 200
+        const val MAX_CONSOLE_ENTRIES_PER_SECOND = 60
+        const val MAX_ZAPPER_RULES_PER_HOST = 100
+
+        fun isValidZapperSelector(raw: String): Boolean {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty() || trimmed.length > 160) return false
+            if (trimmed.contains('{') || trimmed.contains('}') || trimmed.contains(';') ||
+                trimmed.contains('<') || trimmed.contains('>') || trimmed.contains('@') ||
+                trimmed.contains('\n') || trimmed.contains('\r') || trimmed.contains('\u0000')
+            ) {
+                return false
+            }
+            if (trimmed.count { it == '\'' } % 2 != 0 || trimmed.count { it == '"' } % 2 != 0) return false
+            if (trimmed.count { it == '[' } != trimmed.count { it == ']' }) return false
+            val lower = trimmed.lowercase()
+            if (lower == "html" || lower == "body" || lower == ":root" || lower == "*" ||
+                lower.contains("url(") || lower.contains("expression(") ||
+                lower.contains("javascript:") || lower.contains("/*") || lower.contains("*/")
+            ) {
+                return false
+            }
+            return true
+        }
     }
 }

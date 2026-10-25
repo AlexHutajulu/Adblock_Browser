@@ -1018,7 +1018,7 @@ private fun ChromeIncognitoNewTabPage(
             Spacer(modifier = Modifier.height(24.dp))
 
             Text(
-                text = "Now you can browse privately, and other people who use this device won't see your activity. However, downloads and bookmarks will be saved.",
+                text = "Private tabs do not save browsing history, persistent DOM storage (localStorage), or form data, and block third-party cookies. Note: Android WebView shares a single first-party cookie engine across tabs; session cookies are cleared automatically when all private tabs close and no regular web tabs are active.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = ChromeIncognitoSubtext,
                 lineHeight = 20.sp
@@ -1032,41 +1032,41 @@ private fun ChromeIncognitoNewTabPage(
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     IncognitoInfoBlock(
-                        title = "Chrome won't save:",
+                        title = "Alex Browser won't save:",
                         bullets = listOf(
-                            "Your browsing history",
-                            "Cookies and site data",
-                            "Information entered in forms"
+                            "Your browsing history & private downloads list",
+                            "Persistent DOM storage (localStorage) & third-party cookies",
+                            "Information entered in forms or disk HTTP cache"
                         ),
                         modifier = Modifier.weight(1f)
                     )
                     IncognitoInfoBlock(
-                        title = "Activity might still be visible to:",
+                        title = "Activity or cookies may still be shared with:",
                         bullets = listOf(
-                            "Websites you visit",
-                            "Your employer or school",
-                            "Your internet service provider"
+                            "Active first-party logins in open regular tabs (Android WebView limitation)",
+                            "Websites you visit & your internet service provider",
+                            "Your employer or school network"
                         ),
                         modifier = Modifier.weight(1f)
                     )
                 }
             } else {
                 IncognitoInfoBlock(
-                    title = "Chrome won't save:",
+                    title = "Alex Browser won't save:",
                     bullets = listOf(
-                        "Your browsing history",
-                        "Cookies and site data",
-                        "Information entered in forms"
+                        "Your browsing history & private downloads list",
+                        "Persistent DOM storage (localStorage) & third-party cookies",
+                        "Information entered in forms or disk HTTP cache"
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 IncognitoInfoBlock(
-                    title = "Activity might still be visible to:",
+                    title = "Activity or cookies may still be shared with:",
                     bullets = listOf(
-                        "Websites you visit",
-                        "Your employer or school",
-                        "Your internet service provider"
+                        "Active first-party logins in open regular tabs (Android WebView limitation)",
+                        "Websites you visit & your internet service provider",
+                        "Your employer or school network"
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )

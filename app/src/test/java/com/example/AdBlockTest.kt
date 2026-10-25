@@ -1495,5 +1495,885 @@ class AdBlockTest {
             com.example.manager.BrowserExtensionManager.canAutoInjectExtensionOnUrl(autoExt, "https://accounts.google.com/ServiceLogin")
         )
     }
+
+    @Test
+    fun testFase1AuditFixesVerification() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val secGuard = com.example.manager.SecurityGuardEngine
+        val dlMgr = com.example.manager.AppDownloadManager
+        val extMgr = com.example.manager.BrowserExtensionManager
+        val searchMgr = com.example.manager.SearchEngineManager
+
+        // =========================================================================
+        // F1-01: Hostname validation must NOT block public fc*/fd* domains as IPv6
+        // =========================================================================
+        // 1. Download path: public domains starting with fc / fd must be allowed
+        assertTrue(
+            "F1-01: fdroid.org must not be rejected as IPv6 ULA in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("https://fdroid.org/F-Droid.apk", resolveDns = false)
+        )
+        assertTrue(
+            "F1-01: fda.gov must not be rejected as IPv6 ULA in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("https://www.fda.gov/media/report.pdf", resolveDns = false)
+        )
+        assertTrue(
+            "F1-01: fcc.gov must not be rejected as IPv6 ULA in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("https://fcc.gov/document.pdf", resolveDns = false)
+        )
+        // 2. Download path: actual IPv6 ULA & local addresses and IPv4 private/loopback/link-local must remain blocked
+        assertFalse(
+            "F1-01: IPv6 ULA fc00::1 must be blocked in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("http://[fc00::1]/internal.bin", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: IPv6 ULA fd00::1 must be blocked in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("https://[fd00::1]/internal.bin", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 127.0.0.1 must remain blocked in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("http://127.0.0.1/secret", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 10.0.0.1 must remain blocked in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("http://10.0.0.1/secret", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 169.254.169.254 must remain blocked in AppDownloadManager",
+            dlMgr.isSafeDownloadUrl("http://169.254.169.254/latest/meta-data/", resolveDns = false)
+        )
+
+        // 3. Extension import path: public domains starting with fc / fd must be allowed
+        assertTrue(
+            "F1-01: fdroid.org must not be rejected as IPv6 ULA in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://fdroid.org/repo/script.user.js", resolveDns = false)
+        )
+        assertTrue(
+            "F1-01: fda.gov must not be rejected as IPv6 ULA in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://fda.gov/ext/helper.user.js", resolveDns = false)
+        )
+        assertTrue(
+            "F1-01: fcc.gov must not be rejected as IPv6 ULA in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://fcc.gov/ext/helper.user.js", resolveDns = false)
+        )
+        // 4. Extension import path: actual IPv6 ULA & IPv4 private/loopback/link-local must remain blocked
+        assertFalse(
+            "F1-01: IPv6 ULA fc00::1 must be blocked in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://[fc00::1]/evil.user.js", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: IPv6 ULA fd00::1 must be blocked in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://[fd00::1]/evil.user.js", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 127.0.0.1 must remain blocked in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://127.0.0.1/evil.user.js", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 10.0.0.1 must remain blocked in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://10.0.0.1/evil.user.js", resolveDns = false)
+        )
+        assertFalse(
+            "F1-01: 169.254.169.254 must remain blocked in BrowserExtensionManager",
+            extMgr.isSafeRemoteExtensionUrl("https://169.254.169.254/latest/meta-data/", resolveDns = false)
+        )
+
+        // =========================================================================
+        // F1-02: External scheme validation (denylist + RFC 3986 validation)
+        // =========================================================================
+        val validPaymentLinks = listOf(
+            "gopay://pay?order_id=INV-001",
+            "ovo://payment?amount=50000",
+            "dana://qr/pay",
+            "shopeepay://open",
+            "linkaja://transfer",
+            "bca://transfer",
+            "intent://pay#Intent;scheme=gopay;package=com.gojek.app;end"
+        )
+        for (deepLink in validPaymentLinks) {
+            assertTrue(
+                "F1-02: Valid payment deep link '$deepLink' must pass external scheme check to reach confirmation dialog",
+                secGuard.isAllowedExternalScheme(deepLink)
+            )
+            val safeIntent = secGuard.buildSafeExternalIntent(context, deepLink)
+            assertNotNull("F1-02: Valid payment deep link '$deepLink' must build a sanitized Intent", safeIntent)
+            assertEquals(android.content.Intent.ACTION_VIEW, safeIntent!!.action)
+            assertNull("F1-02: Component must always be null", safeIntent.component)
+            assertNull("F1-02: Selector must always be null", safeIntent.selector)
+            assertEquals(
+                "F1-02: Grant flags must be stripped",
+                0,
+                safeIntent.flags and (
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                    )
+            )
+        }
+
+        val blockedExternalSchemes = listOf(
+            "javascript:alert(1)",
+            "vbscript:msgbox(1)",
+            "file:///data/data/com.example/databases/alex_browser_database",
+            "content://${context.packageName}.fileprovider/downloads/a.pdf",
+            "data:text/html,<script>alert(1)</script>",
+            "blob:https://example.com/550e8400-e29b-41d4-a716-446655440000",
+            "chrome://settings",
+            "about:config",
+            "intent:///secret#Intent;scheme=file;end",
+            "intent://xss#Intent;scheme=javascript;end",
+            "intent://leak#Intent;scheme=content;end"
+        )
+        for (dangerous in blockedExternalSchemes) {
+            assertFalse(
+                "F1-02: Dangerous scheme '$dangerous' must never be allowed as external scheme",
+                secGuard.isAllowedExternalScheme(dangerous)
+            )
+            assertNull(
+                "F1-02: Dangerous scheme '$dangerous' must return null from buildSafeExternalIntent",
+                secGuard.buildSafeExternalIntent(context, dangerous)
+            )
+        }
+
+        // Normal HTTP/HTTPS URLs work as web navigation and are not external schemes
+        assertTrue(secGuard.isSafeWebNavigationUrl("https://www.tokopedia.com"))
+        assertTrue(secGuard.isSafeWebNavigationUrl("http://example.com"))
+        assertFalse(secGuard.isAllowedExternalScheme("https://www.tokopedia.com"))
+        assertFalse(secGuard.isAllowedExternalScheme("http://example.com"))
+
+        // =========================================================================
+        // F1-03: Official domain dot-boundary check, IPv4 prefix check, and Punycode
+        // =========================================================================
+        // 1. Exact official domains & valid official subdomains -> SAFE
+        assertEquals(
+            com.example.manager.ThreatSeverity.SAFE,
+            secGuard.inspectUrlThreat("https://bca.co.id/id/individu", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+        assertEquals(
+            com.example.manager.ThreatSeverity.SAFE,
+            secGuard.inspectUrlThreat("https://ibank.bca.co.id/login", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+        assertEquals(
+            com.example.manager.ThreatSeverity.SAFE,
+            secGuard.inspectUrlThreat("https://paypal.com/myaccount", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+        assertEquals(
+            com.example.manager.ThreatSeverity.SAFE,
+            secGuard.inspectUrlThreat("https://www.paypal.com/signin", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+
+        // 2. Spoofed hostnames appended to official domain without dot separator -> SUSPICIOUS_PHISHING
+        val spoofedNoBoundaryUrls = listOf(
+            "https://klikbca-evilbca.co.id/login",
+            "https://mybca-fakebca.co.id/auth",
+            "https://paypalsecure-evilpaypal.com/signin",
+            "https://brimo-fakebri.co.id/verify"
+        )
+        for (spoofUrl in spoofedNoBoundaryUrls) {
+            val threat = secGuard.inspectUrlThreat(spoofUrl, httpsOnlyEnabled = true, phishingProtectionEnabled = true)
+            assertEquals(
+                "F1-03: Spoofed domain without dot boundary '$spoofUrl' must be detected as SUSPICIOUS_PHISHING",
+                com.example.manager.ThreatSeverity.SUSPICIOUS_PHISHING,
+                threat.severity
+            )
+        }
+
+        // 3. Public domains starting with 10. or 100. must NOT be misclassified as private IPs
+        assertFalse(
+            "F1-03: 100.example.com must not be classified as local/private IP",
+            secGuard.isLocalOrPrivateAddress("100.example.com")
+        )
+        assertFalse(
+            "F1-03: 10.example.com must not be classified as local/private IP",
+            secGuard.isLocalOrPrivateAddress("10.example.com")
+        )
+        assertFalse(
+            "F1-03: 172.16.example.com must not be classified as local/private IP",
+            secGuard.isLocalOrPrivateAddress("172.16.example.com")
+        )
+        assertEquals(
+            "F1-03: Plain HTTP to 10.example.com must trigger HTTP_INSECURE under HTTPS-Only mode",
+            com.example.manager.ThreatSeverity.HTTP_INSECURE,
+            secGuard.inspectUrlThreat("http://10.example.com/login", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+
+        // 4. Private IP literals must still be classified as local/private
+        assertTrue(secGuard.isLocalOrPrivateAddress("10.0.0.1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("127.0.0.1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("192.168.1.1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("172.16.0.1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("169.254.169.254"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("100.64.0.1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("fc00::1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("fd00::1"))
+        assertTrue(secGuard.isLocalOrPrivateAddress("::1"))
+
+        // 5. Punycode: benign internationalized domains must NOT be auto-blocked, while homograph spoofs MUST be blocked
+        assertEquals(
+            "F1-03: Legitimate non-spoofing German IDN domain xn--mnchen-3ya.de must not be auto-blocked",
+            com.example.manager.ThreatSeverity.SAFE,
+            secGuard.inspectUrlThreat("https://xn--mnchen-3ya.de/info", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+        assertEquals(
+            "F1-03: Mixed-script Cyrillic/Latin homograph xn--pple-43d.com (аpple.com) must be blocked",
+            com.example.manager.ThreatSeverity.SUSPICIOUS_PHISHING,
+            secGuard.inspectUrlThreat("https://xn--pple-43d.com/login", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+        assertEquals(
+            "F1-03: Pure Cyrillic brand homograph xn--80ak6aa92e.com (apple.com spoof) must be blocked",
+            com.example.manager.ThreatSeverity.SUSPICIOUS_PHISHING,
+            secGuard.inspectUrlThreat("https://xn--80ak6aa92e.com/", httpsOnlyEnabled = true, phishingProtectionEnabled = true).severity
+        )
+
+        // =========================================================================
+        // F1-04: Scoped blob: verification for active HTTPS origin vs direct navigation block
+        // =========================================================================
+        val sampleBlobUrl = "blob:https://docs.example.com/550e8400-e29b-41d4-a716-446655440000"
+        assertFalse(
+            "F1-04: blob: URL must never pass direct web navigation gate",
+            secGuard.isSafeWebNavigationUrl(sampleBlobUrl)
+        )
+        val blobAddressBarResult = searchMgr.parseUrlOrQuery(sampleBlobUrl, com.example.manager.SearchEngine.GOOGLE)
+        assertTrue(
+            "F1-04: blob: URL typed in address bar must be converted to search query, never raw navigation",
+            blobAddressBarResult.startsWith("https://www.google.com/search?q=")
+        )
+        assertTrue(
+            "F1-04: blob: URL matching active HTTPS page origin must be allowed for preview/download",
+            secGuard.isSafeBlobUrlForContext(sampleBlobUrl, "https://docs.example.com/editor/view")
+        )
+        assertFalse(
+            "F1-04: blob: URL with mismatched active page origin must be rejected",
+            secGuard.isSafeBlobUrlForContext(sampleBlobUrl, "https://attacker.example.org/page")
+        )
+        assertFalse(
+            "F1-04: blob: URL with unverified/blank active page context must be rejected",
+            secGuard.isSafeBlobUrlForContext(sampleBlobUrl, null)
+        )
+        assertFalse(
+            "F1-04: blob: URL from insecure HTTP origin must be rejected",
+            secGuard.isSafeBlobUrlForContext("blob:http://docs.example.com/1234", "http://docs.example.com/page")
+        )
+        assertFalse(
+            "F1-04: blob: URL pointing to private/loopback host must be rejected",
+            secGuard.isSafeBlobUrlForContext("blob:https://127.0.0.1/1234", "https://127.0.0.1/page")
+        )
+        assertFalse(
+            "F1-04: javascript: scheme disguised in blob check must be rejected",
+            secGuard.isSafeBlobUrlForContext("javascript:alert(1)", "https://docs.example.com/editor")
+        )
+
+        // =========================================================================
+        // F1-05: SQLCipher passphrase protection, transactional migration, and status reporting
+        // =========================================================================
+        val prefs = com.example.manager.EncryptedPreferencesManager.getPreferences(context)
+        prefs.edit().remove(com.example.data.AppDatabaseEncrypted.KEY_DB_PASSPHRASE).commit()
+
+        // 1. When encrypted DB file already exists on disk and passphrase is missing, it MUST throw DatabaseKeyUnavailableException
+        // and MUST NOT generate/overwrite a new passphrase!
+        var threwKeyUnavailable = false
+        try {
+            com.example.data.AppDatabaseEncrypted.getDatabasePassphrase(
+                context = context,
+                encryptedDbExistsOverride = true
+            )
+        } catch (_: com.example.data.DatabaseKeyUnavailableException) {
+            threwKeyUnavailable = true
+        }
+        assertTrue(
+            "F1-05: Missing passphrase when encrypted DB exists must throw DatabaseKeyUnavailableException",
+            threwKeyUnavailable
+        )
+        assertNull(
+            "F1-05: Key slot must NOT be overwritten with a new passphrase when encrypted DB already exists",
+            prefs.getString(com.example.data.AppDatabaseEncrypted.KEY_DB_PASSPHRASE, null)
+        )
+
+        // 2. When no encrypted DB file exists yet, passphrase is created and persisted
+        val createdPassphrase = com.example.data.AppDatabaseEncrypted.getDatabasePassphrase(
+            context = context,
+            encryptedDbExistsOverride = false
+        )
+        assertTrue("F1-05: Passphrase must be generated for fresh DB", createdPassphrase.isNotBlank())
+        assertEquals(
+            "F1-05: Subsequent calls must return the exact same persisted passphrase even when encrypted DB now exists",
+            createdPassphrase,
+            com.example.data.AppDatabaseEncrypted.getDatabasePassphrase(
+                context = context,
+                encryptedDbExistsOverride = true
+            )
+        )
+
+        // 3. Transactional migration between source and target Room databases preserves history, bookmarks,
+        // and non-incognito downloads while excluding incognito downloads
+        context.deleteDatabase("test_f105_source.db")
+        context.deleteDatabase("test_f105_target.db")
+        val sourceDb = androidx.room.Room.databaseBuilder(
+            context,
+            com.example.data.AppDatabase::class.java,
+            "test_f105_source.db"
+        ).allowMainThreadQueries().build()
+        val targetDb = androidx.room.Room.databaseBuilder(
+            context,
+            com.example.data.AppDatabase::class.java,
+            "test_f105_target.db"
+        ).allowMainThreadQueries().build()
+
+        try {
+            val sSql = sourceDb.openHelper.writableDatabase
+            val tSql = targetDb.openHelper.writableDatabase
+            sSql.execSQL("INSERT INTO history (id, title, url, timestamp) VALUES (1, 'F-Droid', 'https://fdroid.org', 1000)")
+            sSql.execSQL("INSERT INTO bookmarks (id, title, url, timestamp) VALUES (1, 'BCA', 'https://bca.co.id', 2000)")
+            sSql.execSQL(
+                "INSERT INTO downloads (id, fileName, url, domain, mimeType, totalBytes, downloadedBytes, status, fileUri, createdAt, completedAt, failureReason, isIncognito) " +
+                    "VALUES ('dl_norm', 'app.apk', 'https://fdroid.org/app.apk', 'fdroid.org', 'application/vnd.android.package-archive', 1024, 1024, 'COMPLETED', '/tmp/app.apk', 3000, 3001, '', 0)"
+            )
+            sSql.execSQL(
+                "INSERT INTO downloads (id, fileName, url, domain, mimeType, totalBytes, downloadedBytes, status, fileUri, createdAt, completedAt, failureReason, isIncognito) " +
+                    "VALUES ('dl_incog', 'secret.pdf', 'https://example.com/secret.pdf', 'example.com', 'application/pdf', 512, 512, 'COMPLETED', '/tmp/secret.pdf', 3002, 3003, '', 1)"
+            )
+
+            val migrated = com.example.data.AppDatabase.migrateDatabaseContentsTransactionally(sSql, tSql)
+            assertTrue("F1-05: Transactional database migration must succeed", migrated)
+
+            tSql.query("SELECT COUNT(*) FROM history WHERE url = 'https://fdroid.org'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+            }
+            tSql.query("SELECT COUNT(*) FROM bookmarks WHERE url = 'https://bca.co.id'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+            }
+            tSql.query("SELECT COUNT(*) FROM downloads WHERE id = 'dl_norm'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+            }
+            tSql.query("SELECT COUNT(*) FROM downloads WHERE id = 'dl_incog'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("F1-05: Incognito downloads must not be migrated to persistent DB", 0, c.getInt(0))
+            }
+        } finally {
+            sourceDb.close()
+            targetDb.close()
+            context.deleteDatabase("test_f105_source.db")
+            context.deleteDatabase("test_f105_target.db")
+        }
+
+        // 4. Verify encryption status reporting is honest in unit-test fallback mode
+        val dbInstance = com.example.data.AppDatabase.getDatabase(context)
+        assertNotNull(dbInstance)
+        val currentStatus = com.example.data.AppDatabase.getEncryptionStatus()
+        assertEquals(
+            "F1-05: Robolectric fallback database must honestly report PLAINTEXT_FALLBACK, not claim SQLCipher encryption",
+            com.example.data.DatabaseEncryptionStatus.PLAINTEXT_FALLBACK,
+            currentStatus
+        )
+        assertFalse(currentStatus.isEncrypted)
+    }
+
+    @Test
+    fun testFase2AuditFixesVerification() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val settings = com.example.manager.SettingsManager(context)
+        val secGuard = com.example.manager.SecurityGuardEngine
+
+        // ── F2-01: Private tab DOM storage isolation & SecuritySnapshot reporting ──
+        val incognitoStorageScript = secGuard.buildIncognitoStorageIsolationScript()
+        assertTrue(
+            "F2-01: Incognito storage isolation script must install in-memory localStorage & sessionStorage polyfill",
+            incognitoStorageScript.contains("__asIncognitoStorageIsolated") &&
+                incognitoStorageScript.contains("createMemoryStorage") &&
+                incognitoStorageScript.contains("localStorage") &&
+                incognitoStorageScript.contains("sessionStorage")
+        )
+
+        val vm = com.example.ui.viewmodel.BrowserViewModel(context as android.app.Application)
+        vm.refreshSecuritySnapshot("tab_regular", "https://example.com", isPrivate = false)
+        vm.refreshSecuritySnapshot("tab_private", "https://example.com", isPrivate = true)
+        val regularSnap = vm.devToolsStates.value["tab_regular"]?.securitySnapshot
+        val privateSnap = vm.devToolsStates.value["tab_private"]?.securitySnapshot
+        assertNotNull(regularSnap)
+        assertNotNull(privateSnap)
+        assertTrue("F2-01: Regular tab must have domStorageEnabled = true", regularSnap!!.domStorageEnabled)
+        assertFalse("F2-01: Private tab must have domStorageEnabled = false to prevent persistent disk writes", privateSnap!!.domStorageEnabled)
+        assertFalse("F2-01: Private tab must block third-party cookies", privateSnap.thirdPartyCookiesAllowed)
+
+        // Verify private URLs are never persisted to SharedPreferences
+        vm.addNewTab("https://regular-site.example/home", isPrivate = false)
+        val regTabId = vm.activeTabId.value
+        vm.addNewTab("https://secret-private.example/vault", isPrivate = true)
+        val privTabId = vm.activeTabId.value
+        val persistedTabs = settings.loadTabs().orEmpty()
+        assertTrue(
+            "F2-01: Regular tab must be persisted",
+            persistedTabs.any { it.url == "https://regular-site.example/home" }
+        )
+        assertFalse(
+            "F2-01: Private tab URL must never be saved to SharedPreferences",
+            persistedTabs.any { it.url.contains("secret-private.example") }
+        )
+
+        // Closing private tab while regular tab is open must preserve regular tab
+        vm.removeTab(privTabId)
+        assertTrue(
+            "F2-01: Regular tab must remain intact when private tab is closed",
+            vm.tabs.value.any { it.id == regTabId && it.url == "https://regular-site.example/home" }
+        )
+
+        // ── F2-02: clearCookiesOnExit default false & TabPersistenceService preserves tabs when false ──
+        settings.clearCookiesOnExit = false
+        assertFalse("F2-02: clearCookiesOnExit must default to / remain false", settings.clearCookiesOnExit)
+        settings.saveTabs(
+            listOf(com.example.ui.viewmodel.BrowserTab(id = "t1", url = "https://saved-tab.example", title = "Saved", isPrivate = false)),
+            activeTabId = "t1"
+        )
+        val service = org.robolectric.Robolectric.buildService(com.example.manager.TabPersistenceService::class.java).create().get()
+        service.onTaskRemoved(android.content.Intent())
+        assertEquals(
+            "F2-02: Swiping app from Recents must NOT wipe persisted regular tabs when clearCookiesOnExit is false",
+            1,
+            settings.loadTabs().orEmpty().size
+        )
+
+        // When clearCookiesOnExit is true, onTaskRemoved clears persisted tabs as requested
+        settings.clearCookiesOnExit = true
+        service.onTaskRemoved(android.content.Intent())
+        assertEquals(
+            "F2-02: Swiping app from Recents must clear persisted tabs when clearCookiesOnExit is explicitly true",
+            0,
+            settings.loadTabs().orEmpty().size
+        )
+        settings.clearCookiesOnExit = false
+
+        // ── F2-03: Separation of Clear Cache Only, Clear Cookies & Site Data, and Clear History ──
+        val tabsBeforeClear = vm.tabs.value.size
+        assertTrue("F2-03: Must have open regular tab before cache/cookie clear", tabsBeforeClear >= 1)
+        vm.clearBrowserCacheOnly(context)
+        assertEquals(
+            "F2-03: clearBrowserCacheOnly must NOT close or reset open tabs",
+            tabsBeforeClear,
+            vm.tabs.value.size
+        )
+        vm.clearCacheAndCookies(context, closeTabs = false)
+        assertEquals(
+            "F2-03: clearCacheAndCookies(closeTabs=false) must NOT close open regular tabs",
+            tabsBeforeClear,
+            vm.tabs.value.size
+        )
+
+        // ── F2-04 & F2-05: Strict domain boundary for AFP bypass (no substring bypass) ──
+        assertTrue("F2-05: Official google.com must be recognized as AFP bypass domain", secGuard.isAfpBypassDomain("google.com"))
+        assertTrue("F2-05: Subdomain meet.google.com must be recognized as AFP bypass domain", secGuard.isAfpBypassDomain("meet.google.com"))
+        assertTrue("F2-05: Official discord.com must be recognized as AFP bypass domain", secGuard.isAfpBypassDomain("discord.com"))
+        assertTrue("F2-05: Official zoom.us must be recognized as AFP bypass domain", secGuard.isAfpBypassDomain(" us02web.zoom.us "))
+        assertFalse(
+            "F2-05: Attacker domain containing 'google' substring must NOT bypass anti-fingerprinting",
+            secGuard.isAfpBypassDomain("evil-google-tracker.com")
+        )
+        assertFalse(
+            "F2-05: Attacker domain containing 'discord' substring must NOT bypass anti-fingerprinting",
+            secGuard.isAfpBypassDomain("discord-logger.xyz")
+        )
+        assertFalse(
+            "F2-05: Attacker domain containing 'meet' or 'zoom' substring must NOT bypass anti-fingerprinting",
+            secGuard.isAfpBypassDomain("zoom-analytics-meet.net")
+        )
+
+        val standardAfpScript = secGuard.buildAntiFingerprintingScript(isDesktopMode = false, isStrictMode = false)
+        assertTrue(
+            "F2-05: Standard AFP script must spoof hardwareConcurrency & deviceMemory",
+            standardAfpScript.contains("hardwareConcurrency") &&
+                standardAfpScript.contains("deviceMemory") &&
+                !standardAfpScript.contains("__asStrictAfpInstalled")
+        )
+        val strictAfpScript = secGuard.buildAntiFingerprintingScript(isDesktopMode = true, isStrictMode = true)
+        assertTrue(
+            "F2-05: Strict AFP script must include deterministic Canvas & AudioContext protection",
+            strictAfpScript.contains("__asStrictAfpInstalled") &&
+                strictAfpScript.contains("getImageData") &&
+                strictAfpScript.contains("Linux x86_64")
+        )
+
+        // ── F2-06: FilterListManager & extension/download URL validation ──
+        assertTrue(
+            "F2-06: Official HTTPS filter list URL must be accepted",
+            com.example.manager.FilterListManager.isSafeFilterListUrl("https://easylist.to/easylist/easylist.txt", resolveDns = false)
+        )
+        assertFalse(
+            "F2-06: HTTP filter list URL must be rejected",
+            com.example.manager.FilterListManager.isSafeFilterListUrl("http://easylist.to/easylist/easylist.txt", resolveDns = false)
+        )
+        assertFalse(
+            "F2-06: Private IP filter list URL must be rejected",
+            com.example.manager.FilterListManager.isSafeFilterListUrl("https://192.168.1.1/easylist.txt", resolveDns = false)
+        )
+    }
+
+    @Test
+    fun testFase3AuditFixesVerification() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val extMgr = com.example.manager.BrowserExtensionManager
+        val vm = com.example.ui.viewmodel.BrowserViewModel(app)
+
+        // ── F3-01: External Extension Import Safety, Domain Scope, & Private Tab Isolation ──
+        val importedWildcardJs = extMgr.parseExtensionFromRawText(
+            rawText = "console.log('external script without header');",
+            fileName = "external_test.js",
+            sourceType = com.example.manager.ExtensionSourceType.EXTERNAL_FILE,
+            sourceUrl = ""
+        )
+        assertEquals("F3-01: External JS file must parse into 1 extension", 1, importedWildcardJs.size)
+        val extItem = importedWildcardJs.first()
+        assertFalse(
+            "F3-01: Newly imported external extension with wildcard (*) scope must default to isEnabled = false until user enables",
+            extItem.isEnabled
+        )
+        assertFalse(
+            "F3-01: Newly imported external extension must default to allowInPrivate = false",
+            extItem.allowInPrivate
+        )
+
+        // Verify broken/empty @match patterns do not expand into wildcard "*"
+        assertEquals(
+            "F3-01: Broken pattern without host must NOT expand to wildcard '*'",
+            "",
+            extMgr.normalizeMatchPattern("https:///path/only")
+        )
+        assertEquals(
+            "F3-01: Explicit <all_urls> pattern must normalize to '*'",
+            "*",
+            extMgr.normalizeMatchPattern("<all_urls>")
+        )
+        assertEquals(
+            "F3-01: Subdomain wildcard pattern must normalize to clean domain",
+            "example.com",
+            extMgr.normalizeMatchPattern("https://*.example.com/*")
+        )
+
+        // Verify private tab isolation for extensions & custom toolbar scripts
+        val enabledExternalExt = extItem.copy(
+            isEnabled = true,
+            allowInPrivate = false,
+            matches = listOf("example.com"),
+            runAt = com.example.manager.ExtensionRunAt.DOCUMENT_END
+        )
+        assertTrue(
+            "F3-01: Enabled extension must auto-inject on matching regular tab",
+            extMgr.canAutoInjectExtensionOnUrl(enabledExternalExt, "https://sub.example.com/page", isPrivate = false)
+        )
+        assertFalse(
+            "F3-01: Extension must NOT match attacker domain with suffix spoofing (evil-example.com)",
+            extMgr.canAutoInjectExtensionOnUrl(enabledExternalExt, "https://evil-example.com/page", isPrivate = false)
+        )
+        assertFalse(
+            "F3-01: Extension with allowInPrivate=false must NOT auto-inject in private/incognito tab",
+            extMgr.canAutoInjectExtensionOnUrl(enabledExternalExt, "https://sub.example.com/page", isPrivate = true)
+        )
+        val explicitlyAllowedPrivateExt = enabledExternalExt.copy(allowInPrivate = true)
+        assertTrue(
+            "F3-01: Extension with allowInPrivate=true may auto-inject on non-critical matching site in private tab",
+            extMgr.canAutoInjectExtensionOnUrl(explicitlyAllowedPrivateExt, "https://sub.example.com/page", isPrivate = true)
+        )
+        assertFalse(
+            "F3-01: External extension must never match local/private IP addresses",
+            extMgr.doesExtensionMatchUrl(
+                enabledExternalExt.copy(matches = listOf("*")),
+                "http://192.168.1.1/admin"
+            )
+        )
+
+        // ── F3-02: GM_xmlhttpRequest SSRF, Scope Validation, & Credential Stripping ──
+        val gmShim = extMgr.buildSafeGmXhrShim(listOf("api.example.com"))
+        assertTrue(
+            "F3-02: GM_xmlhttpRequest shim must enforce credentials: 'omit'",
+            gmShim.contains("credentials: 'omit'")
+        )
+        assertTrue(
+            "F3-02: GM_xmlhttpRequest shim must enforce redirect: 'error' and cache: 'no-store'",
+            gmShim.contains("redirect: 'error'") && gmShim.contains("cache: 'no-store'")
+        )
+        assertTrue(
+            "F3-02: GM_xmlhttpRequest shim must strip sensitive Cookie and Authorization headers",
+            gmShim.contains("lk !== 'cookie'") && gmShim.contains("lk !== 'authorization'")
+        )
+
+        assertTrue(
+            "F3-02: GM_xmlhttpRequest must allow target host within extension matches scope",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "https://sub.api.example.com/v1/data",
+                pageUrl = "https://other.org/article",
+                extensionMatches = listOf("api.example.com")
+            )
+        )
+        assertTrue(
+            "F3-02: GM_xmlhttpRequest must allow same-origin request matching current page host",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "https://news.example.org/api/items",
+                pageUrl = "https://news.example.org/home",
+                extensionMatches = listOf("other.com")
+            )
+        )
+        assertFalse(
+            "F3-02: GM_xmlhttpRequest must block request outside extension host scope and page origin",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "https://unrelated-exfil.xyz/collect",
+                pageUrl = "https://news.example.org/home",
+                extensionMatches = listOf("api.example.com")
+            )
+        )
+        assertFalse(
+            "F3-02: GM_xmlhttpRequest must block SSRF to loopback 127.0.0.1 even with wildcard scope",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "http://127.0.0.1:8080/admin",
+                pageUrl = "https://news.example.org",
+                extensionMatches = listOf("*")
+            )
+        )
+        assertFalse(
+            "F3-02: GM_xmlhttpRequest must block SSRF to cloud metadata 169.254.169.254",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "http://169.254.169.254/latest/meta-data/",
+                pageUrl = "https://news.example.org",
+                extensionMatches = listOf("*")
+            )
+        )
+        assertFalse(
+            "F3-02: GM_xmlhttpRequest must block SSRF to IPv6 ULA [fd00::1]",
+            extMgr.isAllowedGmXhrUrl(
+                targetUrl = "http://[fd00::1]/internal",
+                pageUrl = "https://news.example.org",
+                extensionMatches = listOf("*")
+            )
+        )
+
+        // ── F3-03: Element Zapper Per-Session Token & Selector Re-Validation ──
+        vm.setElementZapperActive(false)
+        assertEquals("F3-03: Session token must be empty when Element Zapper is inactive", "", vm.zapperSessionToken.value)
+        assertFalse(
+            "F3-03: verifyAndSelectZapperElement must reject calls when Element Zapper is inactive",
+            vm.verifyAndSelectZapperElement("fake-token", "div.ad-banner", "div")
+        )
+
+        vm.setElementZapperActive(true)
+        val activeToken = vm.zapperSessionToken.value
+        assertTrue("F3-03: Activating Element Zapper must generate a non-empty secret session token", activeToken.isNotBlank())
+
+        assertFalse(
+            "F3-03: verifyAndSelectZapperElement must reject untrusted calls with wrong or missing token",
+            vm.verifyAndSelectZapperElement("wrong-token", "div.ad-banner", "div")
+        )
+        assertFalse(
+            "F3-03: verifyAndSelectZapperElement must reject root element 'body' even with valid token",
+            vm.verifyAndSelectZapperElement(activeToken, "body", "body")
+        )
+        assertFalse(
+            "F3-03: verifyAndSelectZapperElement must reject CSS breakout injection even with valid token",
+            vm.verifyAndSelectZapperElement(activeToken, "div { display:none }", "div")
+        )
+        assertTrue(
+            "F3-03: verifyAndSelectZapperElement must accept valid selector with matching session token",
+            vm.verifyAndSelectZapperElement(activeToken, "div.floating-promo-box", "div")
+        )
+        assertEquals("div.floating-promo-box", vm.zapperPreviewSelector.value)
+
+        // Verify addCustomZapperRule re-validates selector on Kotlin side
+        vm.clearCustomZapperRulesForHost("example.com")
+        vm.addCustomZapperRule("example.com", "body { background: red }")
+        vm.addCustomZapperRule("example.com", "html")
+        assertTrue(
+            "F3-03: addCustomZapperRule must reject dangerous or root selectors",
+            vm.getCustomZapperRulesForHost("example.com").isEmpty()
+        )
+        vm.addCustomZapperRule("example.com", "div.sponsored-widget")
+        assertEquals(
+            "F3-03: addCustomZapperRule must persist valid selector",
+            listOf("div.sponsored-widget"),
+            vm.getCustomZapperRulesForHost("example.com")
+        )
+        vm.setElementZapperActive(false)
+
+        // ── F3-04: AdBlockDevTools Console Flooding, Size Truncation, & Inspect Gate ──
+        val testTabId = vm.tabs.value.first().id
+        vm.clearConsole(testTabId)
+        vm.setInspectToolsEnabled(false)
+        vm.addConsoleEntry(
+            testTabId,
+            com.example.devtools.ConsoleEntry(
+                id = "ignored-1",
+                timestamp = System.currentTimeMillis(),
+                level = com.example.devtools.ConsoleLevel.LOG,
+                message = "Should be ignored when inspectToolsEnabled is false"
+            )
+        )
+        assertTrue(
+            "F3-04: addConsoleEntry must ignore messages when inspectToolsEnabled is false",
+            vm.devToolsStates.value[testTabId]?.consoleEntries.isNullOrEmpty()
+        )
+
+        vm.setInspectToolsEnabled(true)
+        val hugeMessage = "X".repeat(10_000)
+        for (i in 1..100) {
+            vm.addConsoleEntry(
+                testTabId,
+                com.example.devtools.ConsoleEntry(
+                    id = "msg-$i",
+                    timestamp = System.currentTimeMillis(),
+                    level = com.example.devtools.ConsoleLevel.LOG,
+                    message = hugeMessage
+                )
+            )
+        }
+        val recordedEntries = vm.devToolsStates.value[testTabId]?.consoleEntries.orEmpty()
+        assertTrue(
+            "F3-04: Console rate limiter must cap burst of 100 messages in 1s to <= ${com.example.ui.viewmodel.BrowserViewModel.MAX_CONSOLE_ENTRIES_PER_SECOND}",
+            recordedEntries.isNotEmpty() && recordedEntries.size <= com.example.ui.viewmodel.BrowserViewModel.MAX_CONSOLE_ENTRIES_PER_SECOND
+        )
+        assertEquals(
+            "F3-04: Oversized console message must be truncated to MAX_CONSOLE_MESSAGE_LENGTH (2000)",
+            com.example.ui.viewmodel.BrowserViewModel.MAX_CONSOLE_MESSAGE_LENGTH,
+            recordedEntries.first().message.length
+        )
+        vm.setInspectToolsEnabled(false)
+
+        // ── F3-05: Download Redirect Validation & Cross-Origin Cookie Scope ──
+        assertTrue(
+            "F3-05: HTTPS to HTTPS public redirect hop must be allowed",
+            com.example.manager.AppDownloadManager.isSafeRedirectHop(
+                "https://releases.example.com/v1/app.apk",
+                "https://cdn.example.com/files/app.apk",
+                resolveDns = false
+            )
+        )
+        assertFalse(
+            "F3-05: HTTPS to HTTP downgrade redirect hop must be rejected",
+            com.example.manager.AppDownloadManager.isSafeRedirectHop(
+                "https://releases.example.com/v1/app.apk",
+                "http://cdn.example.com/files/app.apk",
+                resolveDns = false
+            )
+        )
+        assertFalse(
+            "F3-05: Redirect hop to private/loopback address must be rejected",
+            com.example.manager.AppDownloadManager.isSafeRedirectHop(
+                "https://releases.example.com/v1/app.apk",
+                "https://127.0.0.1/secret",
+                resolveDns = false
+            )
+        )
+    }
+
+    @Test
+    fun testFase4AuditFixesVerification() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // ── F4-01: Download Pipeline Consolidation & Safe Delegation ──
+        // 1. Unsafe URLs blocked immediately without invoking download manager
+        com.example.manager.DownloadHelper.downloadFile(
+            context = context,
+            url = "http://127.0.0.1/private.zip",
+            userAgent = "AlexBrowserTest",
+            contentDisposition = "",
+            mimeType = "application/zip",
+            downloadAcceleration = "Fast",
+            isIncognito = false,
+            appDownloadManager = null
+        )
+
+        // 2. Range check safely rejects invalid / SSRF target URLs without crashing
+        kotlinx.coroutines.runBlocking {
+            val unsafeResult = com.example.manager.DownloadHelper.checkAcceptRanges("http://192.168.1.1/router.bin", "AlexBrowserTest")
+            assertFalse("F4-01: checkAcceptRanges must safely reject SSRF target URLs", unsafeResult)
+        }
+
+        // 3. Delegation to AppDownloadManager when provided
+        val db = com.example.data.AppDatabase.getDatabase(context)
+        val repo = com.example.data.DownloadRepository(db.downloadDao())
+        val testScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        val adm = com.example.manager.AppDownloadManager(context, repo, testScope)
+
+        com.example.manager.DownloadHelper.downloadFile(
+            context = context,
+            url = "https://example.com/test-bundle.zip",
+            userAgent = "AlexBrowserTest",
+            contentDisposition = "attachment; filename=\"test-bundle.zip\"",
+            mimeType = "application/zip",
+            downloadAcceleration = "Fast",
+            isIncognito = true,
+            appDownloadManager = adm
+        )
+        // Verify active downloads in AppDownloadManager received the queued job
+        val activeMap = adm.activeDownloads.value
+        assertTrue(
+            "F4-01: DownloadHelper fast mode must delegate to AppDownloadManager when supplied",
+            activeMap.values.any { it.url == "https://example.com/test-bundle.zip" && it.isIncognito }
+        )
+
+        // ── F4-02: String Resource Externalization Verification ──
+        val sBlocked = context.getString(R.string.download_blocked_unsafe)
+        assertTrue("F4-02: download_blocked_unsafe must not be blank", sBlocked.isNotBlank())
+
+        val sWarning = context.getString(R.string.download_warning_dangerous_file)
+        assertTrue("F4-02: download_warning_dangerous_file must not be blank", sWarning.isNotBlank())
+
+        val sFast = context.getString(R.string.download_fast_accelerated)
+        assertTrue("F4-02: download_fast_accelerated must not be blank", sFast.isNotBlank())
+
+        val sFallback = context.getString(R.string.download_range_fallback_normal)
+        assertTrue("F4-02: download_range_fallback_normal must not be blank", sFallback.isNotBlank())
+
+        val sDownloading = context.getString(R.string.downloading_file)
+        assertTrue("F4-02: downloading_file must not be blank", sDownloading.isNotBlank())
+
+        val sFailed = context.getString(R.string.download_failed_prefix, "Network Timeout")
+        assertTrue("F4-02: download_failed_prefix format must contain argument", sFailed.contains("Network Timeout"))
+
+        val sExtPrivActive = context.getString(R.string.extension_tab_private_active)
+        assertTrue("F4-02: extension_tab_private_active must not be blank", sExtPrivActive.isNotBlank())
+
+        val sExtPrivInactive = context.getString(R.string.extension_tab_private_inactive)
+        assertTrue("F4-02: extension_tab_private_inactive must not be blank", sExtPrivInactive.isNotBlank())
+
+        val sExtPinned = context.getString(R.string.extension_pinned)
+        assertTrue("F4-02: extension_pinned must not be blank", sExtPinned.isNotBlank())
+
+        val sExtUnpinned = context.getString(R.string.extension_unpinned)
+        assertTrue("F4-02: extension_unpinned must not be blank", sExtUnpinned.isNotBlank())
+
+        val sExtDeleted = context.getString(R.string.extension_deleted, "AdBlock Plus")
+        assertTrue("F4-02: extension_deleted format must contain extension name", sExtDeleted.contains("AdBlock Plus"))
+
+        val sConsoleRate = context.getString(R.string.console_rate_limit_exceeded)
+        assertTrue("F4-02: console_rate_limit_exceeded must not be blank", sConsoleRate.isNotBlank())
+
+        val sZapperRoot = context.getString(R.string.zapper_root_element_blocked)
+        assertTrue("F4-02: zapper_root_element_blocked must not be blank", sZapperRoot.isNotBlank())
+
+        val sZapperInvalid = context.getString(R.string.zapper_invalid_selector)
+        assertTrue("F4-02: zapper_invalid_selector must not be blank", sZapperInvalid.isNotBlank())
+
+        // ── F4-03: Full Multi-Phase Regression Integrity Check ──
+        // Fase 1: CSS Selector Validation & Injection Sanitization
+        assertFalse("Fase 1 regression: dangerous selector with style tag closing must be blocked", com.example.manager.CosmeticFilterInjector.isSafeCssSelector(".banner</style>"))
+        assertFalse("Fase 1 regression: body/html selectors must be blocked", com.example.manager.CosmeticFilterInjector.isSafeCssSelector("body"))
+        assertTrue("Fase 1 regression: safe ad slot selector must be allowed", com.example.manager.CosmeticFilterInjector.isSafeCssSelector(".ad-banner"))
+
+        // Fase 2: Scheme & Intent Sanitization
+        assertFalse("Fase 2 regression: content:// scheme must be blocked", com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl("content://media/external/images"))
+        assertFalse("Fase 2 regression: javascript: scheme must be blocked", com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl("javascript:alert(1)"))
+
+        // Fase 3: Extension default flags & token validation
+        val importedExts = com.example.manager.BrowserExtensionManager.parseExtensionFromRawText(
+            rawText = "// ==UserScript==\n// @name Test\n// @match *://*/*\n// ==/UserScript==",
+            fileName = "test.user.js",
+            sourceType = com.example.manager.ExtensionSourceType.EXTERNAL_URL,
+            sourceUrl = "https://example.com/test.user.js"
+        )
+        assertTrue("Fase 3 regression: Parsed external extension list should not be empty", importedExts.isNotEmpty())
+        assertFalse("Fase 3 regression: External extension allowInPrivate must be false by default", importedExts.first().allowInPrivate)
+        assertFalse("Fase 3 regression: External extension isEnabled must be false by default", importedExts.first().isEnabled)
+    }
 }
+
+
+
 

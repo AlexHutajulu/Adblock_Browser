@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.R
 import com.example.manager.*
 import com.example.ui.viewmodel.BrowserViewModel
 import java.util.UUID
@@ -389,8 +390,18 @@ fun ChromeExtensionsHubDialog(
                                                             )
                                                         }
                                                     }
+                                                    val scopeLabel = if (ext.matches.contains("*")) {
+                                                        "Semua Situs (*)"
+                                                    } else {
+                                                        ext.matches.joinToString(", ")
+                                                    }
+                                                    val privateLabel = if (ext.allowInPrivate) {
+                                                        context.getString(R.string.extension_tab_private_active)
+                                                    } else {
+                                                        context.getString(R.string.extension_tab_private_inactive)
+                                                    }
                                                     Text(
-                                                        text = "$sourceBadgeText • $runAtLabel • Target: ${ext.matches.joinToString(", ")}",
+                                                        text = "$sourceBadgeText • $runAtLabel • Target: $scopeLabel • $privateLabel",
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.primary
                                                     )
@@ -438,7 +449,11 @@ fun ChromeExtensionsHubDialog(
                                                     OutlinedButton(
                                                         onClick = {
                                                             viewModel.toggleExtensionPinned(ext.id)
-                                                            val msg = if (!ext.isPinnedToToolbar) "Disematkan ke baris pintasan" else "Dilepas dari baris pintasan"
+                                                            val msg = if (!ext.isPinnedToToolbar) {
+                                                                context.getString(R.string.extension_pinned)
+                                                            } else {
+                                                                context.getString(R.string.extension_unpinned)
+                                                            }
                                                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                                         },
                                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -466,7 +481,11 @@ fun ChromeExtensionsHubDialog(
                                                         IconButton(
                                                             onClick = {
                                                                 viewModel.deleteExtension(ext.id)
-                                                                Toast.makeText(context, "Ekstensi '${ext.name}' dihapus", Toast.LENGTH_SHORT).show()
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    context.getString(R.string.extension_deleted, ext.name),
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
                                                             },
                                                             modifier = Modifier.size(32.dp)
                                                         ) {
