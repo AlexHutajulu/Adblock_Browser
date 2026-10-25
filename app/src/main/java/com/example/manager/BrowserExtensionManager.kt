@@ -366,8 +366,23 @@ object BrowserExtensionManager {
                     heading.style.cssText = 'font-family:sans-serif;font-size:24px;line-height:1.35;margin-bottom:16px;';
                     heading.textContent = document.title || '';
                     var contentBox = document.createElement('div');
-                    contentBox.innerHTML = target.innerHTML;
-                    contentBox.querySelectorAll('script,iframe,object,embed,nav,aside,footer,form').forEach(function(n) { n.remove(); });
+                    var parser = new DOMParser();
+                    var parsedDoc = parser.parseFromString(target.innerHTML || '', 'text/html');
+                    parsedDoc.querySelectorAll('script,iframe,object,embed,nav,aside,footer,form,style,link,meta,base').forEach(function(n) { n.remove(); });
+                    parsedDoc.querySelectorAll('*').forEach(function(el) {
+                        Array.from(el.attributes).forEach(function(attr) {
+                            var name = attr.name.toLowerCase();
+                            var val = (attr.value || '').trim().toLowerCase();
+                            if (name.indexOf('on') === 0 ||
+                                ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') &&
+                                 (val.indexOf('javascript:') === 0 || val.indexOf('vbscript:') === 0 || val.indexOf('data:text/html') === 0))) {
+                                el.removeAttribute(attr.name);
+                            }
+                        });
+                    });
+                    while (parsedDoc.body.firstChild) {
+                        contentBox.appendChild(document.adoptNode(parsedDoc.body.firstChild));
+                    }
                     inner.appendChild(heading);
                     inner.appendChild(contentBox);
                     modal.appendChild(closeBtn);
@@ -379,8 +394,26 @@ object BrowserExtensionManager {
         )
     )
 
+    private fun getSecurePrefs(context: Context): android.content.SharedPreferences {
+        val encPrefs = EncryptedPreferencesManager.getPreferences(context)
+        val legacy = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (legacy.contains(KEY_EXTENSIONS_JSON) && !encPrefs.contains(KEY_EXTENSIONS_JSON)) {
+            try {
+                val legacyRaw = legacy.getString(KEY_EXTENSIONS_JSON, null)
+                val legacySeeded = legacy.getBoolean(KEY_SEEDED_DEFAULTS, false)
+                val editor = encPrefs.edit()
+                if (!legacyRaw.isNullOrBlank()) {
+                    editor.putString(KEY_EXTENSIONS_JSON, legacyRaw)
+                }
+                editor.putBoolean(KEY_SEEDED_DEFAULTS, legacySeeded).apply()
+                legacy.edit().clear().apply()
+            } catch (_: Exception) {}
+        }
+        return encPrefs
+    }
+
     fun loadExtensions(context: Context): List<BrowserExtension> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = getSecurePrefs(context)
         val seeded = prefs.getBoolean(KEY_SEEDED_DEFAULTS, false)
         val raw = prefs.getString(KEY_EXTENSIONS_JSON, null)
         if (!seeded || raw.isNullOrBlank()) {
@@ -388,7 +421,19 @@ object BrowserExtensionManager {
             prefs.edit().putBoolean(KEY_SEEDED_DEFAULTS, true).apply()
             return BUILT_IN_EXTENSIONS
         }
-        val parsed = parseExtensionsJson(raw)
+        val builtInById = BUILT_IN_EXTENSIONS.associateBy { it.id }
+        val parsed = parseExtensionsJson(raw).map { ext ->
+            val latestBuiltIn = builtInById[ext.id]
+            if (latestBuiltIn != null && ext.sourceType == ExtensionSourceType.BUILT_IN) {
+                ext.copy(
+                    jsCode = latestBuiltIn.jsCode,
+                    cssCode = latestBuiltIn.cssCode,
+                    version = latestBuiltIn.version
+                )
+            } else {
+                ext
+            }
+        }
         if (parsed.isEmpty()) return BUILT_IN_EXTENSIONS
 
         // Ensure any new built-in extensions are present
@@ -404,8 +449,11 @@ object BrowserExtensionManager {
     }
 
     fun saveExtensions(context: Context, extensions: List<BrowserExtension>) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_EXTENSIONS_JSON, serializeExtensionsJson(extensions)).apply()
+        val prefs = getSecurePrefs(context)
+        prefs.edit()
+            .putString(KEY_EXTENSIONS_JSON, serializeExtensionsJson(extensions))
+            .putBoolean(KEY_SEEDED_DEFAULTS, true)
+            .apply()
     }
 
     fun serializeExtensionsJson(extensions: List<BrowserExtension>): String {
@@ -775,7 +823,7 @@ object BrowserExtensionManager {
      * Validates that a remote extension URL uses HTTPS exclusively and does not target
      * loopback, RFC 1918 private networks, link-local / cloud metadata, or IPv6 local ranges.
      */
-    internal fun isSafeRemoteExtensionUrl(url: String): Boolean {
+    internal fun isSafeRemoteExtensionUrl(url: String, resolveDns: Boolean = false): Boolean {
         val trimmed = url.trim()
         return try {
             val parsed = URL(trimmed)
@@ -783,12 +831,26 @@ object BrowserExtensionManager {
             val host = parsed.host.lowercase(Locale.US).removeSurrounding("[", "]")
             if (host.isBlank()) return false
 
-            if (host == "localhost" || host.endsWith(".local") || host == "127.0.0.1" ||
-                host == "0.0.0.0" || host == "::1" || host == "0:0:0:0:0:0:0:1" ||
-                host.startsWith("169.254.") || host.startsWith("127.") ||
-                host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd") ||
-                host.startsWith("::ffff:127.") || host.startsWith("::ffff:10.") ||
-                host.startsWith("::ffff:192.168.") || host.startsWith("::ffff:169.254.")
+            if (host == "localhost" ||
+                host.endsWith(".localhost") ||
+                host.endsWith(".local") ||
+                host.endsWith(".internal") ||
+                host.endsWith(".localdomain") ||
+                host == "127.0.0.1" ||
+                host == "0.0.0.0" ||
+                host == "::1" ||
+                host == "0:0:0:0:0:0:0:1" ||
+                host.startsWith("169.254.") ||
+                host.startsWith("127.") ||
+                host.startsWith("fe80:") ||
+                host.startsWith("fc") ||
+                host.startsWith("fd") ||
+                host.startsWith("::ffff:127.") ||
+                host.startsWith("::ffff:10.") ||
+                host.startsWith("::ffff:192.168.") ||
+                host.startsWith("::ffff:169.254.") ||
+                host.all { it.isDigit() } ||
+                host.startsWith("0x")
             ) {
                 return false
             }
@@ -796,6 +858,7 @@ object BrowserExtensionManager {
             val ipv4Part = if (host.startsWith("::ffff:")) host.removePrefix("::ffff:") else host
             val parts = ipv4Part.split(".")
             if (parts.size == 4 && parts.all { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }) {
+                if (parts.any { it.length > 1 && it.startsWith("0") }) return false
                 val ip0 = parts[0].toIntOrNull() ?: return false
                 val ip1 = parts[1].toIntOrNull() ?: return false
                 if (ip0 == 10) return false
@@ -803,7 +866,16 @@ object BrowserExtensionManager {
                 if (ip0 == 192 && ip1 == 168) return false
                 if (ip0 == 127) return false
                 if (ip0 == 169 && ip1 == 254) return false
-                if (ip0 == 0) return false
+                if (ip0 == 100 && ip1 in 64..127) return false
+                if (ip0 == 0 || ip0 >= 224) return false
+            }
+
+            if (resolveDns) {
+                val addresses = java.net.InetAddress.getAllByName(host)
+                if (addresses.isEmpty()) return false
+                if (addresses.any { addr -> FilterListManager.isRestrictedAddress(addr) }) {
+                    return false
+                }
             }
 
             true
@@ -930,7 +1002,7 @@ object BrowserExtensionManager {
                         IllegalArgumentException("Demi keamanan, impor ekstensi jarak jauh wajib menggunakan protokol terenkripsi https://")
                     )
                 }
-                if (!isSafeRemoteExtensionUrl(cleanUrl)) {
+                if (!isSafeRemoteExtensionUrl(cleanUrl, resolveDns = true)) {
                     return@withContext Result.failure(
                         SecurityException("URL ekstensi ditolak oleh pelindung jaringan (SSRF / alamat lokal tidak diizinkan)")
                     )
@@ -942,7 +1014,7 @@ object BrowserExtensionManager {
                 var conn: HttpURLConnection
 
                 while (true) {
-                    if (!isSafeRemoteExtensionUrl(currentUrl)) {
+                    if (!isSafeRemoteExtensionUrl(currentUrl, resolveDns = true)) {
                         return@withContext Result.failure(
                             SecurityException("Target pengalihan (redirect) ekstensi tidak aman atau mengarah ke jaringan lokal")
                         )
@@ -973,7 +1045,7 @@ object BrowserExtensionManager {
                             return@withContext Result.failure(SecurityException("Terlalu banyak pengalihan URL (maks $maxRedirects)"))
                         }
                         val nextUrl = URL(urlObj, location).toString()
-                        if (!isSafeRemoteExtensionUrl(nextUrl)) {
+                        if (!isSafeRemoteExtensionUrl(nextUrl, resolveDns = true)) {
                             return@withContext Result.failure(
                                 SecurityException("Pengalihan ke protokol non-HTTPS atau jaringan lokal diblokir")
                             )
@@ -1064,17 +1136,29 @@ object BrowserExtensionManager {
 
     fun doesExtensionMatchUrl(extension: BrowserExtension, url: String?): Boolean {
         if (url.isNullOrBlank() || url == "about:blank") return false
-        if (extension.matches.isEmpty() || extension.matches.contains("*")) return true
+        if (!SecurityGuardEngine.isSafeWebNavigationUrl(url)) return false
         val host = try {
             Uri.parse(url).host?.lowercase(Locale.US)?.removePrefix("www.") ?: ""
         } catch (_: Exception) {
             ""
         }
         if (host.isEmpty()) return false
+        if (extension.matches.isEmpty() || extension.matches.contains("*")) return true
         return extension.matches.any { pattern ->
             val clean = pattern.lowercase(Locale.US).trim().removePrefix("*.").removePrefix("www.")
             clean == "*" || host == clean || host.endsWith(".$clean")
         }
+    }
+
+    /**
+     * Checks whether automatic extension injection (`DOCUMENT_START` / `DOCUMENT_END`) is permitted
+     * for the given `extension` and `url`. Blocks automatic execution on critical banking/payment/SSO/CAPTCHA hosts.
+     */
+    fun canAutoInjectExtensionOnUrl(extension: BrowserExtension, url: String?): Boolean {
+        if (!extension.isEnabled || extension.runAt == ExtensionRunAt.MANUAL_ONLY) return false
+        if (!doesExtensionMatchUrl(extension, url)) return false
+        if (SecurityGuardEngine.isCriticalProtectedHost(url)) return false
+        return true
     }
 
     /**
@@ -1087,8 +1171,11 @@ object BrowserExtensionManager {
         stage: ExtensionRunAt
     ) {
         if (webView == null || url.isNullOrBlank() || url == "about:blank") return
+        if (!SecurityGuardEngine.isSafeWebNavigationUrl(url) || SecurityGuardEngine.isCriticalProtectedHost(url)) {
+            return
+        }
         extensions.forEach { ext ->
-            if (ext.isEnabled && ext.runAt == stage && doesExtensionMatchUrl(ext, url)) {
+            if (ext.runAt == stage && canAutoInjectExtensionOnUrl(ext, url)) {
                 executeExtensionInWebView(webView, ext, isManualTrigger = false, onResult = null)
             }
         }

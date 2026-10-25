@@ -21,7 +21,8 @@ enum class PrivacyShieldMode {
 
 class SettingsManager(private val context: Context) {
     // AUDIT FIX: CWE-312 - Use encrypted preferences instead of plaintext
-    private fun getEncryptedPrefs() = EncryptedPreferencesManager.getPreferences(context)
+    private val prefs: SharedPreferences
+        get() = EncryptedPreferencesManager.getPreferences(context)
 
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
@@ -253,12 +254,12 @@ class SettingsManager(private val context: Context) {
 
     fun saveTabs(tabs: List<com.example.ui.viewmodel.BrowserTab>, activeTabId: String) {
         val jsonArray = org.json.JSONArray()
-        tabs.forEach { tab ->
+        tabs.filter { !it.isPrivate }.forEach { tab ->
             val obj = org.json.JSONObject().apply {
                 put("id", tab.id)
                 put("url", tab.url)
                 put("title", tab.title)
-                put("isPrivate", tab.isPrivate)
+                put("isPrivate", false)
             }
             jsonArray.put(obj)
         }
@@ -278,16 +279,17 @@ class SettingsManager(private val context: Context) {
                 val result = mutableListOf<com.example.ui.viewmodel.BrowserTab>()
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
+                    val isPrivate = obj.optBoolean("isPrivate", false)
+                    if (isPrivate) continue
                     val id = obj.optString("id").takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString()
                     val url = obj.optString("url", "")
                     val title = obj.optString("title", "New Tab")
-                    val isPrivate = obj.optBoolean("isPrivate", false)
                     result.add(
                         com.example.ui.viewmodel.BrowserTab(
                             id = id,
                             url = url,
                             title = title,
-                            isPrivate = isPrivate
+                            isPrivate = false
                         )
                     )
                 }
@@ -304,11 +306,13 @@ class SettingsManager(private val context: Context) {
         return parts.mapNotNull { part ->
             val fields = part.split("|||field|||")
             if (fields.size >= 4) {
-                com.example.ui.viewmodel.BrowserTab(
+                val isPrivate = fields[3].toBoolean()
+                if (isPrivate) null
+                else com.example.ui.viewmodel.BrowserTab(
                     id = fields[0],
                     url = fields[1],
                     title = fields[2],
-                    isPrivate = fields[3].toBoolean()
+                    isPrivate = false
                 )
             } else {
                 null

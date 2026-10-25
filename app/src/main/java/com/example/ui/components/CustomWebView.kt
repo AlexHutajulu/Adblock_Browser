@@ -115,10 +115,12 @@ fun CustomWebView(
         val host = safeHost(tab.url)
         if (host.isNotBlank()) {
             val rules = viewModel.getCustomZapperRulesForHost(host)
+                .map { sanitizeZapperSelector(it) }
+                .filter { it.isNotBlank() }
             val css = if (rules.isEmpty()) "" else {
                 rules.joinToString(",\n") + " { display:none !important; visibility:hidden !important; pointer-events:none !important; }"
             }
-            val escaped = css.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
+            val quotedCss = org.json.JSONObject.quote(css)
             webView.evaluateJavascript("""
 (function(){
   var s=window.__asZapperRef;
@@ -127,7 +129,7 @@ fun CustomWebView(
     (document.head||document.documentElement).appendChild(s);
     try{Object.defineProperty(window,'__asZapperRef',{value:s,enumerable:false,configurable:true});}catch(e){}
   }
-  s.textContent=`$escaped`;
+  s.textContent=$quotedCss;
 })();
             """.trimIndent(), null)
         }
@@ -191,6 +193,8 @@ fun CustomWebView(
                         // Safety: Strict file sandbox access
                         allowFileAccess = false
                         allowContentAccess = false
+                        @Suppress("DEPRECATION")
+                        saveFormData = false
                         
                         // Block Mixed Content (HTTP on HTTPS)
                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -221,12 +225,12 @@ fun CustomWebView(
                     }
 
                     // Update properties that can change dynamically using update block
-                    // For instance, Data Saver image loading and Cache Mode
+                    // Private tabs always enforce LOAD_NO_CACHE regardless of Data Saver setting
                     settings.loadsImagesAutomatically = !dataSaverEnabled
-                    if (dataSaverEnabled) {
-                        settings.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-                    } else {
-                        settings.cacheMode = if (tab.isPrivate) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+                    settings.cacheMode = when {
+                        tab.isPrivate -> WebSettings.LOAD_NO_CACHE
+                        dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
+                        else -> WebSettings.LOAD_DEFAULT
                     }
                     
                     val currentPageUrlRef = java.util.concurrent.atomic.AtomicReference<String>(tab.url)
@@ -257,15 +261,50 @@ fun CustomWebView(
                     addJavascriptInterface(object {
                         @Volatile private var lastNewTabTimestamp = 0L
                         @Volatile private var lastTrapReportTimestamp = 0L
+                        @Volatile private var lastAudioStateTimestamp = 0L
+                        @Volatile private var lastWebRtcToastTimestamp = 0L
 
                         @android.webkit.JavascriptInterface
                         fun openUrlInNewTab(url: String) {
                             val trimmed = url.trim()
                             if (trimmed.isBlank() || trimmed.length > 2048) return
                             // Strict scheme allowlist: prevent javascript:, file:, content:, or intent: injection
-                            val isHttpOrHttps = trimmed.startsWith("https://", ignoreCase = true) ||
-                                trimmed.startsWith("http://", ignoreCase = true)
-                            if (!isHttpOrHttps) return
+                            if (!com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(trimmed)) {
+                                com.example.manager.SecurityLogger.logValidationError(
+                                    "AlexBrowserNative",
+                                    "Blocked unsafe scheme in openUrlInNewTab: $trimmed"
+                                )
+                                return
+                            }
+
+                            // Block navigation to detected phishing or malware destinations
+                            val threat = com.example.manager.SecurityGuardEngine.inspectUrlThreat(
+                                url = trimmed,
+                                httpsOnlyEnabled = viewModel.httpsOnlyMode.value,
+                                phishingProtectionEnabled = viewModel.phishingProtectionEnabled.value,
+                                isUserTrustedHost = false
+                            )
+                            if (threat.severity == com.example.manager.ThreatSeverity.SUSPICIOUS_PHISHING ||
+                                threat.severity == com.example.manager.ThreatSeverity.MALWARE_OR_SCAM
+                            ) {
+                                com.example.manager.SecurityLogger.logSecurityEvent(
+                                    type = com.example.manager.SecurityLogger.EventType.VALIDATION_ERROR,
+                                    component = "AlexBrowserNative",
+                                    message = "Blocked openUrlInNewTab to threat URL: $trimmed",
+                                    severity = "WARNING"
+                                )
+                                return
+                            }
+
+                            // Anti-ad-popup: block automated popunder ad redirects
+                            val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
+                            val blockedByAdGuard = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
+                                (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
+                                alexShieldV5Client.shouldBlockNavigationRedirect(trimmed, mainPageUrl, false)
+                            if (blockedByAdGuard) {
+                                Log.w(TAG, "Blocked automated ad redirect via openUrlInNewTab: $trimmed")
+                                return
+                            }
 
                             val now = System.currentTimeMillis()
                             if (now - lastNewTabTimestamp < 1200L) return
@@ -279,6 +318,9 @@ fun CustomWebView(
 
                         @android.webkit.JavascriptInterface
                         fun onAudioStateChanged(isPlaying: Boolean) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastAudioStateTimestamp < 150L) return
+                            lastAudioStateTimestamp = now
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 viewModel.updateTabPlayingAudio(tab.id, isPlaying)
                             }
@@ -310,6 +352,14 @@ fun CustomWebView(
 
                         @android.webkit.JavascriptInterface
                         fun setImmersiveFullscreen(enabled: Boolean) {
+                            // Exiting fullscreen is always permitted; entering immersive fullscreen
+                            // requires an active fullscreen session or recent user Full Screen tool invocation
+                            val now = System.currentTimeMillis()
+                            val recentToolTrigger = (now - viewModel.fullScreenToolSignal.value) < 15_000L
+                            if (enabled && !recentToolTrigger && !viewModel.isImmersivePageFullscreen.value) {
+                                Log.w(TAG, "Blocked unprompted setImmersiveFullscreen(true) from web content")
+                                return
+                            }
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 viewModel.setImmersivePageFullscreen(enabled)
                             }
@@ -317,6 +367,9 @@ fun CustomWebView(
                         
                         @android.webkit.JavascriptInterface
                         fun onWebRtcBlocked(url: String) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastWebRtcToastTimestamp < 3000L) return
+                            lastWebRtcToastTimestamp = now
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 android.widget.Toast.makeText(
                                     context,
@@ -351,6 +404,12 @@ fun CustomWebView(
                                 alexShieldV5Client.setMode(nextMode)
                                 lastAlexShieldMode = nextMode
                             }
+
+                            alexShieldV5Client.setTrackerBlockingEnabled(
+                                enabled = viewModel.trackerBlockEnabled.value,
+                                activeWhenAdBlockOff = true
+                            )
+                            alexShieldV5Client.setStreamingBoostEnabled(viewModel.streamingBoostEnabled.value)
 
                             val nextWhitelist = viewModel.adBlockDisabledDomains.value
                                 .mapNotNull { domain ->
@@ -418,97 +477,48 @@ fun CustomWebView(
                             val isGoogleOrDiscord = host.endsWith("google.com") || host.endsWith("google.co.id") || host.endsWith("discord.com") || host.endsWith("discordapp.com") || host.contains("google") || host.contains("discord") || host.contains("meet") || host.contains("zoom")
                             val isWhitelisted = viewModel.adBlockDisabledDomains.value.contains(host) || viewModel.adBlockDisabledDomains.value.any { host.endsWith(".$it") }
 
-                            // WebRTC Leak Protection: Compatibility Mode (Filters private networks instead of breaking all RTCPeerConnection functions)
+                            // WebRTC Leak Protection
                             if (preventWebRtcLeak && !isWhitelisted) {
-                                val script = if (strictWebRtcMode) {
-                                    """
-                                        (function() {
-                                            if (window.RTCPeerConnection) {
-                                                window.RTCPeerConnection = function() {
-                                                    try {
-                                                        if (window.AlexBrowserNative) {
-                                                            window.AlexBrowserNative.onWebRtcBlocked(window.location.href);
-                                                        }
-                                                    } catch(e) {}
-                                                    throw new Error("WebRTC connection blocked by AlexBrowser Strict Privacy Mode (Standard compatibility mode required for this page).");
-                                                };
-                                                window.webkitRTCPeerConnection = window.RTCPeerConnection;
-                                            }
-                                        })();
-                                    """.trimIndent()
-                                } else {
-                                    """
-                                        (function() {
-                                            if (window.RTCPeerConnection) {
-                                                const orig = window.RTCPeerConnection;
-                                                window.RTCPeerConnection = function(config, constraints) {
-                                                    const pc = new orig(config, constraints);
-                                                    
-                                                    const origSetLocalDescription = pc.setLocalDescription;
-                                                    pc.setLocalDescription = function(desc) {
-                                                        if (desc && desc.sdp) {
-                                                            let sdp = desc.sdp;
-                                                            sdp = sdp.replace(/a=candidate:\d+ \d+ \w+ \d+ (192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)/gi, 'a=candidate:0 1 UDP 0 0.0.0.0');
-                                                            const lines = sdp.split('\n');
-                                                            const filteredLines = lines.filter(line => {
-                                                                if (line.trim().startsWith('a=candidate:')) {
-                                                                    return !/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)/i.test(line);
-                                                                }
-                                                                return true;
-                                                            });
-                                                            desc.sdp = filteredLines.join('\n');
-                                                        }
-                                                        return origSetLocalDescription.call(this, desc);
-                                                    };
-    
-                                                    const origAddIceCandidate = pc.addIceCandidate;
-                                                    pc.addIceCandidate = function(candidate, successCallback, failureCallback) {
-                                                        if (candidate && candidate.candidate) {
-                                                            const candStr = candidate.candidate;
-                                                            if (/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)/i.test(candStr)) {
-                                                                if (successCallback) successCallback();
-                                                                return Promise.resolve();
-                                                            }
-                                                        }
-                                                        return origAddIceCandidate.call(this, candidate, successCallback, failureCallback);
-                                                    };
-    
-                                                    return pc;
-                                                };
-                                                Object.setPrototypeOf(window.RTCPeerConnection, orig);
-                                                window.RTCPeerConnection.prototype = orig.prototype;
-                                            }
-                                        })();
-                                    """.trimIndent()
+                                val webRtcScript = com.example.manager.SecurityGuardEngine.buildWebRtcProtectionScript(
+                                    preventWebRtcLeak = preventWebRtcLeak,
+                                    strictWebRtcMode = strictWebRtcMode
+                                )
+                                if (webRtcScript.isNotEmpty()) {
+                                    view?.evaluateJavascript(webRtcScript, null)
                                 }
-                                view?.evaluateJavascript(script, null)
                             }
                             
-                            // Anti-Fingerprinting (Compatible / Selective Spoofing)
-                            if (!isWhitelisted && !isGoogleOrDiscord) {
+                            // Anti-Fingerprinting (Compatible / Selective Spoofing aligned with DisplayMode)
+                            if (!isWhitelisted && !isGoogleOrDiscord && !alexShieldV5Client.isCriticalBypassDomain(host)) {
+                                val targetPlatform = if (viewModel.displayMode.value != DisplayMode.MOBILE) "Linux x86_64" else "Linux armv81"
                                 val standardAfp = """
                                     (function() {
-                                        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-                                        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
-                                        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+                                        try {
+                                            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+                                            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4, configurable: true });
+                                            Object.defineProperty(navigator, 'platform', { get: () => '$targetPlatform', configurable: true });
+                                        } catch(e) {}
                                     })();
                                 """.trimIndent()
                                 view?.evaluateJavascript(standardAfp, null)
                                 
-                                // Strict: Canvas + Audio noise
+                                // Strict: Deterministic per-origin Canvas noise + Audio fingerprint protection
                                 if (privacyShieldMode == com.example.manager.PrivacyShieldMode.STRICT) {
                                     val strictAfp = """
                                         (function() {
-                                            // Canvas noise
+                                            if (window.__asStrictAfpInstalled) return;
+                                            window.__asStrictAfpInstalled = true;
+                                            const hostSeed = (window.location && window.location.hostname ? window.location.hostname.length : 7) % 3 + 1;
                                             const origGetContext = HTMLCanvasElement.prototype.getContext;
                                             HTMLCanvasElement.prototype.getContext = function(type, contextAttributes) {
                                                 const ctx = origGetContext.call(this, type, contextAttributes);
-                                                if (ctx && type === '2d') {
+                                                if (ctx && type === '2d' && !ctx.__asPatched) {
+                                                    ctx.__asPatched = true;
                                                     const origGetImageData = ctx.getImageData;
                                                     ctx.getImageData = function(x, y, w, h) {
                                                         const data = origGetImageData.call(this, x, y, w, h);
-                                                        for (let i = 0; i < data.data.length; i += 4) {
-                                                            data.data[i] = data.data[i] + (Math.random() * 2 - 1);
+                                                        for (let i = 0; i < data.data.length; i += 16) {
+                                                            data.data[i] = (data.data[i] ^ hostSeed) & 0xFF;
                                                         }
                                                         return data;
                                                     };
@@ -518,8 +528,7 @@ fun CustomWebView(
                                             if (window.AudioContext || window.webkitAudioContext) {
                                                 const ac = window.AudioContext || window.webkitAudioContext;
                                                 ac.prototype.createOscillator = function() {
-                                                    console.log('AudioContext fingerprint prevented');
-                                                    return { connect: () => {}, start: () => {}, stop: () => {} };
+                                                    return { connect: () => {}, start: () => {}, stop: () => {}, frequency: { value: 440, setValueAtTime: () => {} }, type: 'sine' };
                                                 };
                                             }
                                         })();
@@ -619,7 +628,7 @@ fun CustomWebView(
                             if (adBlockMode != com.example.manager.AdBlockMode.OFF && !isAdBlockDisabledForSite && view != null) {
                                 // v5 page cleanup: aggressive CSS, anti-popup, anti-beacon, safe YouTube cleanup.
                                 alexShieldV5Client.onPageFinished(view, url)
-                                com.example.manager.CosmeticFilterInjector.inject(view)
+                                com.example.manager.CosmeticFilterInjector.inject(view, pageUrl = url)
                                 Log.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
                             }
 
@@ -772,15 +781,18 @@ fun CustomWebView(
                             alexShieldV5Client.updateCurrentPageUrl(mainPageUrl)
 
                             val currentMode = viewModel.adBlockMode.value
+                            val trackerActive = viewModel.trackerBlockEnabled.value
                             // Primary AlexShield Ultra v5/v6 request blocking & Stealth Surrogate engine.
                             syncAlexShieldV5State(syncZapperRules = false)
-                            if (currentMode != com.example.manager.AdBlockMode.OFF && view != null && request != null) {
-                                val v5Blocked = alexShieldV5Client.shouldInterceptRequest(view, request)
-                                if (v5Blocked != null) {
-                                    if (entryId != null) {
-                                        viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by AdBlock (AlexShield)")
+                            if (view != null && request != null) {
+                                if (currentMode != com.example.manager.AdBlockMode.OFF || trackerActive) {
+                                    val v5Blocked = alexShieldV5Client.shouldInterceptRequest(view, request)
+                                    if (v5Blocked != null) {
+                                        if (entryId != null) {
+                                            viewModel.updateNetworkBlocked(tab.id, entryId, "Blocked by AlexShield")
+                                        }
+                                        return v5Blocked
                                     }
-                                    return v5Blocked
                                 }
 
                                 // Strict Fingerprinting Script Protection (returns 200 OK JS surrogate to prevent onerror detection)
@@ -898,23 +910,57 @@ fun CustomWebView(
                             }
 
                             val handled = java.util.concurrent.atomic.AtomicBoolean(false)
-                            val newWebView = WebView(view.context)
+                            val newWebView = WebView(view.context).apply {
+                                settings.apply {
+                                    javaScriptEnabled = false
+                                    domStorageEnabled = false
+                                    allowFileAccess = false
+                                    allowContentAccess = false
+                                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                                }
+                            }
                             newWebView.webViewClient = object : WebViewClient() {
                                 private fun openAndDestroy(targetView: WebView?, url: String?): Boolean {
                                     if (!url.isNullOrBlank() && url != "about:blank" && handled.compareAndSet(false, true)) {
                                         val trimmedUrl = url.trim()
-                                        if (com.example.manager.SecurityGuardEngine.isAllowedExternalScheme(trimmedUrl)) {
+                                        if (com.example.manager.SecurityGuardEngine.isDangerousInternalScheme(trimmedUrl)) {
+                                            Log.w(TAG, "Blocked dangerous popup internal scheme: $trimmedUrl")
+                                        } else if (com.example.manager.SecurityGuardEngine.isAllowedExternalScheme(trimmedUrl)) {
                                             if (isUserGesture) {
                                                 viewModel.requestOpenIntent(trimmedUrl)
                                             }
-                                        } else if (trimmedUrl.startsWith("https://", ignoreCase = true) ||
-                                            trimmedUrl.startsWith("http://", ignoreCase = true)
-                                        ) {
-                                            if (viewModel.openPopupsInNewTab.value) {
-                                                viewModel.addNewTab(trimmedUrl, isPrivate = tab.isPrivate)
+                                        } else if (com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(trimmedUrl)) {
+                                            val targetHost = com.example.manager.SecurityGuardEngine.extractHost(trimmedUrl)
+                                            val isTrustedHost = com.example.manager.SecurityGuardEngine.isHostUserTrusted(view.context, targetHost)
+                                            val finalPopupUrl = if (isTrustedHost) {
+                                                trimmedUrl
                                             } else {
-                                                // Keep navigation in the same tab so Back button history works step-by-step!
-                                                view.loadUrl(trimmedUrl, mapOf("DNT" to "1"))
+                                                com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(
+                                                    trimmedUrl,
+                                                    viewModel.httpsOnlyMode.value
+                                                )
+                                            }
+                                            val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
+                                            val blockedByAdGuard = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
+                                                (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
+                                                alexShieldV5Client.shouldBlockNavigationRedirect(finalPopupUrl, mainPageUrl, isUserGesture)
+
+                                            if (blockedByAdGuard) {
+                                                Log.w(TAG, "Blocked ad popup redirect: $finalPopupUrl")
+                                            } else if (viewModel.openPopupsInNewTab.value) {
+                                                viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
+                                            } else {
+                                                val threat = com.example.manager.SecurityGuardEngine.inspectUrlThreat(
+                                                    url = finalPopupUrl,
+                                                    httpsOnlyEnabled = viewModel.httpsOnlyMode.value,
+                                                    phishingProtectionEnabled = viewModel.phishingProtectionEnabled.value,
+                                                    isUserTrustedHost = isTrustedHost
+                                                )
+                                                if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
+                                                    viewModel.reportTabSecurityThreat(tab.id, threat)
+                                                } else {
+                                                    view.loadUrl(finalPopupUrl, mapOf("DNT" to "1"))
+                                                }
                                             }
                                         } else {
                                             Log.w(TAG, "Blocked unsafe popup scheme: $trimmedUrl")
@@ -939,6 +985,15 @@ fun CustomWebView(
                             if (transport != null) {
                                 transport.webView = newWebView
                                 resultMsg.sendToTarget()
+                                // Prevent orphaned WebView leak if popup stays on about:blank
+                                newWebView.postDelayed({
+                                    if (handled.compareAndSet(false, true)) {
+                                        try {
+                                            newWebView.stopLoading()
+                                            newWebView.destroy()
+                                        } catch (_: Exception) {}
+                                    }
+                                }, 8000L)
                                 return true
                             }
                             newWebView.destroy()
@@ -947,7 +1002,7 @@ fun CustomWebView(
 
                         override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
                             if (request == null) return
-                            val origin = request.origin.toString()
+                            val origin = request.origin?.toString().orEmpty()
 
                             // Strict Camera & Microphone Blocker
                             if (viewModel.blockCameraMicStrict.value &&
@@ -965,18 +1020,22 @@ fun CustomWebView(
                                 return
                             }
                             
-                            val types = mutableListOf<com.example.manager.SitePermissionType>()
-                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE)) types.add(com.example.manager.SitePermissionType.CAMERA)
-                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) types.add(com.example.manager.SitePermissionType.MICROPHONE)
-                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) types.add(com.example.manager.SitePermissionType.PROTECTED_MEDIA)
-                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_MIDI_SYSEX)) types.add(com.example.manager.SitePermissionType.MIDI)
+                            val rawTypes = mutableListOf<com.example.manager.SitePermissionType>()
+                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE)) rawTypes.add(com.example.manager.SitePermissionType.CAMERA)
+                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) rawTypes.add(com.example.manager.SitePermissionType.MICROPHONE)
+                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) rawTypes.add(com.example.manager.SitePermissionType.PROTECTED_MEDIA)
+                            if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_MIDI_SYSEX)) rawTypes.add(com.example.manager.SitePermissionType.MIDI)
 
-                            if (types.isEmpty()) {
+                            val eligibleTypes = rawTypes.filter {
+                                com.example.manager.PermissionManager.isOriginEligibleForPermission(origin, it)
+                            }
+
+                            if (eligibleTypes.isEmpty()) {
                                 request.deny()
                                 return
                             }
 
-                            viewModel.requestSitePermission(origin, types, tab.isPrivate) { granted ->
+                            viewModel.requestSitePermission(origin, eligibleTypes, tab.isPrivate) { granted ->
                                 val resToGrant = mutableListOf<String>()
                                 if (granted.contains(com.example.manager.SitePermissionType.CAMERA)) resToGrant.add(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE)
                                 if (granted.contains(com.example.manager.SitePermissionType.MICROPHONE)) resToGrant.add(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)
@@ -1000,6 +1059,10 @@ fun CustomWebView(
                             callback: android.webkit.GeolocationPermissions.Callback?
                         ) {
                             if (origin == null || callback == null) return
+                            if (!com.example.manager.PermissionManager.isOriginEligibleForPermission(origin, com.example.manager.SitePermissionType.LOCATION)) {
+                                callback.invoke(origin, false, false)
+                                return
+                            }
                             
                             viewModel.requestSitePermission(origin, listOf(com.example.manager.SitePermissionType.LOCATION), tab.isPrivate) { granted ->
                                 if (granted.contains(com.example.manager.SitePermissionType.LOCATION)) {
@@ -1079,7 +1142,7 @@ fun CustomWebView(
                     // Setup fast internet download listener
                     setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
                         val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
-                        viewModel.downloadManager.startDownload(
+                        val started = viewModel.downloadManager.startDownload(
                             url = url,
                             userAgent = userAgent,
                             fileName = fileName,
@@ -1087,7 +1150,8 @@ fun CustomWebView(
                             domain = safeHost(url),
                             isIncognito = tab.isPrivate
                         )
-                        android.widget.Toast.makeText(context, "Downloading...", android.widget.Toast.LENGTH_SHORT).show()
+                        val msg = if (started) "Downloading..." else "Download blocked: Unsafe URL"
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
 
                     setOnCreateContextMenuListener { menu, _, _ ->
@@ -1112,7 +1176,7 @@ fun CustomWebView(
                         
                         // Link specific actions
                         if (hitResult.type == android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE || hitResult.type == android.webkit.WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
-                            if (!hitUrl.isNullOrEmpty()) {
+                            if (!hitUrl.isNullOrEmpty() && com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(hitUrl)) {
                                 menu.add("Copy link").setOnMenuItemClickListener {
                                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("URL", hitUrl))
@@ -1128,7 +1192,7 @@ fun CustomWebView(
                         
                         // Image specific actions
                         if (hitResult.type == android.webkit.WebView.HitTestResult.IMAGE_TYPE || hitResult.type == android.webkit.WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
-                            if (!hitUrl.isNullOrEmpty()) {
+                            if (!hitUrl.isNullOrEmpty() && com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(hitUrl)) {
                                 menu.add("Save image").setOnMenuItemClickListener {
                                     val fileName = android.webkit.URLUtil.guessFileName(hitUrl, null, "image/*")
                                     viewModel.downloadManager.startDownload(
@@ -1154,7 +1218,10 @@ fun CustomWebView(
                         }
                     }
 
-                    if (tab.url.isNotBlank() && tab.url != "about:blank" && navigationActions[tab.id] == null) {
+                    if (tab.url.isNotBlank() && tab.url != "about:blank" &&
+                        navigationActions[tab.id] == null &&
+                        com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
+                    ) {
                         val headers = mapOf("DNT" to "1")
                         loadUrl(tab.url, headers)
                     }
@@ -1166,8 +1233,11 @@ fun CustomWebView(
         },
         update = { webView ->
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                @Suppress("DEPRECATION")
                 val expectedDark = if (forceWebPageDarkMode) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
+                @Suppress("DEPRECATION")
                 if (webView.settings.forceDark != expectedDark) {
+                    @Suppress("DEPRECATION")
                     webView.settings.forceDark = expectedDark
                 }
             }
@@ -1206,12 +1276,20 @@ fun CustomWebView(
                 }
             }
 
-            if (webView.settings.loadsImagesAutomatically != !dataSaverEnabled) {
+            val expectedCacheMode = when {
+                tab.isPrivate -> WebSettings.LOAD_NO_CACHE
+                dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
+                else -> WebSettings.LOAD_DEFAULT
+            }
+            if (webView.settings.loadsImagesAutomatically != !dataSaverEnabled || webView.settings.cacheMode != expectedCacheMode) {
                 webView.settings.loadsImagesAutomatically = !dataSaverEnabled
-                webView.settings.cacheMode = if (dataSaverEnabled) WebSettings.LOAD_CACHE_ELSE_NETWORK else if (tab.isPrivate) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+                webView.settings.cacheMode = expectedCacheMode
             }
 
-            if (webView.url.isNullOrBlank() && tab.url.isNotBlank() && tab.url != "about:blank" && navigationActions[tab.id] == null) {
+            if (webView.url.isNullOrBlank() && tab.url.isNotBlank() &&
+                tab.url != "about:blank" && navigationActions[tab.id] == null &&
+                com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
+            ) {
                 val headers = mapOf("DNT" to "1")
                 webView.loadUrl(tab.url, headers)
             }
@@ -1226,7 +1304,9 @@ fun CustomWebView(
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         when (action) {
             is BrowserViewModel.NavigationAction.LoadUrl -> {
-                if (action.url.isNotBlank() && action.url != "about:blank") {
+                if (action.url.isNotBlank() && action.url != "about:blank" &&
+                    com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(action.url)
+                ) {
                     val headers = mapOf("DNT" to "1")
                     webView.loadUrl(action.url, headers)
                 }
@@ -1244,7 +1324,9 @@ fun CustomWebView(
             is BrowserViewModel.NavigationAction.Reload -> {
                 val currentWebUrl = webView.url
                 if (currentWebUrl.isNullOrBlank() || currentWebUrl == "about:blank") {
-                    if (tab.url.isNotBlank() && tab.url != "about:blank") {
+                    if (tab.url.isNotBlank() && tab.url != "about:blank" &&
+                        com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
+                    ) {
                         webView.loadUrl(tab.url, mapOf("DNT" to "1"))
                     } else {
                         viewModel.updateTabLoading(tab.id, false)

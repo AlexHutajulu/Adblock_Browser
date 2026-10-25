@@ -75,7 +75,7 @@ object AdBlockEngine {
         disabledDomains: Set<String>,
         streamingBoostEnabled: Boolean = false
     ): Boolean {
-        if (url == null || url.isBlank() || adBlockMode == AdBlockMode.OFF) return false
+        if (url == null || url.isBlank() || (adBlockMode == AdBlockMode.OFF && !trackerBlockEnabled)) return false
 
         // 1. Never block Captcha/Verification
         if (isCaptchaOrVerification(url)) return false
@@ -118,14 +118,33 @@ object AdBlockEngine {
             if (isFirstParty) return false
         }
 
+        val lowerUrl = url.lowercase()
+        val isTrackerCandidate = FALLBACK_TRACKER_DOMAINS.any { isDomainMatch(requestHost, it) } ||
+            lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
+            lowerUrl.contains("pixel") || lowerUrl.contains("telemetry")
+
+        // When AdBlock is OFF and only Tracker Blocking is enabled, only block tracker domains/urls
+        if (adBlockMode == AdBlockMode.OFF && trackerBlockEnabled) {
+            if (isTrackerCandidate) {
+                logBlockedRequest(url, requestHost, "Tracker", mainPageUrl ?: "")
+                return true
+            }
+            return false
+        }
+
+        // When Tracker Blocking is disabled, skip pure tracker matches
+        if (!trackerBlockEnabled && isTrackerCandidate && !FALLBACK_AD_DOMAINS.any { isDomainMatch(requestHost, it) }) {
+            return false
+        }
+
         // 6. Rules Evaluation
         val rules = FilterListManager.getCachedRules()
         if (rules != null) {
             if (isInDomainSet(requestHost, rules.whitelistDomains)) return false
 
             if (isDomainBlocked(requestHost, rules.blockDomains)) {
-                Log.v(TAG, "Blocked by filter list domain: \$requestHost")
-                val logType = if (url.contains("analytics") || url.contains("tracker") || url.contains("pixel")) "Tracker" else "Ad"
+                Log.v(TAG, "Blocked by filter list domain: $requestHost")
+                val logType = if (isTrackerCandidate) "Tracker" else "Ad"
                 logBlockedRequest(url, requestHost, logType, mainPageUrl ?: "")
                 return true
             }
@@ -136,8 +155,8 @@ object AdBlockEngine {
                 if (!isFirstParty) {
                     for (pattern in rules.blockPatterns) {
                         if (pattern.containsMatchIn(url)) {
-                            Log.v(TAG, "Blocked by pattern: \${pattern.pattern}")
-                            val logType = if (url.contains("analytics") || url.contains("tracker") || url.contains("pixel")) "Tracker" else "Ad"
+                            Log.v(TAG, "Blocked by pattern: ${pattern.pattern}")
+                            val logType = if (isTrackerCandidate) "Tracker" else "Ad"
                             logBlockedRequest(url, requestHost, logType, mainPageUrl ?: "")
                             return true
                         }
@@ -146,7 +165,7 @@ object AdBlockEngine {
             }
         } else {
             if (FALLBACK_BLOCK_DOMAINS.any { isDomainMatch(requestHost, it) }) {
-                val logType = if (url.contains("analytics") || url.contains("tracker") || url.contains("pixel")) "Tracker" else "Ad"
+                val logType = if (isTrackerCandidate) "Tracker" else "Ad"
                 logBlockedRequest(url, requestHost, logType, mainPageUrl ?: "")
                 return true
             }
@@ -206,29 +225,34 @@ object AdBlockEngine {
         return WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream("".toByteArray()))
     }
 
-    private val FALLBACK_BLOCK_DOMAINS = hashSetOf(
-        // Advertising Networks
+    private val FALLBACK_AD_DOMAINS = hashSetOf(
         "doubleclick.net", "googleadservices.com", "googlesyndication.com",
         "adservice.google.com", "adnxs.com", "criteo.com", "outbrain.com",
         "taboola.com", "pubmatic.com", "rubiconproject.com", "adroll.com",
         "propellerads.com", "exoclick.com", "adsterra.com", "popads.net",
         "popcash.net", "mgid.com", "revcontent.com", "zeropark.com",
-        // Analytics & Tracking
-        "google-analytics.com", "hotjar.com", "mixpanel.com",
-        "amplitude.com", "segment.com", "facebook.net", "connect.facebook.net",
-        "pixel.facebook.com", "analytics.tiktok.com",
-        // Scam, Gambling, and Malware specific networks (often seen in judol/popup)
         "1xbet.com", "bet365.com", "onclickads.net", "adcash.com",
-        "chaturbate.com", "livejasmin.com", "trafficjunky.com", // commonly injected overlay domains
+        "chaturbate.com", "livejasmin.com", "trafficjunky.com",
         "go.xlviirdr.com", "woclin.com", "shorte.st", "adf.ly", "ouo.io",
         "pckgupdate.com", "malware-domain.com", "fake-virus-alert.com"
     )
-    
-        // Blocked requests log for false positive inspection (Max 50 items)
+
+    private val FALLBACK_TRACKER_DOMAINS = hashSetOf(
+        "google-analytics.com", "analytics.google.com", "hotjar.com", "mixpanel.com",
+        "amplitude.com", "segment.com", "segment.io", "facebook.net",
+        "connect.facebook.net", "pixel.facebook.com", "analytics.tiktok.com"
+    )
+
+    private val FALLBACK_BLOCK_DOMAINS = HashSet<String>().apply {
+        addAll(FALLBACK_AD_DOMAINS)
+        addAll(FALLBACK_TRACKER_DOMAINS)
+    }
+
+    // Blocked requests log for false positive inspection (Max 50 items)
     data class BlockedRequest(
         val url: String,
         val host: String,
-        val type: String, // "Ad/Tracker"
+        val type: String, // "Ad" / "Tracker" / "Popup"
         val mainPageUrl: String,
         val timestamp: Long = System.currentTimeMillis()
     )
@@ -237,16 +261,34 @@ object AdBlockEngine {
 
     fun getBlockedLogsForPage(mainPageUrl: String?): List<BlockedRequest> {
         if (mainPageUrl == null) return emptyList()
-        val mainHost = getHost(mainPageUrl)
-        return synchronized(blockedLogs) {
-            blockedLogs.filter { getHost(it.mainPageUrl) == mainHost }
+        val mainHost = com.yourbrowser.adblock.AlexShieldV5LogStore.normalizeHost(mainPageUrl)
+        val legacyMatches = synchronized(blockedLogs) {
+            blockedLogs.filter {
+                val h = com.yourbrowser.adblock.AlexShieldV5LogStore.normalizeHost(it.mainPageUrl)
+                h.isNotEmpty() && (h == mainHost || h.endsWith(".$mainHost") || mainHost.endsWith(".$h"))
+            }
         }
+        val shieldMatches = com.yourbrowser.adblock.AlexShieldV5LogStore.forPageHost(mainPageUrl).map { log ->
+            val blockedHost = getHost(log.blockedUrl)
+            val category = com.yourbrowser.adblock.AlexShieldV5LogStore.classifyReason(log.blockedUrl, log.reason)
+            BlockedRequest(
+                url = log.blockedUrl,
+                host = blockedHost,
+                type = category,
+                mainPageUrl = mainPageUrl,
+                timestamp = log.timestamp
+            )
+        }
+        return (legacyMatches + shieldMatches)
+            .distinctBy { "${it.url}|${it.timestamp}" }
+            .takeLast(100)
     }
 
     fun clearBlockedLogs() {
         synchronized(blockedLogs) {
             blockedLogs.clear()
         }
+        com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
     }
     
     fun logBlockedRequestPublic(url: String, host: String, type: String, mainPageUrl: String) {

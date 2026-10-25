@@ -7,7 +7,7 @@ import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
-import android.os.Process
+import android.util.Log
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileReader
@@ -18,17 +18,25 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipFile
-import kotlin.system.exitProcess
 
 /**
  * Internal Display & Frame Telemetry Synchronizer.
- * (Stealth multi-layer integrity, anti-mod, anti-repackage, and anti-hook verifier).
+ * Performs non-destructive runtime integrity diagnostics without forced process termination.
  */
 object FrameMetricsTelemetrySync {
 
+    private const val TAG = "FrameMetricsSync"
     private const val K = 0x5A
     @Volatile
     private var syncToken: Long = 0L
+
+    @Volatile
+    var isIntegrityVerified: Boolean = true
+        private set
+
+    @Volatile
+    var lastIntegrityWarning: String? = null
+        private set
 
     // XOR(0x5A) encoded "com.aistudio.alexbrowser.wdjkpq"
     private val EXPECTED_PKG = intArrayOf(
@@ -60,13 +68,6 @@ object FrameMetricsTelemetrySync {
     )
 
     // XOR(0x5A) encoded known patcher/modder installer & tool packages:
-    // "com.gmail.heagoo.apkeditor"
-    // "com.gmail.heagoo.apkeditor.pro"
-    // "com.chelpus.lackypatch"
-    // "com.dimonvideo.luckypatcher"
-    // "com.forpda.lp"
-    // "bin.mt.plus"
-    // "player.normal.np"
     private val MOD_PKGS = arrayOf(
         intArrayOf(57, 53, 55, 116, 61, 55, 59, 51, 54, 116, 50, 63, 59, 61, 53, 53, 116, 59, 42, 49, 63, 62, 51, 46, 53, 40),
         intArrayOf(57, 53, 55, 116, 61, 55, 59, 51, 54, 116, 50, 63, 59, 61, 53, 53, 116, 59, 42, 49, 63, 62, 51, 46, 53, 40, 116, 42, 40, 53),
@@ -96,19 +97,29 @@ object FrameMetricsTelemetrySync {
 
     /**
      * Entry point called during early process init, Activity resume, and WebView creation.
+     * Avoids repeating expensive I/O once token is initialized and never terminates the process.
      */
     fun syncDisplayFrameState(context: Context): Long {
         if (isUnitTestEnvironment()) {
+            isIntegrityVerified = true
             syncToken = 0x7F3A9C12L
             return syncToken
         }
 
+        val existing = syncToken
+        if (existing != 0L) {
+            return existing
+        }
+
         val appCtx = context.applicationContext ?: context
-        if (!verifyPackageAndManifestLock(appCtx) ||
-            !verifyBinaryAndSignatureIntegrity(appCtx) ||
-            !verifyRuntimeEnvironmentClean(appCtx)
-        ) {
-            abortSilently()
+        val pkgOk = verifyPackageAndManifestLock(appCtx)
+        val sigOk = verifyBinaryAndSignatureIntegrity(appCtx)
+        val envOk = verifyRuntimeEnvironmentClean(appCtx)
+
+        if (!pkgOk || !sigOk || !envOk) {
+            recordIntegrityWarning("pkg=$pkgOk, sig=$sigOk, env=$envOk")
+        } else {
+            isIntegrityVerified = true
         }
 
         syncToken = (appCtx.packageName.hashCode().toLong() xor 0x5A93F12CL)
@@ -121,7 +132,7 @@ object FrameMetricsTelemetrySync {
         }
         val expected = if (isUnitTestEnvironment()) 0x7F3A9C12L else (context.packageName.hashCode().toLong() xor 0x5A93F12CL)
         if (syncToken != expected) {
-            abortSilently()
+            recordIntegrityWarning("render_token_mismatch")
             return false
         }
         return true
@@ -133,7 +144,7 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
-     * Layer 1: Locks package name, installer origin, and manifest/APK structure.
+     * Layer 1: Checks package name and installer origin without blocking on Split APK / AAB structures.
      */
     private fun verifyPackageAndManifestLock(context: Context): Boolean {
         return try {
@@ -142,7 +153,6 @@ object FrameMetricsTelemetrySync {
                 return false
             }
 
-            // Verify installer is not a known patcher/mod tool
             val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
             } else {
@@ -156,14 +166,11 @@ object FrameMetricsTelemetrySync {
                 }
             }
 
-            // Verify base APK exists and contains a valid classes.dex entry
             val sourceDir = context.applicationInfo?.sourceDir ?: return false
             val apkFile = File(sourceDir)
             if (!apkFile.exists() || apkFile.length() < 1024L) return false
 
             ZipFile(apkFile).use { zip ->
-                val dexEntry = zip.getEntry("classes.dex") ?: return false
-                if (dexEntry.crc <= 0L || dexEntry.size <= 0L) return false
                 val manifestEntry = zip.getEntry("AndroidManifest.xml") ?: return false
                 if (manifestEntry.crc <= 0L) return false
             }
@@ -175,7 +182,7 @@ object FrameMetricsTelemetrySync {
 
     /**
      * Layer 2: Verifies APK signing certificate integrity, enforces key rotation trust model,
-     * and blocks repackaged patcher certificates.
+     * and detects repackaged patcher certificates without permanently bricking across key changes.
      */
     internal fun verifyBinaryAndSignatureIntegrity(context: Context): Boolean {
         return try {
@@ -211,7 +218,6 @@ object FrameMetricsTelemetrySync {
 
             val cf = CertificateFactory.getInstance("X.509")
 
-            // 1. Blacklist & Release/Debug policy validation across all active & historical certificates
             val allCertBytes = (activeCertBytes + historyCertBytes).distinctBy { it.contentHashCode() }
             for (rawCert in allCertBytes) {
                 val cert = cf.generateCertificate(ByteArrayInputStream(rawCert)) as? X509Certificate
@@ -223,40 +229,28 @@ object FrameMetricsTelemetrySync {
                     return false
                 }
 
-                // In production release builds, reject development debug certificates
                 if (!com.example.BuildConfig.DEBUG && isDebugCertificate(cert)) {
                     return false
                 }
             }
 
-            // 2. Compute canonical SHA-256 fingerprints
             val activeSha256List = activeCertBytes.map { computeSha256(it) }.sorted()
             val activeFingerprint = activeSha256List.joinToString(",")
             val historySha256Set = historyCertBytes.map { computeSha256(it) }.toSet()
 
-            // 3. Cryptographic lock & key-rotation verification
             val prefs = context.getSharedPreferences("sys_frame_hw_cache", Context.MODE_PRIVATE)
             val lockedSig = prefs.getString("hw_pipe_token", null)
 
             if (lockedSig == null) {
-                // Initial launch: record trusted signing certificate fingerprint
                 prefs.edit().putString("hw_pipe_token", activeFingerprint).apply()
-            } else {
-                if (lockedSig == activeFingerprint) {
-                    // Exact match: active signing key unchanged
-                    return true
-                }
-
-                // If active signing key changed, verify if the previously locked key is part of
-                // the authentic signing certificate lineage (v3 APK Signature Scheme key rotation)
+            } else if (lockedSig != activeFingerprint) {
                 val lockedHashes = lockedSig.split(",").toSet()
                 val isLegitimateRotation = lockedHashes.any { it in historySha256Set }
 
                 if (isLegitimateRotation) {
-                    // Legitimate rotation proven: migrate lock to new active signing key
                     prefs.edit().putString("hw_pipe_token", activeFingerprint).apply()
                 } else {
-                    // Signature mismatch without valid cryptographic lineage (tampering/hot-swap)
+                    recordIntegrityWarning("signing_certificate_changed_without_rotation_lineage")
                     return false
                 }
             }
@@ -292,11 +286,11 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
-     * Layer 3: Detects Xposed/EdXposed/LSPosed, Substrate, Frida memory injection, and active modder hooks.
+     * Layer 3: Detects active hook frameworks in classloader and stack frames without
+     * penalizing OEM Dual-Apps / Work Profiles.
      */
     private fun verifyRuntimeEnvironmentClean(context: Context): Boolean {
         return try {
-            // 1. Check loaded hook classes
             val hookClasses = arrayOf(d(CLS_A), d(CLS_B), d(CLS_C))
             for (clsName in hookClasses) {
                 try {
@@ -307,7 +301,6 @@ object FrameMetricsTelemetrySync {
                 }
             }
 
-            // 2. Inspect current call stack for hook frames
             val stack = Throwable().stackTrace
             val xposedToken = d(MAP_TOKENS[1])
             val substrateToken = d(MAP_TOKENS[2])
@@ -318,7 +311,6 @@ object FrameMetricsTelemetrySync {
                 }
             }
 
-            // 3. Inspect /proc/self/maps for injected Frida / Xposed / LSPlant / SandHook shared objects
             val mapsFile = File("/proc/self/maps")
             if (mapsFile.exists() && mapsFile.canRead()) {
                 val decodedTokens = MAP_TOKENS.map { d(it) }
@@ -335,25 +327,6 @@ object FrameMetricsTelemetrySync {
                 }
             }
 
-            // 4. Check if app is running inside a VirtualApp / Dual-Space mod container
-            val filesDirPath = context.filesDir?.absolutePath ?: ""
-            val expectedPkg = d(EXPECTED_PKG)
-            var pkgOccurrences = 0
-            var searchIdx = 0
-            while (true) {
-                val found = filesDirPath.indexOf(expectedPkg, searchIdx)
-                if (found == -1) break
-                pkgOccurrences++
-                searchIdx = found + expectedPkg.length
-            }
-            // In a virtual container or clone environment, package path is nested multiple times or missing
-            if (pkgOccurrences != 1 && !filesDirPath.endsWith(expectedPkg)) {
-                // Allow standard /data/user/0/<pkg>/files or /data/data/<pkg>/files
-                if (!filesDirPath.contains("/$expectedPkg/")) {
-                    return false
-                }
-            }
-
             true
         } catch (_: Throwable) {
             true
@@ -361,27 +334,21 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
-     * Background check for local Frida server ports (27042 / 27043).
-     * Probes each port independently so a closed port does not abort checking other ports.
+     * Retained as a safe no-op entry point so callers do not spawn background port-probing threads
+     * that could cause false positives on legitimate user devices.
      */
     fun verifyNativeTransportAsync() {
-        if (isUnitTestEnvironment()) return
-        Thread {
-            checkSuspiciousPorts(intArrayOf(27042, 27043))
-        }.apply {
-            isDaemon = true
-            start()
-        }
+        // Intentional no-op: background local socket probing disabled to prevent false positives.
     }
 
     /**
-     * Probes each candidate port independently.
+     * Probes each candidate port independently and invokes [onPortDetected] without killing the process.
      */
     internal fun checkSuspiciousPorts(
         ports: IntArray,
         host: String = "127.0.0.1",
         timeoutMs: Int = 120,
-        onPortDetected: () -> Unit = { abortSilently() }
+        onPortDetected: () -> Unit = { recordIntegrityWarning("suspicious_port_open") }
     ) {
         for (port in ports) {
             var open = false
@@ -392,7 +359,6 @@ object FrameMetricsTelemetrySync {
                 }
             } catch (_: Throwable) {
                 // Clean state: this specific port is closed or timed out.
-                // Loop continues to inspect subsequent candidate ports.
             }
             if (open) {
                 onPortDetected()
@@ -401,32 +367,27 @@ object FrameMetricsTelemetrySync {
     }
 
     /**
-     * Silent, immediate process termination with zero log output.
+     * Records a controlled, diagnosable integrity warning without terminating the application process.
      */
-    private fun abortSilently(): Nothing {
-        if (isUnitTestEnvironment()) {
-            throw SecurityException("Security check failed (tampering detected)")
+    internal fun recordIntegrityWarning(reason: String) {
+        isIntegrityVerified = false
+        lastIntegrityWarning = reason
+        try {
+            Log.w(TAG, "Integrity verification warning: $reason")
+        } catch (_: Throwable) {
+            // Ignore Log failures in local JVM tests
         }
-        try {
-            Process.killProcess(Process.myPid())
-        } catch (_: Throwable) {}
-        try {
-            Runtime.getRuntime().halt(0)
-        } catch (_: Throwable) {}
-        exitProcess(0)
     }
 }
 
 /**
- * Silent early-boot ContentProvider that runs BEFORE Application.onCreate() and MainActivity.onCreate().
- * Disguised as an internal RenderConfigProvider.
+ * Early-boot ContentProvider that initializes FrameMetricsTelemetrySync non-destructively.
  */
 class RenderConfigProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val ctx = context
         if (ctx != null) {
             FrameMetricsTelemetrySync.syncDisplayFrameState(ctx)
-            FrameMetricsTelemetrySync.verifyNativeTransportAsync()
         }
         return true
     }

@@ -33,8 +33,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Reusable 3D Chrome-Inspired Swirl & Glossy Blue Orb Brand Emblem on a clean white (#FFFFFF) squircle tile.
- * Used consistently in SplashScreen and Settings > About to match the Adaptive App Icon.
+ * Reusable Alex Browser Singularity Brand Emblem on a dark obsidian squircle tile with glowing accretion aura.
+ * Used consistently in SplashScreen and Settings > About.
  */
 @Composable
 fun AdBlockBrandEmblem(
@@ -46,27 +46,22 @@ fun AdBlockBrandEmblem(
         modifier = modifier
             .size(size)
             .shadow(
-                elevation = 10.dp,
+                elevation = 12.dp,
                 shape = RoundedCornerShape(cornerRadius),
-                ambientColor = Color(0xFF1A73E8).copy(alpha = 0.25f),
-                spotColor = Color(0xFF4285F4).copy(alpha = 0.35f)
+                ambientColor = Color(0xFF428BFF).copy(alpha = 0.35f),
+                spotColor = Color(0xFF7046FF).copy(alpha = 0.45f)
             ),
         shape = RoundedCornerShape(cornerRadius),
-        color = Color.White,
-        border = BorderStroke(1.2.dp, Color(0xFFE3EEFF))
+        color = Color(0xFF080D19),
+        border = BorderStroke(1.2.dp, Color(0xFF428BFF).copy(alpha = 0.4f))
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
             Image(
-                painter = painterResource(id = R.drawable.ic_launcher_background),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize()
-            )
-            Image(
-                painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                contentDescription = "AdBlock Browser 3D Swirl & Blue Orb Logo",
+                painter = painterResource(id = R.drawable.ic_alex_singularity),
+                contentDescription = "Alex Browser Singularity Logo",
                 modifier = Modifier.fillMaxSize()
             )
         }

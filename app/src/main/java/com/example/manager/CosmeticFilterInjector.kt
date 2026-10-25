@@ -41,20 +41,24 @@ object CosmeticFilterInjector {
         "a[class*='floating-ad-banner']"
     )
 
-    // Forbidden substrings in EasyList cosmetic selectors that could hide legitimate UI elements
+    // Forbidden substrings in EasyList cosmetic selectors that could hide legitimate UI elements or inject rules
     private val DANGEROUS_SELECTOR_TOKENS = listOf(
         "body", "html", "main", "header", "footer", "nav", "article", "section",
         "#app", "#root", "#main", "#content", ".content", ".container", ".wrapper",
         ".modal", ".dialog", ".popup", ".overlay", ".drawer", ".sidebar", ".navbar",
         ".menu", ".btn", ".button", ".floating-btn", "video", "canvas", "form", "input",
         ":-abp-", ":has(", ":has-text", ":xpath", ":matches-css", ":upward", ":remove",
-        "+js(", "{", "}", "@media", "@import"
+        "+js(", "{", "}", "@media", "@import", "url(", "expression(", "javascript:",
+        "/*", "*/", "\\", ";"
     )
 
-    private fun isSafeCssSelector(selector: String): Boolean {
+    internal fun isSafeCssSelector(selector: String): Boolean {
         val s = selector.trim()
         if (s.length < 3 || s.length > 120) return false
         if (s == "*" || s.startsWith("*") || s.endsWith("*")) return false
+        // Reject unbalanced quotes or brackets that could corrupt grouped CSS selector blocks
+        if (s.count { it == '\'' } % 2 != 0 || s.count { it == '"' } % 2 != 0) return false
+        if (s.count { it == '[' } != s.count { it == ']' }) return false
         val lower = s.lowercase()
         if (DANGEROUS_SELECTOR_TOKENS.any { lower.contains(it) }) return false
         // Must start with class (.), id (#), tag+attr (div[ / ins[ / iframe[ / a[), or attribute ([data-ad)
@@ -68,7 +72,18 @@ object CosmeticFilterInjector {
             s.startsWith("[data-google")
     }
 
-    fun inject(webView: WebView, customSelectors: List<String> = emptyList()) {
+    fun inject(webView: WebView, customSelectors: List<String> = emptyList(), pageUrl: String? = null) {
+        if (!pageUrl.isNullOrBlank()) {
+            val host = try {
+                android.net.Uri.parse(pageUrl).host?.lowercase()?.removePrefix("www.") ?: ""
+            } catch (_: Exception) {
+                ""
+            }
+            if (com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { host == it || host.endsWith(".$it") }) {
+                return
+            }
+        }
+
         val rules = FilterListManager.getCachedRules()
         val safeSelectors = LinkedHashSet<String>()
         safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS)

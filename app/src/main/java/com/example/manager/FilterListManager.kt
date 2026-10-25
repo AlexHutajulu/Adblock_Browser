@@ -99,7 +99,7 @@ object FilterListManager {
         }
     }
 
-    private fun isRestrictedAddress(addr: InetAddress): Boolean {
+    internal fun isRestrictedAddress(addr: InetAddress): Boolean {
         if (addr.isLoopbackAddress ||
             addr.isAnyLocalAddress ||
             addr.isLinkLocalAddress ||
@@ -112,7 +112,10 @@ object FilterListManager {
             val b = addr.address
             val b0 = b[0].toInt() and 0xFF
             val b1 = b[1].toInt() and 0xFF
-            // 100.64.0.0/10 (Carrier-grade NAT), 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 240.0.0.0/4
+            // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 (CGNAT), 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 240.0.0.0/4
+            if (b0 == 10) return true
+            if (b0 == 172 && b1 in 16..31) return true
+            if (b0 == 192 && b1 == 168) return true
             if (b0 == 127 || b0 == 0 || b0 >= 224) return true
             if (b0 == 100 && (b1 and 0xC0) == 64) return true
             if (b0 == 169 && b1 == 254) return true
@@ -122,6 +125,24 @@ object FilterListManager {
             val firstByte = b[0].toInt() and 0xFF
             // Unique Local Address fc00::/7
             if ((firstByte and 0xFE) == 0xFC) return true
+            // Discard Prefix 100::/64 (RFC 6666)
+            if (firstByte == 0x01 && (b[1].toInt() and 0xFF) == 0x00) return true
+
+            // IPv4-mapped IPv6 Address (::ffff:0:0/96 or ::ffff:a.b.c.d)
+            val isIpv4Mapped = (0..9).all { b[it] == 0.toByte() } &&
+                b[10] == 0xFF.toByte() && b[11] == 0xFF.toByte()
+            val isIpv4Compatible = (0..11).all { b[it] == 0.toByte() }
+            if (isIpv4Mapped || isIpv4Compatible) {
+                val b0 = b[12].toInt() and 0xFF
+                val b1 = b[13].toInt() and 0xFF
+                if (b0 == 10) return true
+                if (b0 == 172 && b1 in 16..31) return true
+                if (b0 == 192 && b1 == 168) return true
+                if (b0 == 127 || b0 == 0 || b0 >= 224) return true
+                if (b0 == 100 && (b1 and 0xC0) == 64) return true
+                if (b0 == 169 && b1 == 254) return true
+                if (b0 == 198 && (b1 == 18 || b1 == 19)) return true
+            }
         }
         return false
     }
@@ -225,7 +246,18 @@ object FilterListManager {
     }
 
     private fun downloadAllLists(context: Context, cacheFile: File): String {
+        val safeDns = object : okhttp3.Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                val resolved = okhttp3.Dns.SYSTEM.lookup(hostname)
+                val safeAddresses = resolved.filter { addr -> !isRestrictedAddress(addr) }
+                if (safeAddresses.isEmpty() || safeAddresses.size != resolved.size) {
+                    throw java.net.UnknownHostException("Blocked restricted or private IP resolution for $hostname")
+                }
+                return safeAddresses
+            }
+        }
         val client = OkHttpClient.Builder()
+            .dns(safeDns)
             .followRedirects(false)
             .followSslRedirects(false)
             .connectTimeout(15, TimeUnit.SECONDS)

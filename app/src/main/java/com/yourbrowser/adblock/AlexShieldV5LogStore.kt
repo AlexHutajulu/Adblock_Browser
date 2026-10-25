@@ -18,13 +18,42 @@ object AlexShieldV5LogStore {
     private val _logs = MutableStateFlow<List<AlexShieldBlockedLog>>(emptyList())
     val logs: StateFlow<List<AlexShieldBlockedLog>> = _logs
 
-    fun add(tabId: String, pageUrl: String?, blockedUrl: String, reason: String) {
-        val host = try {
-            android.net.Uri.parse(pageUrl ?: "").host?.lowercase()?.removePrefix("www.") ?: ""
-        } catch (_: Exception) {
-            ""
+    fun normalizeHost(urlOrHost: String?): String {
+        val raw = urlOrHost?.trim().orEmpty()
+        if (raw.isEmpty()) return ""
+        val candidate = if (raw.contains("://")) {
+            try {
+                android.net.Uri.parse(raw).host.orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+        } else {
+            raw.substringBefore("/").substringBefore(":")
         }
+        return candidate.lowercase(java.util.Locale.US).removePrefix("www.")
+    }
 
+    fun classifyReason(blockedUrl: String, reason: String): String {
+        val lowerUrl = blockedUrl.lowercase(java.util.Locale.US)
+        val isPopup = reason.contains("popup", ignoreCase = true) ||
+            reason.contains("redirect", ignoreCase = true)
+        val isTracker = reason.contains("tracker", ignoreCase = true) ||
+            reason.contains("beacon", ignoreCase = true) ||
+            lowerUrl.contains("analytics") ||
+            lowerUrl.contains("tracker") ||
+            lowerUrl.contains("pixel") ||
+            lowerUrl.contains("beacon") ||
+            lowerUrl.contains("telemetry") ||
+            lowerUrl.contains("collect")
+        return when {
+            isPopup -> "Popup"
+            isTracker -> "Tracker"
+            else -> "Ad"
+        }
+    }
+
+    fun add(tabId: String, pageUrl: String?, blockedUrl: String, reason: String) {
+        val host = normalizeHost(pageUrl)
         _logs.update { old ->
             (old + AlexShieldBlockedLog(tabId, host, blockedUrl, reason)).takeLast(MAX_LOGS)
         }
@@ -32,6 +61,18 @@ object AlexShieldV5LogStore {
 
     fun forTab(tabId: String): List<AlexShieldBlockedLog> {
         return _logs.value.filter { it.tabId == tabId }
+    }
+
+    fun forPageHost(pageUrlOrHost: String?): List<AlexShieldBlockedLog> {
+        val targetHost = normalizeHost(pageUrlOrHost)
+        if (targetHost.isEmpty()) return emptyList()
+        return _logs.value.filter { log ->
+            log.pageHost.isNotEmpty() && (
+                log.pageHost == targetHost ||
+                    log.pageHost.endsWith(".$targetHost") ||
+                    targetHost.endsWith(".${log.pageHost}")
+                )
+        }
     }
 
     fun clearTab(tabId: String) {

@@ -12,6 +12,7 @@ import java.io.ByteArrayInputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -33,22 +34,48 @@ class AdBlockWebViewClient(
     mode: PrivacyMode = PrivacyMode.BALANCED,
     private val onBlocked: ((blockedUrl: String, reason: String) -> Unit)? = null
 ) {
-    private val currentMode        = AtomicReference(mode)
-    private val pageUrl            = AtomicReference("")
-    private val whitelisted        = CopyOnWriteArraySet<String>()
-    private val customZapperRules  = ConcurrentHashMap<String, CopyOnWriteArraySet<String>>()
-    private val blockedCount       = AtomicInteger(0)
-    private val hiddenCount        = AtomicInteger(0)
-    private val ytCount            = AtomicInteger(0)
-    private val surrogateCount     = AtomicInteger(0)
-    private val defusedTrapsCount  = AtomicInteger(0)
+    private val currentMode            = AtomicReference(mode)
+    private val trackerBlockingEnabled = AtomicBoolean(true)
+    private val trackerActiveWhenOff   = AtomicBoolean(false)
+    private val streamingBoostEnabled  = AtomicBoolean(false)
+    private val pageUrl                = AtomicReference("")
+    private val whitelisted            = CopyOnWriteArraySet<String>()
+    private val customZapperRules      = ConcurrentHashMap<String, CopyOnWriteArraySet<String>>()
+    private val blockedCount           = AtomicInteger(0)
+    private val hiddenCount            = AtomicInteger(0)
+    private val ytCount                = AtomicInteger(0)
+    private val surrogateCount         = AtomicInteger(0)
+    private val defusedTrapsCount      = AtomicInteger(0)
 
-    // Decision cache — key = "pageHost|requestHost|url", value = "" (allowed) or non-empty block reason
+    // Decision cache — key = "mode|tracker|stream|pageHost|requestHost|url", value = "" (allowed) or non-empty block reason
     private val cache = android.util.LruCache<String, String>(6_000)
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun setMode(m: PrivacyMode) { currentMode.set(m); cache.evictAll() }
+    fun setMode(m: PrivacyMode) {
+        if (currentMode.getAndSet(m) != m) {
+            cache.evictAll()
+        }
+    }
+
+    fun setTrackerBlockingEnabled(enabled: Boolean, activeWhenAdBlockOff: Boolean = true) {
+        val prevEnabled = trackerBlockingEnabled.getAndSet(enabled)
+        val prevActiveOff = trackerActiveWhenOff.getAndSet(activeWhenAdBlockOff)
+        if (prevEnabled != enabled || prevActiveOff != activeWhenAdBlockOff) {
+            cache.evictAll()
+        }
+    }
+
+    fun isTrackerBlockingEnabled(): Boolean = trackerBlockingEnabled.get()
+
+    fun setStreamingBoostEnabled(enabled: Boolean) {
+        if (streamingBoostEnabled.getAndSet(enabled) != enabled) {
+            cache.evictAll()
+        }
+    }
+
+    fun isStreamingBoostEnabled(): Boolean = streamingBoostEnabled.get()
+
     fun updateCurrentPageUrl(url: String?) { if (!url.isNullOrBlank()) pageUrl.set(url) }
     fun whitelistHost(host: String) { whitelisted.add(normalizeHost(host)); cache.evictAll() }
     fun clearWhitelist() { whitelisted.clear(); cache.evictAll() }
@@ -92,7 +119,7 @@ class AdBlockWebViewClient(
         updateCurrentPageUrl(url)
         if (url.isNullOrBlank() || currentMode.get() == PrivacyMode.OFF) return
         val host = safeHost(url)
-        if (isWhitelistedHost(host)) return
+        if (isWhitelistedHost(host) || isCriticalBypassDomain(host)) return
         view.evaluateJavascript(buildEarlyScript(host), null)
     }
 
@@ -100,7 +127,7 @@ class AdBlockWebViewClient(
         updateCurrentPageUrl(url)
         if (url.isNullOrBlank() || currentMode.get() == PrivacyMode.OFF) return
         val host = safeHost(url)
-        if (isWhitelistedHost(host)) return
+        if (isWhitelistedHost(host) || isCriticalBypassDomain(host)) return
         val css = buildCosmeticCSS(host)
         if (css.isNotBlank()) injectCSS(view, css)
         val zapperCss = buildCustomZapperCSS(host)
@@ -116,7 +143,9 @@ class AdBlockWebViewClient(
 
     fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
         val mode = currentMode.get()
-        if (mode == PrivacyMode.OFF) return null
+        val trackerEnabled = trackerBlockingEnabled.get()
+        val trackerOnlyActive = (mode == PrivacyMode.OFF && trackerEnabled && trackerActiveWhenOff.get())
+        if (mode == PrivacyMode.OFF && !trackerOnlyActive) return null
         if (request.isForMainFrame) return null
 
         val url     = request.url?.toString() ?: return null
@@ -126,14 +155,15 @@ class AdBlockWebViewClient(
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value?.lowercase(Locale.US)
 
-        // 1. Whitelisted page
+        // 1. Whitelisted page or host
         if (isWhitelistedHost(pgHost) || isWhitelistedHost(reqHost)) return null
 
         // 2. SAFE DOMAINS — harus PERTAMA, tidak boleh dipindah
         if (isSafeDomain(reqHost)) return null
 
         // 3. Cache check (Thread-safe LRU Cache)
-        val cacheKey = "$pgHost|$reqHost|$url"
+        val streamBoost = streamingBoostEnabled.get()
+        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$reqHost|$url"
         cache.get(cacheKey)?.let { cachedReason ->
             if (cachedReason.isNotEmpty()) {
                 blockedCount.incrementAndGet()
@@ -144,7 +174,7 @@ class AdBlockWebViewClient(
         }
 
         val lower = url.lowercase(Locale.US)
-        val blockReason = checkRules(reqHost, pgHost, lower, mode)
+        val blockReason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost)
 
         cache.put(cacheKey, blockReason ?: "")
 
@@ -174,48 +204,77 @@ class AdBlockWebViewClient(
 
     // ─── Core rule check ──────────────────────────────────────────────────────
 
-    private fun checkRules(reqHost: String, pgHost: String, lowerUrl: String, mode: PrivacyMode): String? {
+    private fun checkRules(
+        reqHost: String,
+        pgHost: String,
+        lowerUrl: String,
+        mode: PrivacyMode,
+        trackerEnabled: Boolean,
+        streamBoost: Boolean
+    ): String? {
         val isFirstParty = pgHost.isNotEmpty() &&
             (reqHost == pgHost || reqHost.endsWith(".$pgHost") || pgHost.endsWith(".$reqHost"))
 
-        // Protect video/streaming segments (.m3u8, .ts, .mp4, .m4s, .mpd) from false-positive blocking
-        if (lowerUrl.contains(".m3u8") || lowerUrl.contains(".m4s") || lowerUrl.contains(".mpd") ||
+        // Protect video/streaming segments (.m3u8, .ts, .mp4, .m4s, .mpd, .dash) from false-positive blocking
+        val isStreamingSegment = lowerUrl.contains(".m3u8") || lowerUrl.contains(".m4s") ||
+            lowerUrl.contains(".mpd") || lowerUrl.contains(".dash") ||
             lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".ts") || lowerUrl.endsWith(".webm")
-        ) {
-            if (!AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+        if (isStreamingSegment) {
+            if (streamBoost || !AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
                 return null
             }
         }
 
-        // 1. Hardcoded explicit ad & tracker domains (always third-party ad networks)
-        if (!isFirstParty) {
-            if (AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) return "ad-domain"
-            if (TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) return "tracker-domain"
-        }
+        val adBlockActive = (mode != PrivacyMode.OFF)
 
-        // Explicit ad/tracker path keywords
-        if (AD_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
-            return if (lowerUrl.contains("analytics") || lowerUrl.contains("collect") || lowerUrl.contains("ptracking") || lowerUrl.contains("log_event")) {
-                "tracker-keyword"
-            } else {
-                "ad-keyword"
+        // 1. Hardcoded explicit ad & tracker domains (always third-party networks)
+        if (!isFirstParty) {
+            if (adBlockActive && AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+                return "ad-domain"
+            }
+            if (trackerEnabled && TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+                return "tracker-domain"
             }
         }
 
-        // Aggressive mode extras (only on third-party or explicit ad paths)
+        // Protect first-party authentication / checkout / verification flows from path keyword false positives
+        val isFirstPartyCriticalFlow = isFirstParty && isCriticalAuthOrPaymentContext(lowerUrl)
+
+        // 2. Explicit ad/tracker path keywords
+        if (!isFirstPartyCriticalFlow) {
+            if (trackerEnabled && TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+                return "tracker-keyword"
+            }
+            if (adBlockActive && AD_ONLY_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+                return "ad-keyword"
+            }
+        }
+
+        if (!adBlockActive) {
+            return null
+        }
+
+        // 3. Aggressive mode extras (only on third-party or non-critical explicit ad paths)
         if (mode == PrivacyMode.AGGRESSIVE) {
             if (!isFirstParty && AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
                 return "aggressive-ad"
             }
-            if (AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }) return "aggressive-keyword"
+            if (!isFirstPartyCriticalFlow && AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+                return "aggressive-keyword"
+            }
         }
 
-        // 2. EasyList rules evaluation (strictly third-party to prevent breaking site assets)
+        // 4. EasyList rules evaluation (strictly third-party to prevent breaking site assets)
         if (!isFirstParty) {
             val rules = com.example.manager.FilterListManager.getCachedRules()
             if (rules != null) {
                 if (rules.whitelistDomains.any { reqHost == it || reqHost.endsWith(".$it") }) return null
-                if (isDomainBlocked(reqHost, rules.blockDomains)) return "easylist-domain"
+                if (isDomainBlocked(reqHost, rules.blockDomains)) {
+                    val isTrackerLike = lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
+                        lowerUrl.contains("pixel") || lowerUrl.contains("telemetry")
+                    if (isTrackerLike && !trackerEnabled) return null
+                    return if (isTrackerLike) "easylist-tracker" else "easylist-domain"
+                }
 
                 if (mode == PrivacyMode.AGGRESSIVE) {
                     for (pattern in rules.blockPatterns) {
@@ -226,6 +285,10 @@ class AdBlockWebViewClient(
         }
 
         return null
+    }
+
+    private fun isCriticalAuthOrPaymentContext(lowerUrl: String): Boolean {
+        return CRITICAL_FLOW_KEYWORDS.any { lowerUrl.contains(it) }
     }
 
     private fun isDomainBlocked(host: String, blockSet: HashSet<String>): Boolean {
@@ -244,6 +307,11 @@ class AdBlockWebViewClient(
 
     private fun isSafeDomain(host: String): Boolean {
         return SAFE_DOMAINS.any { host == it || host.endsWith(".$it") }
+    }
+
+    internal fun isCriticalBypassDomain(host: String): Boolean {
+        if (host.isEmpty()) return false
+        return CRITICAL_BYPASS_DOMAINS.any { host == it || host.endsWith(".$it") }
     }
 
     private fun isWhitelistedHost(host: String): Boolean {
@@ -638,14 +706,17 @@ class AdBlockWebViewClient(
             "ads-twitter.com"
         )
 
-        private val AD_PATH_KEYWORDS = listOf(
-            "/api/stats/ads",
-            "/pagead/",
+        private val TRACKER_PATH_KEYWORDS = listOf(
             "/ptracking",
             "/youtubei/v1/log_event",
             "google-analytics.com/collect",
             "google-analytics.com/j/collect",
-            "google-analytics.com/g/collect",
+            "google-analytics.com/g/collect"
+        )
+
+        private val AD_ONLY_PATH_KEYWORDS = listOf(
+            "/api/stats/ads",
+            "/pagead/",
             "/doubleclick/",
             "/adsystem/",
             "/prebid.js",
@@ -655,6 +726,22 @@ class AdBlockWebViewClient(
             "/fuckadblock",
             "/blockadblock",
             "/adblock-detector"
+        )
+
+        private val CRITICAL_FLOW_KEYWORDS = listOf(
+            "/login", "/signin", "/signup", "/register", "/oauth", "/auth/",
+            "/checkout", "/payment", "/pembayaran", "/transaksi", "/verify", "/captcha"
+        )
+
+        internal val CRITICAL_BYPASS_DOMAINS = setOf(
+            "accounts.google.com",
+            "recaptcha.net", "hcaptcha.com", "hcaptcha.net",
+            "challenges.cloudflare.com", "turnstile.cloudflare.com",
+            "arkoselabs.com", "funcaptcha.com", "geetest.com",
+            "auth0.com", "okta.com", "onelogin.com",
+            "appleid.apple.com", "login.microsoftonline.com", "login.live.com",
+            "midtrans.com", "snap.midtrans.com", "xendit.co", "doku.com",
+            "paypal.com", "stripe.com", "braintreegateway.com"
         )
 
         private val AGGRESSIVE_PATH_KEYWORDS = listOf(

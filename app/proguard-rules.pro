@@ -15,6 +15,10 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 
+-keep class com.example.ui.components.CustomWebViewKt$* {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
 -keep class com.example.devtools.DevToolsJsBridge {
     public *;
 }
@@ -30,8 +34,8 @@
 -keep class com.example.manager.CustomToolbarScript { *; }
 -keep class com.example.manager.BrowserExtension { *; }
 
-# Keep Stealth Anti-Tamper & Frame Telemetry Sync entrypoints
--keep class com.example.manager.CoreDisplaySyncProvider { *; }
+# Keep RenderConfigProvider & FrameMetricsTelemetrySync entrypoints
+-keep class com.example.manager.RenderConfigProvider { *; }
 -keep class com.example.manager.FrameMetricsTelemetrySync { *; }
 
 # OkHttp & Coroutines rules

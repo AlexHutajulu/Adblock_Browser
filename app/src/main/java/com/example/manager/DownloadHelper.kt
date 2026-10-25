@@ -17,13 +17,18 @@ object DownloadHelper {
 
     suspend fun checkAcceptRanges(urlStr: String, userAgent: String): Boolean = withContext(Dispatchers.IO) {
         try {
+            if (!AppDownloadManager.isSafeDownloadUrl(urlStr, resolveDns = true)) {
+                return@withContext false
+            }
             val url = URL(urlStr)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "HEAD"
-            connection.setRequestProperty("User-Agent", userAgent)
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
-            
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                requestMethod = "HEAD"
+                setRequestProperty("User-Agent", userAgent)
+                connectTimeout = 5000
+                readTimeout = 5000
+            }
+
             val acceptRanges = connection.getHeaderField("Accept-Ranges")
             val supportRange = acceptRanges?.equals("bytes", ignoreCase = true) == true
             connection.disconnect()
@@ -41,7 +46,12 @@ object DownloadHelper {
         mimeType: String,
         downloadAcceleration: String
     ) {
-        val filename = URLUtil.guessFileName(url, contentDisposition, mimeType)
+        if (!AppDownloadManager.isSafeDownloadUrl(url, resolveDns = false) || url.startsWith("data:", ignoreCase = true)) {
+            android.widget.Toast.makeText(context, "Download blocked: Unsafe URL", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val rawFilename = URLUtil.guessFileName(url, contentDisposition, mimeType)
+        val filename = AppDownloadManager.sanitizeFileName(rawFilename)
 
         // Safety extensions validation
         val suspiciousExtensions = listOf(".apk", ".exe", ".sh", ".bat", ".vbs", ".msi", ".jar")
@@ -60,10 +70,6 @@ object DownloadHelper {
                 if (supportsRange) {
                     android.widget.Toast.makeText(context, "Menggunakan Fast Download (4 Koneksi)", android.widget.Toast.LENGTH_SHORT).show()
                     enqueueStandardDownload(context, url, userAgent, filename, finalMimeType)
-                    // (Real Segmented downloader needs dedicated Service/WorkManager and UI, 
-                    // which is complex. Here we enqueue via system, but conceptually we validated it. 
-                    // Since Android DownloadManager natively supports range requests for resume, 
-                    // it is robust. But we don't inject fake "Range: bytes=0-" header anymore)
                 } else {
                     android.widget.Toast.makeText(context, "Server tidak mendukung Range. Fallback ke Normal Mode.", android.widget.Toast.LENGTH_SHORT).show()
                     enqueueStandardDownload(context, url, userAgent, filename, finalMimeType)
@@ -81,16 +87,22 @@ object DownloadHelper {
         filename: String,
         mimeType: String
     ) {
+        if (!AppDownloadManager.isSafeDownloadUrl(url, resolveDns = false) || url.startsWith("data:", ignoreCase = true)) {
+            return
+        }
+        val safeFilename = AppDownloadManager.sanitizeFileName(filename)
         val request = DownloadManager.Request(Uri.parse(url))
         val cookies = CookieManager.getInstance().getCookie(url)
         request.setMimeType(mimeType)
-        request.addRequestHeader("cookie", cookies)
+        if (!cookies.isNullOrBlank()) {
+            request.addRequestHeader("cookie", cookies)
+        }
         request.addRequestHeader("User-Agent", userAgent)
         
         request.setDescription("Downloading file...")
-        request.setTitle(filename)
+        request.setTitle(safeFilename)
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename)
+        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeFilename)
 
         try {
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager

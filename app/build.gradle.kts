@@ -4,7 +4,7 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
-  alias(libs.plugins.hilt.android)
+  // alias(libs.plugins.hilt.android) - Deferred to Phase 4 DI migration; AGP 9.1 BaseExtension compatibility
 }
 
 android {

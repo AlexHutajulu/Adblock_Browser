@@ -59,6 +59,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     data class PendingPermissionRequest(
         val url: String,
         val types: List<SitePermissionType>,
+        val isIncognito: Boolean = false,
         val onGrant: (List<SitePermissionType>) -> Unit,
         val onDeny: () -> Unit
     )
@@ -90,6 +91,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val unhandled = mutableListOf<SitePermissionType>()
 
         for (type in types) {
+            if (!PermissionManager.isOriginEligibleForPermission(url, type)) {
+                continue
+            }
             val state = if (isIncognito) PermissionState.ASK else permissionManager.getWebsitePermission(url, type)
             when (state) {
                 PermissionState.ALLOW -> granted.add(type)
@@ -103,9 +107,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        // Deny any existing superseded permission prompt so its WebView callback never hangs
+        _pendingPermissionRequest.value?.onDeny?.invoke()
+
         _pendingPermissionRequest.value = PendingPermissionRequest(
-            url = url,
+            url = PermissionManager.normalizePermissionOrigin(url) ?: url,
             types = unhandled,
+            isIncognito = isIncognito,
             onGrant = { newlyGranted ->
                 onResult(granted + newlyGranted)
                 _pendingPermissionRequest.value = null
@@ -586,46 +594,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun getBlockedLogsForPage(url: String): List<com.example.manager.AdBlockEngine.BlockedRequest> {
-        val targetHost = try {
-            android.net.Uri.parse(url).host?.lowercase()?.removePrefix("www.") ?: ""
-        } catch (_: Exception) {
-            ""
-        }
-        if (targetHost.isEmpty()) return emptyList()
-
-        return com.yourbrowser.adblock.AlexShieldV5LogStore.logs.value
-            .filter { it.pageHost == targetHost }
-            .map { log ->
-                val blockedHost = try {
-                    android.net.Uri.parse(log.blockedUrl).host ?: ""
-                } catch (_: Exception) {
-                    ""
-                }
-
-                val lowerUrl = log.blockedUrl.lowercase()
-                val isPopup = log.reason.contains("popup", true) || log.reason.contains("redirect", true)
-                val isTracker = log.reason.contains("tracker", true) || log.reason.contains("beacon", true) ||
-                                lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
-                                lowerUrl.contains("pixel") || lowerUrl.contains("beacon") ||
-                                lowerUrl.contains("telemetry") || lowerUrl.contains("collect")
-                val category = when {
-                    isPopup -> "Popup"
-                    isTracker -> "Tracker"
-                    else -> "Ad"
-                }
-
-                com.example.manager.AdBlockEngine.BlockedRequest(
-                    url = log.blockedUrl,
-                    host = blockedHost,
-                    type = category,
-                    mainPageUrl = url,
-                    timestamp = log.timestamp
-                )
-            }
+        return com.example.manager.AdBlockEngine.getBlockedLogsForPage(url)
     }
 
     fun clearBlockedLogs() {
-        com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
+        com.example.manager.AdBlockEngine.clearBlockedLogs()
     }
 
     fun toggleTabMute(tabId: String) {
@@ -887,9 +860,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     // Tab Management
     fun addNewTab(url: String = "", isPrivate: Boolean = false) {
-        val targetUrl = url
+        val rawTrimmed = url.trim()
+        val safeInitialUrl = if (rawTrimmed.isEmpty() || rawTrimmed.equals("about:blank", ignoreCase = true)) {
+            ""
+        } else if (com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(rawTrimmed)) {
+            val host = com.example.manager.SecurityGuardEngine.extractHost(rawTrimmed)
+            val isTrusted = com.example.manager.SecurityGuardEngine.isHostUserTrusted(getApplication(), host)
+            if (isTrusted) {
+                rawTrimmed
+            } else {
+                com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(rawTrimmed, _httpsOnlyMode.value)
+            }
+        } else {
+            Log.w(TAG, "Rejected unsafe scheme in addNewTab: $rawTrimmed")
+            ""
+        }
+
         val newTab = BrowserTab(
-            url = targetUrl,
+            url = safeInitialUrl,
             title = if (isPrivate) "Private Tab" else "New Tab",
             isPrivate = isPrivate
         )
@@ -897,16 +885,53 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _activeTabId.value = newTab.id
         _showTabsDialog.value = false
 
-        if (targetUrl.isNotEmpty() && targetUrl != "about:blank") {
-            _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(targetUrl)) }
+        if (safeInitialUrl.isNotEmpty() && safeInitialUrl != "about:blank") {
+            val host = com.example.manager.SecurityGuardEngine.extractHost(safeInitialUrl)
+            val isTrusted = com.example.manager.SecurityGuardEngine.isHostUserTrusted(getApplication(), host)
+            val threat = com.example.manager.SecurityGuardEngine.inspectUrlThreat(
+                url = safeInitialUrl,
+                httpsOnlyEnabled = _httpsOnlyMode.value,
+                phishingProtectionEnabled = _phishingProtectionEnabled.value,
+                isUserTrustedHost = isTrusted
+            )
+            if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
+                _tabSecurityThreats.update { it + (newTab.id to threat) }
+            } else {
+                _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(safeInitialUrl)) }
+            }
         }
         saveCurrentTabsToPreferences()
     }
 
     private val _closedTabs = mutableListOf<BrowserTab>()
     
+    private fun cleanupClosedTabState(tabId: String) {
+        clearDevToolsState(tabId)
+        clearTabActivePermissions(tabId)
+        _tabHistoryStacks.update { it - tabId }
+        _navigationActions.update { it - tabId }
+        _tabSecurityThreats.update { it - tabId }
+        com.yourbrowser.adblock.AlexShieldV5LogStore.clearTab(tabId)
+    }
+
+    private fun onAllPrivateTabsClosed() {
+        downloadManager.clearIncognitoEntries()
+        com.example.manager.SecurityGuardEngine.clearTemporaryBypasses()
+        viewModelScope.launch(Dispatchers.IO) {
+            downloadRepository.clearIncognito()
+        }
+        try {
+            android.webkit.CookieManager.getInstance().removeSessionCookies(null)
+            android.webkit.CookieManager.getInstance().flush()
+        } catch (e: Exception) {
+            Log.w(TAG, "Session cookie cleanup warning: ${e.message}")
+        }
+    }
+
     fun closeAllPrivateTabs() {
+        val privateTabIds = _tabs.value.filter { it.isPrivate }.map { it.id }
         val nonPrivateTabs = _tabs.value.filter { !it.isPrivate }
+        privateTabIds.forEach { cleanupClosedTabState(it) }
         
         if (nonPrivateTabs.isEmpty()) {
             val newTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
@@ -921,6 +946,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 _activeTabId.value = _tabs.value.last().id
             }
         }
+        if (privateTabIds.isNotEmpty()) {
+            onAllPrivateTabsClosed()
+        }
         saveCurrentTabsToPreferences()
     }
 
@@ -930,7 +958,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val currentNormalTabs = _tabs.value.filter { !it.isPrivate }
-        currentNormalTabs.forEach { _closedTabs.add(it) }
+        currentNormalTabs.forEach {
+            _closedTabs.add(it)
+            cleanupClosedTabState(it.id)
+        }
         val privateTabs = _tabs.value.filter { it.isPrivate }
         val newTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
         _tabs.value = privateTabs + newTab
@@ -941,21 +972,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun removeTab(tabId: String) {
         val oldTabs = _tabs.value
         val tabToRemove = oldTabs.find { it.id == tabId }
-        if (tabToRemove != null && !tabToRemove.isPrivate) {
+        val wasPrivate = tabToRemove?.isPrivate == true
+        if (tabToRemove != null && !wasPrivate) {
             _closedTabs.add(tabToRemove)
         }
+        cleanupClosedTabState(tabId)
+
         if (oldTabs.size <= 1) {
-            val isPrivate = oldTabs.firstOrNull()?.isPrivate ?: false
             val newTab = BrowserTab(
                 url = "",
                 title = "New Tab",
-                isPrivate = isPrivate
+                isPrivate = false
             )
             _tabs.value = listOf(newTab)
             _activeTabId.value = newTab.id
             
             if (newTab.url.isNotEmpty()) {
                 _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(newTab.url)) }
+            }
+            if (wasPrivate) {
+                onAllPrivateTabsClosed()
             }
             saveCurrentTabsToPreferences()
             return
@@ -967,7 +1003,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (_activeTabId.value == tabId) {
             _activeTabId.value = updatedTabs.last().id
         }
-        clearDevToolsState(tabId)
+        if (wasPrivate && updatedTabs.none { it.isPrivate }) {
+            onAllPrivateTabsClosed()
+        }
         saveCurrentTabsToPreferences()
     }
 
@@ -1243,9 +1281,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         // Clear intent to open
         _intentToOpen.value = null
         
-        // Clear permissions for session
+        // Clear permissions & temporary bypasses for session
         _activePermissions.value = emptyMap()
         _devToolsStates.value = emptyMap()
+        com.example.manager.SecurityGuardEngine.clearTemporaryBypasses()
         clearBlockedLogs()
 
         viewModelScope.launch(Dispatchers.IO) {

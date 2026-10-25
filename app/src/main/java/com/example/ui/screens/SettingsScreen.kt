@@ -974,12 +974,12 @@ fun SettingsAboutBanner() {
             )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = "AdBlock Browser",
+                text = "Alex Browser",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Fast, lightweight, and responsive Material 3 web browser with built-in AdShield protection.",
+                text = "Fast, lightweight, and responsive modern web browser powered by the Singularity engine with built-in AdShield protection.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center

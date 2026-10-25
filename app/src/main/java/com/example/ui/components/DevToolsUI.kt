@@ -224,12 +224,10 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            if (selected.rect != null) {
-                                Text(
-                                    text = "Metrics: X:${selected.rect.x.toInt()} Y:${selected.rect.y.toInt()} W:${selected.rect.width.toInt()} H:${selected.rect.height.toInt()}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
-                                )
-                            }
+                            Text(
+                                text = "Metrics: X:${selected.rect.x.toInt()} Y:${selected.rect.y.toInt()} W:${selected.rect.width.toInt()} H:${selected.rect.height.toInt()}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
+                            )
                         }
                     }
                 }

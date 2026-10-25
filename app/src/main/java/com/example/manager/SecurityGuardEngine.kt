@@ -32,17 +32,35 @@ data class SecurityThreatAssessment(
 object SecurityGuardEngine {
 
     private const val PREFS_NAME = "chrome_security_guard_prefs"
-    private const val KEY_HTTPS_ONLY = "https_only_mode"
-    private const val KEY_PHISHING_SHIELD = "phishing_protection_enabled"
-    private const val KEY_BLOCK_CAM_MIC = "block_camera_mic_strict"
-    private const val KEY_BLOCK_CLIPBOARD = "block_clipboard_hijack"
-    private const val KEY_BLOCK_HIDDEN_POPUPS = "block_hidden_popups"
-    private const val KEY_TRUSTED_HOSTS = "user_trusted_hosts"
+    private const val KEY_HTTPS_ONLY = "sec_guard_https_only"
+    private const val KEY_PHISHING_SHIELD = "sec_guard_phishing_enabled"
+    private const val KEY_BLOCK_CAM_MIC = "sec_guard_block_cam_mic"
+    private const val KEY_BLOCK_CLIPBOARD = "sec_guard_block_clipboard"
+    private const val KEY_BLOCK_HIDDEN_POPUPS = "sec_guard_block_hidden_popups"
+    private const val KEY_TRUSTED_HOSTS = "sec_guard_trusted_hosts"
+    private const val KEY_MIGRATED_ENCRYPTED = "sec_guard_migrated_v2"
+
+    private const val LEGACY_KEY_HTTPS_ONLY = "https_only_mode"
+    private const val LEGACY_KEY_PHISHING_SHIELD = "phishing_protection_enabled"
+    private const val LEGACY_KEY_BLOCK_CAM_MIC = "block_camera_mic_strict"
+    private const val LEGACY_KEY_BLOCK_CLIPBOARD = "block_clipboard_hijack"
+    private const val LEGACY_KEY_BLOCK_HIDDEN_POPUPS = "block_hidden_popups"
+    private const val LEGACY_KEY_TRUSTED_HOSTS = "user_trusted_hosts"
 
     private val bypassedHostsSession = ConcurrentHashMap.newKeySet<String>()
     private val threatsBlockedCounter = AtomicInteger(0)
     private val httpsUpgradesCounter = AtomicInteger(0)
     private val clipboardBlocksCounter = AtomicInteger(0)
+
+    private val CRITICAL_PROTECTED_DOMAINS = setOf(
+        "accounts.google.com", "myaccount.google.com", "oauth2.googleapis.com",
+        "login.microsoftonline.com", "login.live.com", "appleid.apple.com",
+        "klikbca.com", "bca.co.id", "bankmandiri.co.id", "bri.co.id", "bni.co.id",
+        "bsi.co.id", "cimbniaga.co.id", "permata.com", "jenius.com", "jago.com",
+        "dana.id", "ovo.id", "gopay.co.id", "paypal.com", "stripe.com",
+        "midtrans.com", "xendit.co", "doku.com",
+        "challenges.cloudflare.com", "hcaptcha.com", "recaptcha.net"
+    )
 
     private val TRUSTED_REGISTRABLE_DOMAINS = setOf(
         "google.com", "google.co.id", "youtube.com", "gmail.com", "gstatic.com",
@@ -92,69 +110,113 @@ object SecurityGuardEngine {
         "wallet-restore", "seed-phrase"
     )
 
+    private fun getSecurePrefs(context: Context): android.content.SharedPreferences {
+        val encPrefs = EncryptedPreferencesManager.getPreferences(context)
+        if (!encPrefs.getBoolean(KEY_MIGRATED_ENCRYPTED, false)) {
+            try {
+                val legacy = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val editor = encPrefs.edit()
+                if (legacy.contains(LEGACY_KEY_HTTPS_ONLY)) {
+                    editor.putBoolean(KEY_HTTPS_ONLY, legacy.getBoolean(LEGACY_KEY_HTTPS_ONLY, true))
+                }
+                if (legacy.contains(LEGACY_KEY_PHISHING_SHIELD)) {
+                    editor.putBoolean(KEY_PHISHING_SHIELD, legacy.getBoolean(LEGACY_KEY_PHISHING_SHIELD, true))
+                }
+                if (legacy.contains(LEGACY_KEY_BLOCK_CAM_MIC)) {
+                    editor.putBoolean(KEY_BLOCK_CAM_MIC, legacy.getBoolean(LEGACY_KEY_BLOCK_CAM_MIC, false))
+                }
+                if (legacy.contains(LEGACY_KEY_BLOCK_CLIPBOARD)) {
+                    editor.putBoolean(KEY_BLOCK_CLIPBOARD, legacy.getBoolean(LEGACY_KEY_BLOCK_CLIPBOARD, true))
+                }
+                if (legacy.contains(LEGACY_KEY_BLOCK_HIDDEN_POPUPS)) {
+                    editor.putBoolean(KEY_BLOCK_HIDDEN_POPUPS, legacy.getBoolean(LEGACY_KEY_BLOCK_HIDDEN_POPUPS, true))
+                }
+                val legacyTrusted = legacy.getStringSet(LEGACY_KEY_TRUSTED_HOSTS, null)
+                if (!legacyTrusted.isNullOrEmpty()) {
+                    editor.putStringSet(KEY_TRUSTED_HOSTS, legacyTrusted)
+                }
+                editor.putBoolean(KEY_MIGRATED_ENCRYPTED, true).apply()
+                legacy.edit().clear().apply()
+            } catch (_: Exception) {}
+        }
+        return encPrefs
+    }
+
     fun getThreatsBlockedCount(): Int = threatsBlockedCounter.get()
     fun getHttpsUpgradesCount(): Int = httpsUpgradesCounter.get()
     fun getClipboardBlocksCount(): Int = clipboardBlocksCounter.get()
     fun incrementClipboardBlocked() { clipboardBlocksCounter.incrementAndGet() }
 
     fun isHttpsOnlyEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_HTTPS_ONLY, true)
+        getSecurePrefs(context).getBoolean(KEY_HTTPS_ONLY, true)
 
     fun setHttpsOnlyEnabled(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_HTTPS_ONLY, enabled).apply()
+        getSecurePrefs(context).edit().putBoolean(KEY_HTTPS_ONLY, enabled).apply()
     }
 
     fun isPhishingProtectionEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_PHISHING_SHIELD, true)
+        getSecurePrefs(context).getBoolean(KEY_PHISHING_SHIELD, true)
 
     fun setPhishingProtectionEnabled(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_PHISHING_SHIELD, enabled).apply()
+        getSecurePrefs(context).edit().putBoolean(KEY_PHISHING_SHIELD, enabled).apply()
     }
 
     fun isBlockCameraMicStrict(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_BLOCK_CAM_MIC, false)
+        getSecurePrefs(context).getBoolean(KEY_BLOCK_CAM_MIC, false)
 
     fun setBlockCameraMicStrict(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_BLOCK_CAM_MIC, enabled).apply()
+        getSecurePrefs(context).edit().putBoolean(KEY_BLOCK_CAM_MIC, enabled).apply()
     }
 
     fun isBlockClipboardHijack(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_BLOCK_CLIPBOARD, true)
+        getSecurePrefs(context).getBoolean(KEY_BLOCK_CLIPBOARD, true)
 
     fun setBlockClipboardHijack(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_BLOCK_CLIPBOARD, enabled).apply()
+        getSecurePrefs(context).edit().putBoolean(KEY_BLOCK_CLIPBOARD, enabled).apply()
     }
 
     fun isBlockHiddenPopups(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_BLOCK_HIDDEN_POPUPS, true)
+        getSecurePrefs(context).getBoolean(KEY_BLOCK_HIDDEN_POPUPS, true)
 
     fun setBlockHiddenPopups(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_BLOCK_HIDDEN_POPUPS, enabled).apply()
+        getSecurePrefs(context).edit().putBoolean(KEY_BLOCK_HIDDEN_POPUPS, enabled).apply()
     }
 
-    fun allowHostTemporarily(context: Context, host: String) {
+    fun allowHostTemporarily(context: Context, host: String, persist: Boolean = false) {
         val clean = normalizeHost(host)
         if (clean.isNotEmpty()) {
             bypassedHostsSession.add(clean)
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val current = prefs.getStringSet(KEY_TRUSTED_HOSTS, emptySet())?.toMutableSet() ?: mutableSetOf()
-            current.add(clean)
-            prefs.edit().putStringSet(KEY_TRUSTED_HOSTS, current).apply()
+            if (persist) {
+                val prefs = getSecurePrefs(context)
+                val current = prefs.getStringSet(KEY_TRUSTED_HOSTS, emptySet())?.toMutableSet() ?: mutableSetOf()
+                current.add(clean)
+                prefs.edit().putStringSet(KEY_TRUSTED_HOSTS, current).apply()
+            }
         }
+    }
+
+    fun clearTemporaryBypasses() {
+        bypassedHostsSession.clear()
     }
 
     fun isHostUserTrusted(context: Context, host: String): Boolean {
         val clean = normalizeHost(host)
         if (clean.isEmpty()) return false
         if (bypassedHostsSession.contains(clean)) return true
-        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getStringSet(KEY_TRUSTED_HOSTS, emptySet()) ?: emptySet()
+        val saved = getSecurePrefs(context).getStringSet(KEY_TRUSTED_HOSTS, emptySet()) ?: emptySet()
         return saved.contains(clean)
+    }
+
+    /**
+     * Checks whether a domain belongs to a critical banking, payment, SSO/OAuth, or CAPTCHA authority
+     * where automatic third-party extensions and auto-run user scripts must not auto-inject.
+     */
+    fun isCriticalProtectedHost(hostOrUrl: String?): Boolean {
+        if (hostOrUrl.isNullOrBlank()) return false
+        val trimmed = hostOrUrl.trim()
+        val host = if (trimmed.contains("://")) extractHost(trimmed) else normalizeHost(trimmed)
+        if (host.isEmpty()) return false
+        return CRITICAL_PROTECTED_DOMAINS.any { host == it || host.endsWith(".$it") }
     }
 
     /**
@@ -509,9 +571,23 @@ object SecurityGuardEngine {
     }
 
     /**
+     * Verifies that a URL is strictly a safe HTTP/HTTPS web URL suitable for WebView.loadUrl,
+     * Context Menu navigation, or new-tab opening. Rejects javascript:, file:, content:, data:, intent:, etc.
+     */
+    fun isSafeWebNavigationUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        if (trimmed.length > 4096) return false
+        if (trimmed.any { it.isISOControl() }) return false
+        if (isDangerousInternalScheme(trimmed)) return false
+        return trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("http://", ignoreCase = true)
+    }
+
+    /**
      * Validates URIs returned to WebChromeClient.onShowFileChooser (`mFilePickerLauncher`)
-     * to prevent malicious chooser targets from returning `file://` URIs or internal app
-     * ContentProvider URIs (`${packageName}.fileprovider`, `${packageName}.renderconfig`).
+     * to prevent malicious chooser targets from returning `file://` URIs, encoded traversal paths,
+     * or internal app ContentProvider/storage URIs (`${packageName}.fileprovider`, `/data/user/0/<pkg>`, etc.).
      */
     fun isSafeFileChooserResultUri(
         context: Context,
@@ -537,15 +613,172 @@ object SecurityGuardEngine {
         }
 
         val rawPath = uri.path?.lowercase(Locale.US).orEmpty()
-        if (rawPath.contains("..") ||
-            rawPath.contains("/data/data/$pkgLower") ||
-            rawPath.contains("/$pkgLower/shared_prefs") ||
-            rawPath.contains("/$pkgLower/databases")
-        ) {
-            return false
+        val encodedPath = uri.encodedPath?.lowercase(Locale.US).orEmpty()
+        val decodedEncodedPath = try {
+            Uri.decode(encodedPath).lowercase(Locale.US)
+        } catch (_: Exception) {
+            encodedPath
+        }
+
+        val candidatePaths = listOf(rawPath, encodedPath, decodedEncodedPath)
+        for (p in candidatePaths) {
+            if (p.contains("..") ||
+                p.contains("%2e%2e") ||
+                p.contains("/data/data/$pkgLower") ||
+                p.contains("/data/user/") && p.contains("/$pkgLower") ||
+                p.contains("/$pkgLower/shared_prefs") ||
+                p.contains("/$pkgLower/databases") ||
+                p.contains("/$pkgLower/app_webview") ||
+                p.contains("/$pkgLower/files") ||
+                p.contains("/$pkgLower/cache")
+            ) {
+                return false
+            }
         }
 
         return true
+    }
+
+    /**
+     * Builds the client-side WebRTC IP Leak Protection script:
+     * - When `strictWebRtcMode == true`: completely blocks `RTCPeerConnection` & `webkitRTCPeerConnection`.
+     * - When `strictWebRtcMode == false`: wraps `RTCPeerConnection` & `webkitRTCPeerConnection` to scrub
+     *   private/loopback/link-local IPv4 (`10.x`, `192.168.x`, `172.16-31.x`, `127.x`, `169.254.x`),
+     *   local IPv6 (`fe80:`, `fc00:`/`fd00:`, `::1`), and `typ host` candidates across SDP descriptions,
+     *   `addIceCandidate`, `onicecandidate`, and `addEventListener('icecandidate')`.
+     */
+    fun buildWebRtcProtectionScript(
+        preventWebRtcLeak: Boolean,
+        strictWebRtcMode: Boolean
+    ): String {
+        if (!preventWebRtcLeak) return ""
+        return if (strictWebRtcMode) {
+            """
+                (function() {
+                    if (window.__AlexWebRtcStrictInstalled) return;
+                    window.__AlexWebRtcStrictInstalled = true;
+                    var blockedCtor = function() {
+                        try {
+                            if (window.AlexBrowserNative && window.AlexBrowserNative.onWebRtcBlocked) {
+                                window.AlexBrowserNative.onWebRtcBlocked(window.location.href);
+                            }
+                        } catch (e) {}
+                        throw new DOMException('WebRTC connection blocked by AlexBrowser Strict Privacy Mode.', 'NotAllowedError');
+                    };
+                    try {
+                        Object.defineProperty(window, 'RTCPeerConnection', { value: blockedCtor, writable: false, configurable: false });
+                    } catch (e) { window.RTCPeerConnection = blockedCtor; }
+                    try {
+                        Object.defineProperty(window, 'webkitRTCPeerConnection', { value: blockedCtor, writable: false, configurable: false });
+                    } catch (e) { window.webkitRTCPeerConnection = blockedCtor; }
+                })();
+            """.trimIndent()
+        } else {
+            """
+                (function() {
+                    if (window.__AlexWebRtcCompatInstalled) return;
+                    window.__AlexWebRtcCompatInstalled = true;
+                    var OrigPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+                    if (!OrigPeerConnection) return;
+
+                    var privateIpRegex = /(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\b(?:fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):[0-9a-f:]+|\b::1\b|\btyp\s+host\b)/i;
+
+                    function scrubSdp(sdp) {
+                        if (!sdp || typeof sdp !== 'string') return sdp;
+                        return sdp.split(/\r?\n/).filter(function(line) {
+                            var trimmed = line.trim();
+                            if (trimmed.indexOf('a=candidate:') === 0) {
+                                return !privateIpRegex.test(trimmed);
+                            }
+                            return true;
+                        }).map(function(line) {
+                            if (line.indexOf('c=IN IP4 ') === 0 || line.indexOf('c=IN IP6 ') === 0) {
+                                if (privateIpRegex.test(line)) {
+                                    return 'c=IN IP4 0.0.0.0';
+                                }
+                            }
+                            return line;
+                        }).join('\r\n');
+                    }
+
+                    function isPrivateCandidate(candObj) {
+                        if (!candObj) return false;
+                        var str = typeof candObj === 'string' ? candObj : (candObj.candidate || '');
+                        var addr = candObj.address || candObj.ip || '';
+                        var type = candObj.type || '';
+                        return type === 'host' || privateIpRegex.test(str) || (addr && privateIpRegex.test(addr));
+                    }
+
+                    var WrappedRTCPeerConnection = function(config, constraints) {
+                        var safeConfig = config ? Object.assign({}, config) : {};
+                        var pc = new OrigPeerConnection(safeConfig, constraints);
+
+                        var origSetLocalDescription = pc.setLocalDescription;
+                        if (origSetLocalDescription) {
+                            pc.setLocalDescription = function(desc) {
+                                if (desc && desc.sdp) {
+                                    desc = { type: desc.type, sdp: scrubSdp(desc.sdp) };
+                                }
+                                return origSetLocalDescription.call(this, desc);
+                            };
+                        }
+
+                        var origAddIceCandidate = pc.addIceCandidate;
+                        if (origAddIceCandidate) {
+                            pc.addIceCandidate = function(candidate, successCb, failureCb) {
+                                if (isPrivateCandidate(candidate)) {
+                                    if (typeof successCb === 'function') successCb();
+                                    return Promise.resolve();
+                                }
+                                return origAddIceCandidate.apply(this, arguments);
+                            };
+                        }
+
+                        var origAddEventListener = pc.addEventListener;
+                        if (origAddEventListener) {
+                            pc.addEventListener = function(type, listener, options) {
+                                if (type === 'icecandidate' && typeof listener === 'function') {
+                                    var wrappedListener = function(event) {
+                                        if (event && event.candidate && isPrivateCandidate(event.candidate)) {
+                                            return;
+                                        }
+                                        return listener.call(this, event);
+                                    };
+                                    return origAddEventListener.call(this, type, wrappedListener, options);
+                                }
+                                return origAddEventListener.apply(this, arguments);
+                            };
+                        }
+
+                        var userOnIceCandidate = null;
+                        try {
+                            Object.defineProperty(pc, 'onicecandidate', {
+                                get: function() { return userOnIceCandidate; },
+                                set: function(fn) {
+                                    userOnIceCandidate = fn;
+                                    origAddEventListener.call(pc, 'icecandidate', function(event) {
+                                        if (event && event.candidate && isPrivateCandidate(event.candidate)) {
+                                            return;
+                                        }
+                                        if (typeof userOnIceCandidate === 'function') {
+                                            userOnIceCandidate.call(pc, event);
+                                        }
+                                    });
+                                },
+                                configurable: true
+                            });
+                        } catch (e) {}
+
+                        return pc;
+                    };
+
+                    Object.setPrototypeOf(WrappedRTCPeerConnection, OrigPeerConnection);
+                    WrappedRTCPeerConnection.prototype = OrigPeerConnection.prototype;
+                    window.RTCPeerConnection = WrappedRTCPeerConnection;
+                    window.webkitRTCPeerConnection = WrappedRTCPeerConnection;
+                })();
+            """.trimIndent()
+        }
     }
 
     fun extractHost(url: String?): String {

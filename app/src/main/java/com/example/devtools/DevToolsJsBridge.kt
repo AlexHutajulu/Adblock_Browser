@@ -10,10 +10,25 @@ class DevToolsJsBridge(
 ) {
     private val TAG = "DevToolsJsBridge"
     private val MAX_BRIDGE_PAYLOAD_LENGTH = 32_768
+    private val ELEMENT_SELECT_COOLDOWN_MS = 80L
+    private val MAX_CONSOLE_MESSAGES_PER_WINDOW = 60
+    private val CONSOLE_WINDOW_MS = 1000L
+
+    @Volatile
+    private var lastElementSelectTime = 0L
+
+    @Volatile
+    private var consoleWindowStart = 0L
+
+    @Volatile
+    private var consoleCountInWindow = 0
 
     @JavascriptInterface
     fun onElementSelected(json: String) {
         if (json.length > MAX_BRIDGE_PAYLOAD_LENGTH) return
+        val now = System.currentTimeMillis()
+        if (now - lastElementSelectTime < ELEMENT_SELECT_COOLDOWN_MS) return
+        lastElementSelectTime = now
         try {
             val root = JSONObject(json)
             val rectObj = root.optJSONObject("rect") ?: JSONObject()
@@ -78,6 +93,14 @@ class DevToolsJsBridge(
     @JavascriptInterface
     fun onConsoleMessage(json: String) {
         if (json.length > MAX_BRIDGE_PAYLOAD_LENGTH) return
+        val now = System.currentTimeMillis()
+        synchronized(this) {
+            if (now - consoleWindowStart > CONSOLE_WINDOW_MS) {
+                consoleWindowStart = now
+                consoleCountInWindow = 0
+            }
+            if (++consoleCountInWindow > MAX_CONSOLE_MESSAGES_MS_LIMIT) return
+        }
         try {
             val root = JSONObject(json)
             val levelStr = root.optString("level", "LOG")
@@ -86,7 +109,7 @@ class DevToolsJsBridge(
             val sourceIdVal = if (root.isNull("sourceId")) null else root.optString("sourceId").takeIf { it.isNotEmpty() && it != "null" }?.take(300)
             val entry = ConsoleEntry(
                 id = java.util.UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+                timestamp = now,
                 level = level,
                 message = root.optString("message", "").take(4000),
                 sourceId = sourceIdVal,
@@ -97,5 +120,9 @@ class DevToolsJsBridge(
         } catch (e: Exception) {
             Log.e(TAG, "Failed parsing console message: ${e.message}")
         }
+    }
+
+    companion object {
+        private const val MAX_CONSOLE_MESSAGES_MS_LIMIT = 60
     }
 }

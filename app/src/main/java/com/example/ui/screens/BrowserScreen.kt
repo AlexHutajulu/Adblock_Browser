@@ -35,6 +35,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -389,9 +391,10 @@ fun BrowserScreen(
             if (isGranted) grantedTypes.add(type)
         }
 
+        val isIncognitoReq = req.isIncognito || activeTab.isPrivate
         if (grantedTypes.isNotEmpty()) {
             grantedTypes.forEach { type ->
-                viewModel.handlePermissionChoice(req.url, type, com.example.manager.PermissionState.ALLOW, activeTab.isPrivate)
+                viewModel.handlePermissionChoice(req.url, type, com.example.manager.PermissionState.ALLOW, isIncognitoReq)
             }
             req.onGrant(grantedTypes)
         } else {
@@ -405,6 +408,7 @@ fun BrowserScreen(
     // Pure Chrome M3 Site Permission Request Dialog
     if (pendingPermissionRequest != null) {
         val request = pendingPermissionRequest!!
+        val isIncognitoReq = request.isIncognito || activeTab.isPrivate
         AlertDialog(
             onDismissRequest = {
                 request.onDeny()
@@ -462,6 +466,9 @@ fun BrowserScreen(
                         if (androidPermsToRequest.isNotEmpty()) {
                             launcher.launch(androidPermsToRequest.toTypedArray())
                         } else {
+                            request.types.forEach { type ->
+                                viewModel.handlePermissionChoice(request.url, type, com.example.manager.PermissionState.ALLOW, isIncognitoReq)
+                            }
                             request.onGrant(request.types)
                             processingPermission = null
                         }
@@ -473,6 +480,9 @@ fun BrowserScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
+                        request.types.forEach { type ->
+                            viewModel.handlePermissionChoice(request.url, type, com.example.manager.PermissionState.BLOCK, isIncognitoReq)
+                        }
                         request.onDeny()
                         viewModel.clearPendingPermissionRequest()
                     }
@@ -1259,6 +1269,9 @@ private fun safeDestroyWebView(webView: android.webkit.WebView) {
         webView.removeJavascriptInterface("AlexBrowserNative")
         webView.removeJavascriptInterface("AdBlockDevTools")
         webView.webChromeClient = null
+        webView.clearFormData()
+        webView.clearSslPreferences()
+        webView.clearCache(false)
         webView.loadUrl("about:blank")
         webView.clearHistory()
         webView.removeAllViews()
@@ -3976,7 +3989,7 @@ fun DesktopTabBar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.ViewSidebar,
+                    imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
                     contentDescription = "Workspace Sidebar",
                     tint = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp)
@@ -4087,7 +4100,7 @@ fun DesktopTabBar(
                                 if (tab.isPlayingAudio) {
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
-                                        imageVector = Icons.Default.VolumeUp,
+                                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                         contentDescription = "Playing audio",
                                         tint = accentColor,
                                         modifier = Modifier.size(12.dp)
@@ -4684,7 +4697,7 @@ fun DesktopToolbar(
 
                                 DropdownMenuItem(
                                     text = { Text("Panel Samping: Daftar Tab (${activeTab.title.take(12)})") },
-                                    leadingIcon = { Icon(Icons.Outlined.ViewSidebar, null) },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Outlined.ViewSidebar, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
                                         onToggleTabs()
@@ -4792,7 +4805,7 @@ fun DesktopBookmarkBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.ViewSidebar,
+                    imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(13.dp)

@@ -402,28 +402,50 @@ object CustomJsToolbarManager {
                     }
                     var article = document.querySelector('article, [role="main"], main, .post-content, .article-body, .entry-content') || document.body;
                     var title = document.title || 'Mode Baca';
-                    var paragraphs = Array.from(article.querySelectorAll('h1, h2, h3, p, blockquote, li'))
-                        .filter(function(el) { return (el.innerText || '').trim().length > 25; })
-                        .map(function(el) {
-                            var tag = el.tagName.toLowerCase();
-                            var text = el.innerText.trim().replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                            if (tag === 'h1' || tag === 'h2' || tag === 'h3') return '<h2 style="margin:24px 0 10px;line-height:1.35;color:#e3e3e3;">' + text + '</h2>';
-                            return '<p style="margin:0 0 16px;line-height:1.75;font-size:18px;color:#d4d4d4;">' + text + '</p>';
-                        }).join('');
-                    if (!paragraphs) {
-                        paragraphs = '<p style="line-height:1.75;font-size:18px;color:#d4d4d4;white-space:pre-wrap;">' + (article.innerText || '').replace(/</g, '&lt;') + '</p>';
-                    }
                     var modal = document.createElement('div');
                     modal.id = overlayId;
                     modal.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:#18191b;color:#e3e3e3;overflow-y:auto;padding:24px 20px 64px;font-family:system-ui,-apple-system,sans-serif;';
-                    modal.innerHTML = '<div style="max-width:680px;margin:0 auto;">' +
-                        '<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;padding-bottom:14px;margin-bottom:20px;">' +
-                        '<span style="font-size:13px;color:#a8c7fa;font-weight:600;">MODE BACA CHROME</span>' +
-                        '<button onclick="document.getElementById(\'' + overlayId + '\').remove();document.body.style.overflow=\'\';" style="background:#2d2e31;color:#fff;border:none;padding:8px 16px;border-radius:18px;font-weight:600;cursor:pointer;">Tutup</button>' +
-                        '</div>' +
-                        '<h1 style="font-size:24px;line-height:1.3;margin-bottom:20px;color:#fff;">' + title.replace(/</g, '&lt;') + '</h1>' +
-                        paragraphs +
-                        '</div>';
+                    var container = document.createElement('div');
+                    container.style.cssText = 'max-width:680px;margin:0 auto;';
+                    var headerBar = document.createElement('div');
+                    headerBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;padding-bottom:14px;margin-bottom:20px;';
+                    var badge = document.createElement('span');
+                    badge.style.cssText = 'font-size:13px;color:#a8c7fa;font-weight:600;';
+                    badge.textContent = 'MODE BACA CHROME';
+                    var closeBtn = document.createElement('button');
+                    closeBtn.style.cssText = 'background:#2d2e31;color:#fff;border:none;padding:8px 16px;border-radius:18px;font-weight:600;cursor:pointer;';
+                    closeBtn.textContent = 'Tutup';
+                    closeBtn.onclick = function() {
+                        modal.remove();
+                        document.body.style.overflow = '';
+                    };
+                    headerBar.appendChild(badge);
+                    headerBar.appendChild(closeBtn);
+                    container.appendChild(headerBar);
+                    var h1 = document.createElement('h1');
+                    h1.style.cssText = 'font-size:24px;line-height:1.3;margin-bottom:20px;color:#fff;';
+                    h1.textContent = title;
+                    container.appendChild(h1);
+                    var nodes = Array.from(article.querySelectorAll('h1, h2, h3, p, blockquote, li'))
+                        .filter(function(el) { return (el.innerText || '').trim().length > 25; });
+                    if (nodes.length > 0) {
+                        nodes.forEach(function(el) {
+                            var tag = el.tagName.toLowerCase();
+                            var text = (el.innerText || '').trim();
+                            var outEl = document.createElement((tag === 'h1' || tag === 'h2' || tag === 'h3') ? 'h2' : 'p');
+                            outEl.style.cssText = (tag === 'h1' || tag === 'h2' || tag === 'h3')
+                                ? 'margin:24px 0 10px;line-height:1.35;color:#e3e3e3;'
+                                : 'margin:0 0 16px;line-height:1.75;font-size:18px;color:#d4d4d4;';
+                            outEl.textContent = text;
+                            container.appendChild(outEl);
+                        });
+                    } else {
+                        var fallbackP = document.createElement('p');
+                        fallbackP.style.cssText = 'line-height:1.75;font-size:18px;color:#d4d4d4;white-space:pre-wrap;';
+                        fallbackP.textContent = article.innerText || '';
+                        container.appendChild(fallbackP);
+                    }
+                    modal.appendChild(container);
                     document.body.appendChild(modal);
                     document.body.style.overflow = 'hidden';
                     return 'Mode Baca Aktif';
@@ -445,8 +467,9 @@ object CustomJsToolbarManager {
                     if (existing) { existing.remove(); return 'Galeri Gambar Ditutup'; }
                     var urls = [];
                     document.querySelectorAll('img').forEach(function(img) {
-                        var src = img.currentSrc || img.src || img.getAttribute('data-src');
-                        if (src && src.startsWith('http') && urls.indexOf(src) === -1 && (img.naturalWidth > 80 || img.width > 80)) {
+                        var src = (img.currentSrc || img.src || img.getAttribute('data-src') || '').trim();
+                        if ((src.indexOf('https://') === 0 || src.indexOf('http://') === 0) &&
+                            urls.indexOf(src) === -1 && (img.naturalWidth > 80 || img.width > 80)) {
                             urls.push(src);
                         }
                     });
@@ -454,15 +477,37 @@ object CustomJsToolbarManager {
                     var box = document.createElement('div');
                     box.id = id;
                     box.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(18,18,18,0.97);color:#fff;overflow-y:auto;padding:20px;font-family:sans-serif;';
-                    var itemsHtml = urls.map(function(u) {
-                        return '<a href="' + u + '" target="_blank" style="display:block;background:#262626;border-radius:12px;overflow:hidden;padding:8px;text-decoration:none;color:#a8c7fa;font-size:11px;">' +
-                            '<img src="' + u + '" style="width:100%;height:150px;object-fit:contain;display:block;margin-bottom:6px;background:#111;border-radius:8px;"/>' +
-                            '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Buka Ukuran Penuh</div></a>';
-                    }).join('');
-                    box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
-                        '<strong style="font-size:16px;">Ditemukan ' + urls.length + ' Gambar</strong>' +
-                        '<button onclick="document.getElementById(\'' + id + '\').remove()" style="background:#0b57d0;color:#fff;border:none;padding:8px 16px;border-radius:18px;font-weight:600;">Tutup</button>' +
-                        '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:12px;">' + itemsHtml + '</div>';
+                    var topBar = document.createElement('div');
+                    topBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;';
+                    var titleStrong = document.createElement('strong');
+                    titleStrong.style.cssText = 'font-size:16px;';
+                    titleStrong.textContent = 'Ditemukan ' + urls.length + ' Gambar';
+                    var closeBtn = document.createElement('button');
+                    closeBtn.style.cssText = 'background:#0b57d0;color:#fff;border:none;padding:8px 16px;border-radius:18px;font-weight:600;';
+                    closeBtn.textContent = 'Tutup';
+                    closeBtn.onclick = function() { box.remove(); };
+                    topBar.appendChild(titleStrong);
+                    topBar.appendChild(closeBtn);
+                    box.appendChild(topBar);
+                    var grid = document.createElement('div');
+                    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:12px;';
+                    urls.forEach(function(u) {
+                        var link = document.createElement('a');
+                        link.href = u;
+                        link.target = '_blank';
+                        link.rel = 'noopener noreferrer';
+                        link.style.cssText = 'display:block;background:#262626;border-radius:12px;overflow:hidden;padding:8px;text-decoration:none;color:#a8c7fa;font-size:11px;';
+                        var imgEl = document.createElement('img');
+                        imgEl.src = u;
+                        imgEl.style.cssText = 'width:100%;height:150px;object-fit:contain;display:block;margin-bottom:6px;background:#111;border-radius:8px;';
+                        var caption = document.createElement('div');
+                        caption.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                        caption.textContent = 'Buka Ukuran Penuh';
+                        link.appendChild(imgEl);
+                        link.appendChild(caption);
+                        grid.appendChild(link);
+                    });
+                    box.appendChild(grid);
                     document.body.appendChild(box);
                     return 'Menampilkan ' + urls.length + ' gambar';
                 })();
@@ -500,7 +545,7 @@ object CustomJsToolbarManager {
     )
 
     fun loadScripts(context: Context): List<CustomToolbarScript> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = EncryptedPreferencesManager.getPreferences(context)
         val isSeeded = prefs.getBoolean(KEY_SEEDED_DEFAULT, false)
         val rawJson = prefs.getString(KEY_SCRIPTS_JSON, null)
 
@@ -510,7 +555,15 @@ object CustomJsToolbarManager {
             return TEMPLATE_GALLERY
         }
 
-        val parsed = parseScriptsFromJson(rawJson)
+        val builtInById = TEMPLATE_GALLERY.associateBy { it.id }
+        val parsed = parseScriptsFromJson(rawJson).map { script ->
+            val latestTpl = builtInById[script.id]
+            if (latestTpl != null && script.isBuiltInTemplate) {
+                script.copy(jsCode = latestTpl.jsCode)
+            } else {
+                script
+            }
+        }
         if (parsed.isEmpty()) return TEMPLATE_GALLERY
 
         val existingIds = parsed.map { it.id }.toSet()
@@ -525,7 +578,7 @@ object CustomJsToolbarManager {
     }
 
     fun saveScripts(context: Context, scripts: List<CustomToolbarScript>) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = EncryptedPreferencesManager.getPreferences(context)
         val json = serializeScriptsToJson(scripts)
         prefs.edit()
             .putString(KEY_SCRIPTS_JSON, json)
@@ -626,6 +679,7 @@ object CustomJsToolbarManager {
         }
 
         val encoded = Base64.encodeToString(rawJsCode.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val quotedLabel = JSONObject.quote("[CustomJS:$scriptLabel]")
         val safeWrapper = """
             (function() {
                 try {
@@ -634,7 +688,7 @@ object CustomJsToolbarManager {
                     var res = fn();
                     return res !== undefined && res !== null ? String(res) : 'OK';
                 } catch (err) {
-                    console.error('[CustomJS:$scriptLabel]', err);
+                    console.error($quotedLabel, err);
                     return 'Error: ' + (err && err.message ? err.message : String(err));
                 }
             })();
@@ -657,6 +711,34 @@ object CustomJsToolbarManager {
     }
 
     /**
+     * Checks whether a `CustomToolbarScript` is eligible for automatic execution on `url`.
+     * Enforces `script.isEnabled`, HTTP(S) navigation scheme, and blocks auto-execution on
+     * critical banking/payment/SSO/CAPTCHA hosts.
+     */
+    fun canAutoRunScriptOnUrl(script: CustomToolbarScript, url: String?): Boolean {
+        if (!script.isEnabled || script.autoRunMode == JsAutoRunMode.MANUAL_ONLY) return false
+        if (url.isNullOrBlank() || url == "about:blank") return false
+        if (!SecurityGuardEngine.isSafeWebNavigationUrl(url)) return false
+        if (SecurityGuardEngine.isCriticalProtectedHost(url)) return false
+        val host = try {
+            Uri.parse(url).host?.lowercase()?.removePrefix("www.") ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+        if (host.isEmpty()) return false
+        return when (script.autoRunMode) {
+            JsAutoRunMode.MANUAL_ONLY -> false
+            JsAutoRunMode.ALL_SITES -> true
+            JsAutoRunMode.SPECIFIC_DOMAINS -> {
+                script.targetDomains.any { target ->
+                    val cleanTarget = target.trim().lowercase().removePrefix("www.")
+                    cleanTarget.isNotEmpty() && (host == cleanTarget || host.endsWith(".$cleanTarget"))
+                }
+            }
+        }
+    }
+
+    /**
      * Automatically runs matching scripts when a page finishes loading.
      */
     fun runAutoScriptsForUrl(
@@ -665,26 +747,13 @@ object CustomJsToolbarManager {
         scripts: List<CustomToolbarScript>
     ): Int {
         if (webView == null || url.isNullOrBlank() || url == "about:blank") return 0
-        val host = try {
-            Uri.parse(url).host?.lowercase()?.removePrefix("www.") ?: ""
-        } catch (_: Exception) {
-            ""
+        if (!SecurityGuardEngine.isSafeWebNavigationUrl(url) || SecurityGuardEngine.isCriticalProtectedHost(url)) {
+            return 0
         }
-        if (host.isEmpty()) return 0
 
         var executedCount = 0
         scripts.forEach { script ->
-            val shouldRun = when (script.autoRunMode) {
-                JsAutoRunMode.MANUAL_ONLY -> false
-                JsAutoRunMode.ALL_SITES -> true
-                JsAutoRunMode.SPECIFIC_DOMAINS -> {
-                    script.targetDomains.any { target ->
-                        val cleanTarget = target.trim().lowercase().removePrefix("www.")
-                        cleanTarget.isNotEmpty() && (host == cleanTarget || host.endsWith(".$cleanTarget"))
-                    }
-                }
-            }
-            if (shouldRun) {
+            if (canAutoRunScriptOnUrl(script, url)) {
                 executeScriptInWebView(webView, script, onResult = null)
                 executedCount++
             }
@@ -693,17 +762,17 @@ object CustomJsToolbarManager {
     }
 
     fun getShortcutBarVisible(context: Context): Boolean {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return EncryptedPreferencesManager.getPreferences(context)
             .getBoolean(KEY_SHORTCUT_BAR_VISIBLE, true)
     }
 
     fun setShortcutBarVisible(context: Context, visible: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        EncryptedPreferencesManager.getPreferences(context)
             .edit().putBoolean(KEY_SHORTCUT_BAR_VISIBLE, visible).apply()
     }
 
     fun getShortcutBarPosition(context: Context): ShortcutBarPosition {
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = EncryptedPreferencesManager.getPreferences(context)
             .getString("shortcut_bar_position_v2", ShortcutBarPosition.BOTTOM.name)
         return try {
             ShortcutBarPosition.valueOf(raw ?: ShortcutBarPosition.BOTTOM.name)
@@ -713,12 +782,12 @@ object CustomJsToolbarManager {
     }
 
     fun setShortcutBarPosition(context: Context, position: ShortcutBarPosition) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        EncryptedPreferencesManager.getPreferences(context)
             .edit().putString("shortcut_bar_position_v2", position.name).apply()
     }
 
     fun getScreenOrientationMode(context: Context): ScreenOrientationMode {
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = EncryptedPreferencesManager.getPreferences(context)
             .getString(KEY_ORIENTATION_MODE, ScreenOrientationMode.AUTO_SENSOR.name)
         return try {
             ScreenOrientationMode.valueOf(raw ?: ScreenOrientationMode.AUTO_SENSOR.name)
@@ -728,12 +797,12 @@ object CustomJsToolbarManager {
     }
 
     fun setScreenOrientationMode(context: Context, mode: ScreenOrientationMode) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        EncryptedPreferencesManager.getPreferences(context)
             .edit().putString(KEY_ORIENTATION_MODE, mode.name).apply()
     }
 
     fun getEnabledBuiltInShortcuts(context: Context): Set<String> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = EncryptedPreferencesManager.getPreferences(context)
         val defaultSet = BuiltInShortcut.entries.map { it.id }.toSet()
         val saved = prefs.getStringSet(KEY_ENABLED_SHORTCUTS, null)?.toMutableSet() ?: return defaultSet
         if (!prefs.getBoolean("migrated_fullscreen_shortcut_v1", false)) {
@@ -747,18 +816,18 @@ object CustomJsToolbarManager {
     }
 
     fun setEnabledBuiltInShortcuts(context: Context, ids: Set<String>) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        EncryptedPreferencesManager.getPreferences(context)
             .edit().putStringSet(KEY_ENABLED_SHORTCUTS, ids).apply()
     }
 
     fun getDesktopZoomScale(context: Context): Int {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return EncryptedPreferencesManager.getPreferences(context)
             .getInt("desktop_zoom_scale_v1", 100)
             .coerceIn(50, 200)
     }
 
     fun setDesktopZoomScale(context: Context, scale: Int) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        EncryptedPreferencesManager.getPreferences(context)
             .edit().putInt("desktop_zoom_scale_v1", scale.coerceIn(50, 200)).apply()
     }
 
