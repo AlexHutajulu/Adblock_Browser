@@ -19,3 +19,6 @@ debug.keystore
 *.jks
 *.keystore
 keystore.properties
+
+# AI Studio temporary media (audit fix 2026-10-26)
+.aistudio/artifacts/**/.tempmediaStorage/

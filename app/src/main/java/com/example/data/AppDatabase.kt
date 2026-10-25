@@ -29,9 +29,14 @@ enum class DatabaseEncryptionStatus(
         detail = "Database terenkripsi atau kunci SQLCipher tidak dapat diakses saat ini. File terenkripsi lama dipertahankan utuh dan sesi berjalan di memori.",
         isEncrypted = false
     ),
+    @Deprecated(
+        "SECURITY FIX (audit 2026-10-26): never used anymore. A failed SQLCipher " +
+            "initialisation now falls back to an in-memory database, never to a " +
+            "plaintext file on disk. Kept only so old persisted status values do not break compilation."
+    )
     PLAINTEXT_FALLBACK(
         title = "Database Lokal Standar (Tanpa SQLCipher)",
-        detail = "Runtime asli SQLCipher tidak tersedia pada lingkungan ini; menggunakan penyimpanan Room lokal aplikasi.",
+        detail = "Tidak lagi digunakan. Lihat DEGRADED_RECOVERY_IN_MEMORY.",
         isEncrypted = false
     )
 }
@@ -51,7 +56,7 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        private val _encryptionStatus = MutableStateFlow(DatabaseEncryptionStatus.PLAINTEXT_FALLBACK)
+        private val _encryptionStatus = MutableStateFlow(DatabaseEncryptionStatus.DEGRADED_RECOVERY_IN_MEMORY)
         val encryptionStatusFlow: StateFlow<DatabaseEncryptionStatus> = _encryptionStatus.asStateFlow()
 
         fun getEncryptionStatus(): DatabaseEncryptionStatus = _encryptionStatus.value
@@ -141,17 +146,17 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-            _encryptionStatus.value = DatabaseEncryptionStatus.PLAINTEXT_FALLBACK
-            val builder = Room.databaseBuilder(
+            // SECURITY FIX (audit 2026-10-26): never write browsing data to a
+            // plaintext file on disk. If SQLCipher is unavailable, the session
+            // runs in memory only and nothing is persisted. The existing
+            // encrypted file, if any, is left untouched. Unit tests also use
+            // this path, which is safe for Robolectric.
+            Log.w(TAG, "SQLCipher unavailable; using in-memory database only, nothing will be persisted to disk")
+            _encryptionStatus.value = DatabaseEncryptionStatus.DEGRADED_RECOVERY_IN_MEMORY
+            return Room.inMemoryDatabaseBuilder(
                 appContext,
-                AppDatabase::class.java,
-                LEGACY_DB_NAME
-            ).addMigrations(MIGRATION_1_2)
-
-            if (com.example.BuildConfig.DEBUG && System.getenv("ALLOW_DESTRUCTIVE_MIGRATION") != null) {
-                builder.fallbackToDestructiveMigration(true)
-            }
-            return builder.build()
+                AppDatabase::class.java
+            ).build()
         }
 
         /**

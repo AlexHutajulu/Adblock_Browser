@@ -96,8 +96,11 @@ class SettingsManager(private val context: Context) {
         get() = prefs.getBoolean(KEY_BACKGROUND_PLAYBACK, true) // Default ON per requirements
         set(value) = prefs.edit().putBoolean(KEY_BACKGROUND_PLAYBACK, value).apply()
 
+    // SECURITY FIX (audit 2026-10-26): secure by default. FLAG_SECURE is set
+    // in MainActivity when this is false, so screenshots / screen recording
+    // are blocked unless the user explicitly opts in.
     var allowScreenRecording: Boolean
-        get() = prefs.getBoolean(KEY_ALLOW_SCREEN_RECORDING, true)
+        get() = prefs.getBoolean(KEY_ALLOW_SCREEN_RECORDING, false)
         set(value) = prefs.edit().putBoolean(KEY_ALLOW_SCREEN_RECORDING, value).apply()
 
     var isInspectToolsEnabled: Boolean

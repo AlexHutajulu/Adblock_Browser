@@ -1144,7 +1144,9 @@ object BrowserExtensionManager {
                         connectTimeout = 10000
                         readTimeout = 10000
                         requestMethod = "GET"
-                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) Chrome/124.0.0.0 Mobile Safari/537.36")
+                        // SECURITY FIX (audit 2026-10-26): do not spoof an
+                        // outdated Chrome/124 UA for extension downloads.
+                        setRequestProperty("User-Agent", "AlexBrowser/2.0")
                     }
                     val status = conn.responseCode
                     if (status in intArrayOf(

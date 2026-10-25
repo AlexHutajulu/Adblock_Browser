@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <!-- SECURITY FIX (audit 2026-10-26): cleartext is denied by default. HTTP
+         browsing now relies on the HTTPS-Only upgrade in SecurityGuardEngine;
+         a site that cannot be upgraded is blocked instead of loading over HTTP. -->
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

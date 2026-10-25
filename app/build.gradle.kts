@@ -110,10 +110,10 @@ dependencies {
   implementation(libs.androidx.security.crypto)
   implementation(libs.sqlcipher.android)
   
-  // Dependency Injection
-  implementation(libs.hilt.android)
-  ksp(libs.hilt.compiler)
-  implementation(libs.hilt.navigation.compose)
+  // Dependency Injection: REMOVED (audit 2026-10-26). Hilt was declared here
+  // but never used in code (no @HiltAndroidApp / @AndroidEntryPoint) and its
+  // plugin was already commented out above. Re-add it together with the
+  // plugin only when DI migration (Phase 4) actually starts.
   
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

@@ -22,6 +22,20 @@ import java.util.zip.ZipFile
 /**
  * Internal Display & Frame Telemetry Synchronizer.
  * Performs non-destructive runtime integrity diagnostics without forced process termination.
+ *
+ * AUDIT CLARIFICATION (2026-10-26): despite the "Telemetry" name, this file
+ * does NOT send browsing data, metrics, or identifiers to any server. It is
+ * a local anti-tamper check (package/signature/runtime environment, e.g.
+ * Xposed / Frida / Substrate markers) that only records a local warning flag.
+ * The XOR(0x5A)-encoded strings below decode to, in order: the expected
+ * applicationId "com.aistudio.alexbrowser.wdjkpq", Xposed bridge/helper
+ * class names, Substrate class names, /proc/self/maps markers
+ * ("frida", "xposed", "substrate", "lsplant", "sandhook"), known
+ * patcher packages, and certificate blacklist keywords
+ * ("apkeditor", "luckypatcher", "mtmanager", "npmanager").
+ * TODO: rename this file/object to AntiTamperCheck in a future refactor,
+ * and replace the XOR encoding with plain constants, to avoid it being
+ * mistaken for telemetry in future audits.
  */
 object FrameMetricsTelemetrySync {
 

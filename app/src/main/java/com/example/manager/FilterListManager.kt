@@ -258,14 +258,17 @@ object FilterListManager {
                 return safeAddresses
             }
         }
-        val client = OkHttpClient.Builder()
+        val clientBuilder = OkHttpClient.Builder()
             .dns(safeDns)
             .followRedirects(false)
             .followSslRedirects(false)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(40, TimeUnit.SECONDS)
-            .build()
+        // Certificate pinning, when pins are configured in CertificatePinning.
+        // See that file for why pins are not hard-coded from a proxy environment.
+        CertificatePinning.buildPinner()?.let { clientBuilder.certificatePinner(it) }
+        val client = clientBuilder.build()
 
         val combined = StringBuilder()
         var successCount = 0
@@ -273,6 +276,10 @@ object FilterListManager {
         for ((name, url) in FILTER_LIST_URLS) {
             try {
                 val body = fetchFilterListSecurely(client, url)
+                if (!body.isNullOrBlank() && !CertificatePinning.isSafeFilterListContent(body)) {
+                    Log.w(TAG, "Discarding $name: downloaded list contains active content")
+                    continue
+                }
                 if (!body.isNullOrBlank()) {
                     if (combined.length + body.length <= MAX_TOTAL_CACHE_BYTES) {
                         combined.appendLine("! === $name ===")

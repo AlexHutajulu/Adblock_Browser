@@ -216,7 +216,7 @@ fun CustomWebView(
                         }
 
                         if (viewModel.displayMode.value != DisplayMode.MOBILE) {
-                            userAgentString = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                            userAgentString = desktopUserAgentFromDefault(context)
                             textZoom = viewModel.desktopZoomScale.value.coerceIn(50, 200)
                         } else {
                             textZoom = 100
@@ -403,6 +403,25 @@ fun CustomWebView(
                                 Log.w(TAG, "Blocked invalid or oversized blob data URI payload")
                                 return
                             }
+                            // SECURITY FIX (audit 2026-10-26): a web page must not
+                            // be able to trigger an executable download through
+                            // the JS bridge. Normal user-initiated downloads in
+                            // AppDownloadManager are unaffected by this check.
+                            val lowerMime = mimeType.trim().lowercase()
+                            val lowerName = fileName.trim().lowercase()
+                            val blockedExecutable = lowerMime in setOf(
+                                "application/vnd.android.package-archive",
+                                "application/x-msdownload",
+                                "application/x-executable",
+                                "application/x-sh",
+                                "application/x-msdos-program"
+                            ) || lowerName.endsWith(".apk") || lowerName.endsWith(".exe") ||
+                                lowerName.endsWith(".dll") || lowerName.endsWith(".bat") ||
+                                lowerName.endsWith(".sh") || lowerName.endsWith(".dex")
+                            if (blockedExecutable) {
+                                Log.w(TAG, "Blocked executable blob download via JS bridge: $lowerName ($lowerMime)")
+                                return
+                            }
                             val originHost = com.example.manager.SecurityGuardEngine.extractHost(activePageUrl)
                             val cleanName = fileName.ifBlank {
                                 android.webkit.URLUtil.guessFileName(blobUrl, null, mimeType)
@@ -543,6 +562,12 @@ fun CustomWebView(
                                     isStrictMode = privacyShieldMode == com.example.manager.PrivacyShieldMode.STRICT
                                 )
                                 view?.evaluateJavascript(afpScript, null)
+                            } else if (isWhitelisted || isAfpBypass) {
+                                // SECURITY FIX (audit 2026-10-26): a protection
+                                // bypass must never be silent. Log host only,
+                                // never the full URL, so the trade-off is visible
+                                // in diagnostics and in the security snapshot.
+                                Log.w(TAG, "Protection reduced for host=$host: whitelisted=$isWhitelisted afpBypass=$isAfpBypass")
                             }
                         }
 
@@ -1290,7 +1315,7 @@ fun CustomWebView(
                 }
             }
 
-            val desktopUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            val desktopUserAgent = desktopUserAgentFromDefault(context)
             val wantsDesktop = displayMode != DisplayMode.MOBILE
             val isCurrentlyDesktop = webView.settings.userAgentString?.let {
                 it.contains("Windows NT") || it.contains("X11; Linux x86_64")
@@ -1445,6 +1470,36 @@ private fun isSamePageRedirect(urlA: String, urlB: String): Boolean {
         hostA == hostB && pathA == pathB && queryA == queryB
     } catch (_: Exception) {
         false
+    }
+}
+
+/**
+ * SECURITY / COMPAT FIX (audit 2026-10-26): derive the desktop UA from the
+ * system WebView UA instead of hard-coding Chrome/124. A frozen 2024 UA
+ * breaks site compatibility and makes the browser fingerprintable. The
+ * fallback below is only used if the system UA cannot be read.
+ */
+private fun desktopUserAgentFromDefault(context: android.content.Context): String {
+    return try {
+        val defaultUa = android.webkit.WebSettings.getDefaultUserAgent(context)
+        // Replace the platform segment "(Linux; Android ...)" with a desktop
+        // segment, so the existing isCurrentlyDesktop check (X11 / Windows NT)
+        // keeps working and the UA is not reset on every recomposition.
+        val open = defaultUa.indexOf('(')
+        val close = defaultUa.indexOf(')', open)
+        val withDesktopPlatform = if (open >= 0 && close > open) {
+            defaultUa.substring(0, open + 1) + "X11; Linux x86_64" + defaultUa.substring(close)
+        } else {
+            defaultUa
+        }
+        val desktop = withDesktopPlatform
+            .replace("; wv", "")
+            .replace(" Mobile Safari/", " Safari/")
+            .replace("Mobile ", "")
+        if (desktop.contains("Chrome/") && desktop.contains("X11; Linux x86_64")) desktop
+        else "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    } catch (_: Exception) {
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     }
 }
 
