@@ -147,45 +147,7 @@ fun ChromeShortcutAndJsBar(
                     )
                 }
 
-                // 1. Screen Orientation Quick Switcher (Auto-Tilt Sensor / Landscape / Portrait)
-                if (enabledShortcuts.contains(BuiltInShortcut.ROTATE_SCREEN.id)) {
-                    val isTiltedLandscape = tiltState.quadrant.isLandscape
-                    val (orientLabel, orientIcon, isLocked) = when (orientationMode) {
-                        ScreenOrientationMode.AUTO_SENSOR -> {
-                            val sub = if (!tiltState.isSensorActive) "Auto-Tilt"
-                            else if (isTiltedLandscape) "Auto • Miring" else "Auto • Tegak"
-                            Triple(sub, Icons.Outlined.ScreenRotation, false)
-                        }
-                        ScreenOrientationMode.LANDSCAPE -> {
-                            val mismatch = tiltState.isSensorActive && !isTiltedLandscape
-                            Triple(if (mismatch) "Landscape (Tegak)" else "Landscape", Icons.Outlined.StayCurrentLandscape, true)
-                        }
-                        ScreenOrientationMode.PORTRAIT -> {
-                            val mismatch = tiltState.isSensorActive && isTiltedLandscape
-                            Triple(if (mismatch) "Portrait (Miring)" else "Portrait", Icons.Outlined.StayCurrentPortrait, true)
-                        }
-                    }
-                    ShortcutActionPill(
-                        label = orientLabel,
-                        icon = orientIcon,
-                        isHighlighted = isLocked,
-                        containerColor = if (isLocked) accentColor.copy(alpha = 0.18f) else chipBg,
-                        contentColor = if (isLocked) accentColor else chipContent,
-                        borderColor = if (isLocked) accentColor.copy(alpha = 0.6f) else null,
-                        testTag = "shortcut_rotate_screen",
-                        onClick = {
-                            val next = viewModel.cycleScreenOrientationMode()
-                            val msg = when (next) {
-                                ScreenOrientationMode.AUTO_SENSOR -> "Mode Layar: Auto-Tilt Sensor Aktif (Otomatis mendeteksi saat perangkat miring)"
-                                ScreenOrientationMode.LANDSCAPE -> "Mode Layar: Dikunci ke Landscape (Mendatar)"
-                                ScreenOrientationMode.PORTRAIT -> "Mode Layar: Dikunci ke Portrait (Tegak)"
-                            }
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
-
-                // 2. Chrome Extensions Hub & External Importer Pill
+                // Chrome Extensions Hub & External Importer Pill
                 val enabledExtCount = remember(extensions) { extensions.count { it.isEnabled } }
                 ShortcutActionPill(
                     label = "Ekstensi ($enabledExtCount)",
@@ -961,63 +923,7 @@ fun CustomJsStudioDialog(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            item {
-                                val studioTilt by viewModel.deviceTiltState.collectAsState()
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainerLow
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = "Rotasi Layar & Sensor Kemiringan (Auto-Tilt)",
-                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                                                )
-                                                Text(
-                                                    text = if (studioTilt.isSensorActive && studioTilt.angleDegrees >= 0) {
-                                                        "Sensor Aktif: ${studioTilt.angleDegrees}° • ${studioTilt.quadrant.label}"
-                                                    } else {
-                                                        "Mendeteksi otomatis posisi Portrait & Landscape saat perangkat dimiringkan"
-                                                    },
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                            Icon(
-                                                imageVector = Icons.Outlined.ScreenRotation,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            FilterChip(
-                                                selected = orientationMode == ScreenOrientationMode.AUTO_SENSOR,
-                                                onClick = { viewModel.setScreenOrientationMode(ScreenOrientationMode.AUTO_SENSOR) },
-                                                label = { Text("Auto-Tilt Sensor") }
-                                            )
-                                            FilterChip(
-                                                selected = orientationMode == ScreenOrientationMode.LANDSCAPE,
-                                                onClick = { viewModel.setScreenOrientationMode(ScreenOrientationMode.LANDSCAPE) },
-                                                label = { Text("Landscape") }
-                                            )
-                                            FilterChip(
-                                                selected = orientationMode == ScreenOrientationMode.PORTRAIT,
-                                                onClick = { viewModel.setScreenOrientationMode(ScreenOrientationMode.PORTRAIT) },
-                                                label = { Text("Portrait") }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+
 
                             item {
                                 Text(

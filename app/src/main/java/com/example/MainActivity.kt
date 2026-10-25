@@ -106,6 +106,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Install AdBlock ServiceWorker interceptor before WebView content starts
+        com.example.manager.AdBlockServiceWorker.install()
+
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]
 

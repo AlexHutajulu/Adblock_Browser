@@ -73,15 +73,17 @@ object CosmeticFilterInjector {
     }
 
     fun inject(webView: WebView, customSelectors: List<String> = emptyList(), pageUrl: String? = null) {
-        if (!pageUrl.isNullOrBlank()) {
-            val host = try {
+        val host = if (!pageUrl.isNullOrBlank()) {
+            try {
                 android.net.Uri.parse(pageUrl).host?.lowercase()?.removePrefix("www.") ?: ""
             } catch (_: Exception) {
                 ""
             }
-            if (com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { host == it || host.endsWith(".$it") }) {
-                return
-            }
+        } else {
+            ""
+        }
+        if (host.isNotEmpty() && com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { host == it || host.endsWith(".$it") }) {
+            return
         }
 
         val rules = FilterListManager.getCachedRules()
@@ -92,11 +94,11 @@ object CosmeticFilterInjector {
             if (isSafeCssSelector(sel)) safeSelectors.add(sel.trim())
         }
 
-        // Only include strictly verified EasyList selectors (capped at 220 to keep CSS parsing instantaneous)
-        rules?.cosmeticSelectors
+        // Per-domain cosmetic selectors from ABP rule engine (capped at 1500)
+        rules?.ruleSet?.cosmetic?.selectorsFor(host)
             ?.asSequence()
             ?.filter { isSafeCssSelector(it) }
-            ?.take(220)
+            ?.take(1500)
             ?.forEach { safeSelectors.add(it.trim()) }
 
         if (safeSelectors.isEmpty()) return

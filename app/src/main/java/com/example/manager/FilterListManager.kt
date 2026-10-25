@@ -34,24 +34,27 @@ object FilterListManager {
     internal const val MAX_SINGLE_LIST_BYTES = 8 * 1024 * 1024 // 8 MB per list
     internal const val MAX_TOTAL_CACHE_BYTES = 20 * 1024 * 1024 // 20 MB total cache
     private const val MAX_REDIRECTS = 3
-    internal const val MAX_RULE_LINE_LENGTH = 512
-    internal const val MAX_BLOCK_DOMAINS = 60_000
-    internal const val MAX_WHITELIST_DOMAINS = 5_000
-    internal const val MAX_BLOCK_PATTERNS = 1_500
-    internal const val MAX_COSMETIC_SELECTORS = 2_000
+    internal const val MAX_RULE_LINE_LENGTH = 2048
+    internal const val MAX_NET_RULES = 150_000
+    internal const val MAX_COSMETIC_RULES = 80_000
 
     // Sumber filter list publik — semua gratis dan open source (wajib HTTPS)
     private val FILTER_LIST_URLS = mapOf(
-        "easylist"    to "https://easylist.to/easylist/easylist.txt",
-        "easyprivacy" to "https://easylist.to/easylist/easyprivacy.txt",
-        "peterlowe"   to "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0"
+        "easylist"        to "https://easylist.to/easylist/easylist.txt",
+        "easyprivacy"     to "https://easylist.to/easylist/easyprivacy.txt",
+        "peterlowe"       to "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0",
+        "ublock-filters"  to "https://ublockorigin.github.io/uAssets/filters/filters.txt",
+        "ublock-badware"  to "https://ublockorigin.github.io/uAssets/filters/badware.txt",
+        "ublock-privacy"  to "https://ublockorigin.github.io/uAssets/filters/privacy.txt",
+        "ublock-unbreak"  to "https://ublockorigin.github.io/uAssets/filters/unbreak.txt"
     )
 
     data class ParsedRules(
-        val blockDomains: HashSet<String>,       // domain exact/subdomain block
-        val blockPatterns: List<Regex>,           // path/wildcard regex rules
-        val whitelistDomains: HashSet<String>,    // exception @@ rules
-        val cosmeticSelectors: List<String>       // ## CSS selectors
+        val ruleSet: AbpRuleEngine.RuleSet,
+        val blockDomains: HashSet<String>,
+        val whitelistDomains: HashSet<String>,
+        val blockPatterns: List<Regex> = emptyList(),
+        val cosmeticSelectors: List<String> = emptyList()
     )
 
     @Volatile
@@ -310,132 +313,42 @@ object FilterListManager {
             result
         } else {
             Log.w(TAG, "All downloads failed, using built-in fallback list")
-            FALLBACK_DOMAINS.joinToString("\n") { "||$it^" }
+            loadBundledFallback(context)
+        }
+    }
+
+    internal fun loadBundledFallback(context: Context): String {
+        return try {
+            context.assets.open("adblock/fallback.txt").bufferedReader(Charsets.UTF_8).use {
+                it.readText()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load bundled fallback filter list: ${e.message}")
+            ""
         }
     }
 
     /**
-     * Parse Adblock Plus / uBlock Origin format dengan pembatasan memori & proteksi ReDoS.
+     * Parse Adblock Plus / uBlock Origin format via AbpRuleEngine.
      */
     internal fun parseRules(raw: String): ParsedRules {
-        val blockDomains = HashSet<String>(10000)
-        val blockPatterns = mutableListOf<Regex>()
-        val whitelistDomains = HashSet<String>(1000)
-        val cosmeticSelectors = mutableListOf<String>()
+        val ruleSet = AbpRuleEngine.build(raw.lineSequence())
+        val blockDomains = HashSet<String>(ruleSet.domainOnlyBlock.keys)
+        val whitelistDomains = HashSet<String>(ruleSet.domainOnlyAllow.keys)
+        val cosmeticSelectors = ruleSet.cosmetic.globalSelectors
 
-        var parsed = 0
-        var skipped = 0
+        Log.d(
+            TAG,
+            "Parsed: block=${ruleSet.blockRules.size} allow=${ruleSet.allowRules.size} domains=${blockDomains.size} skipped=${ruleSet.totalRulesSkipped} cosmetic=${cosmeticSelectors.size}"
+        )
 
-        for (line in raw.lineSequence()) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty() ||
-                trimmed.length > MAX_RULE_LINE_LENGTH ||
-                trimmed.startsWith("!") ||
-                trimmed.startsWith("[")
-            ) {
-                skipped++
-                continue
-            }
-
-            when {
-                // Whitelist exception: @@||domain^
-                trimmed.startsWith("@@||") -> {
-                    if (whitelistDomains.size < MAX_WHITELIST_DOMAINS) {
-                        val domain = trimmed.removePrefix("@@||")
-                            .substringBefore("$")
-                            .substringBefore("^")
-                            .substringBefore("/")
-                            .lowercase(Locale.US)
-                        if (domain.isNotEmpty() && !domain.contains("*")) {
-                            whitelistDomains.add(domain)
-                        }
-                    }
-                }
-
-                // Cosmetic filter: ##selector (global only, skip domain-specific or scriptlets/extended pseudo-selectors)
-                trimmed.startsWith("##") && !trimmed.startsWith("##+js") && !trimmed.startsWith("#@#") -> {
-                    if (cosmeticSelectors.size < MAX_COSMETIC_SELECTORS) {
-                        val selector = trimmed.removePrefix("##").trim()
-                        if (selector.isNotEmpty() &&
-                            !selector.contains(":-abp-") &&
-                            !selector.contains(":has-text") &&
-                            !selector.contains(":xpath") &&
-                            !selector.contains(":matches-css") &&
-                            !selector.contains(":upward") &&
-                            !selector.contains(":remove") &&
-                            !selector.contains("{")
-                        ) {
-                            cosmeticSelectors.add(selector)
-                        }
-                    }
-                }
-
-                // Domain block: ||example.com^
-                trimmed.startsWith("||") && trimmed.contains("^") &&
-                !trimmed.contains("*") && !trimmed.drop(2).substringBefore("^").contains("/") -> {
-                    if (blockDomains.size < MAX_BLOCK_DOMAINS) {
-                        val domain = trimmed.removePrefix("||")
-                            .substringBefore("^")
-                            .substringBefore("$")
-                            .lowercase(Locale.US)
-                        if (domain.isNotEmpty() && domain.contains(".")) {
-                            blockDomains.add(domain)
-                        }
-                    }
-                }
-
-                // Path/wildcard pattern (hanya aturan ||... dan menolak raw /regex/ demi mencegah ReDoS)
-                trimmed.startsWith("||") -> {
-                    if (blockPatterns.size < MAX_BLOCK_PATTERNS) {
-                        try {
-                            val regexStr = abpRuleToRegex(trimmed)
-                            if (regexStr.isNotEmpty()) {
-                                blockPatterns.add(Regex(regexStr, RegexOption.IGNORE_CASE))
-                            }
-                        } catch (_: Exception) {
-                            // Skip invalid regex
-                        }
-                    }
-                }
-            }
-            parsed++
-        }
-
-        Log.d(TAG, "Parsed: $parsed rules | blockDomains=${blockDomains.size} | patterns=${blockPatterns.size} | whitelist=${whitelistDomains.size} | cosmetic=${cosmeticSelectors.size}")
-
-        return ParsedRules(blockDomains, blockPatterns, whitelistDomains, cosmeticSelectors)
+        return ParsedRules(
+            ruleSet = ruleSet,
+            blockDomains = blockDomains,
+            whitelistDomains = whitelistDomains,
+            blockPatterns = emptyList(),
+            cosmeticSelectors = cosmeticSelectors
+        )
     }
-
-    internal fun abpRuleToRegex(rule: String): String {
-        val withoutOptions = rule.substringBefore("$").trim()
-        if (!withoutOptions.startsWith("||")) return ""
-        val core = withoutOptions.removePrefix("||").trim()
-        if (core.isEmpty() || core.length > 256) return ""
-        // Batasi jumlah wildcard '*' agar tidak memicu catastrophic backtracking (ReDoS)
-        if (core.count { it == '*' } > 6) return ""
-
-        val sb = StringBuilder("(?:^|://|\\.)")
-        for (ch in core) {
-            when (ch) {
-                '^' -> sb.append("([/?#]|$)")
-                '*' -> sb.append("[^/]*")
-                '.', '+', '?', '(', ')', '[', ']', '{', '}', '$', '|', '\\' -> {
-                    sb.append('\\').append(ch)
-                }
-                else -> sb.append(ch)
-            }
-        }
-        return sb.toString()
-    }
-
-    private val FALLBACK_DOMAINS = setOf(
-        "doubleclick.net", "googleadservices.com", "googlesyndication.com",
-        "adservice.google.com", "adnxs.com", "criteo.com", "outbrain.com",
-        "taboola.com", "pubmatic.com", "rubiconproject.com", "openx.net",
-        "adroll.com", "media.net", "propellerads.com", "exoclick.com",
-        "google-analytics.com", "analytics.google.com", "hotjar.com",
-        "mixpanel.com", "amplitude.com", "segment.com", "statcounter.com",
-        "facebook.net", "connect.facebook.net"
-    )
 }
 

@@ -178,6 +178,7 @@ fun CustomWebView(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                    com.example.manager.DocumentStartCosmetics.install(this)
                     isFocusable = true
                     isFocusableInTouchMode = true
 
@@ -439,6 +440,19 @@ fun CustomWebView(
                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                             }
                         }
+
+                        @android.webkit.JavascriptInterface
+                        fun getCosmeticCss(host: String): String {
+                            if (viewModel.adBlockMode.value == com.example.manager.AdBlockMode.OFF) return ""
+                            val cleanHost = host.trim().lowercase().removePrefix("www.")
+                            if (cleanHost.isBlank()) return ""
+                            val isWhitelisted = viewModel.adBlockDisabledDomains.value.any { d ->
+                                val clean = d.trim().lowercase().removePrefix("www.")
+                                clean.isNotEmpty() && (cleanHost == clean || cleanHost.endsWith(".$clean"))
+                            }
+                            if (isWhitelisted) return ""
+                            return com.example.manager.DocumentStartCosmetics.buildCosmeticCssForHost(cleanHost)
+                        }
                     }, "AlexBrowserNative")
 
                     // Only attach DevTools JS Bridge when Inspect Tools is explicitly enabled by user
@@ -463,6 +477,7 @@ fun CustomWebView(
 
                             if (nextMode != lastAlexShieldMode) {
                                 alexShieldV5Client.setMode(nextMode)
+                                com.example.manager.AdBlockServiceWorker.setMode(nextMode)
                                 lastAlexShieldMode = nextMode
                             }
 

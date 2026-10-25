@@ -157,35 +157,12 @@ fun BrowserScreen(
         }
     }
 
-    // Reactive Screen Orientation Controller (Auto-Tilt Sensor / Landscape / Portrait)
+    // Screen Orientation follows the user's system device rotation setting directly.
+    // If system auto-rotate is OFF, device stays locked; if ON, it rotates naturally.
     val hostActivity = context as? android.app.Activity
-    LaunchedEffect(screenOrientationMode, deviceTiltState.quadrant, deviceTiltState.isSensorActive, nativeFullscreenView) {
-        if (nativeFullscreenView == null && hostActivity != null) {
-            val targetOrientation = when (screenOrientationMode) {
-                com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> {
-                    if (deviceTiltState.isSensorActive && deviceTiltState.angleDegrees >= 0) {
-                        when (deviceTiltState.quadrant) {
-                            com.example.manager.PhysicalTiltQuadrant.PORTRAIT_UPRIGHT ->
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            com.example.manager.PhysicalTiltQuadrant.LANDSCAPE_LEFT ->
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                            com.example.manager.PhysicalTiltQuadrant.LANDSCAPE_RIGHT ->
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-                            com.example.manager.PhysicalTiltQuadrant.PORTRAIT_INVERTED ->
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-                        }
-                    } else {
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-                    }
-                }
-                com.example.manager.ScreenOrientationMode.LANDSCAPE ->
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                com.example.manager.ScreenOrientationMode.PORTRAIT ->
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            }
-            if (hostActivity.requestedOrientation != targetOrientation) {
-                hostActivity.requestedOrientation = targetOrientation
-            }
+    LaunchedEffect(Unit) {
+        if (hostActivity != null && hostActivity.requestedOrientation != android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+            hostActivity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -940,93 +917,7 @@ fun BrowserScreen(
             }
         }
 
-        // Smart Tilt Detection Floating Prompt (Appears when locked in Portrait/Landscape and device is physically tilted)
-        val isTiltMismatch = remember(screenOrientationMode, deviceTiltState, smartTiltDismissedQuadrant) {
-            if (!deviceTiltState.isSensorActive || deviceTiltState.angleDegrees < 0) false
-            else if (smartTiltDismissedQuadrant == deviceTiltState.quadrant) false
-            else when (screenOrientationMode) {
-                com.example.manager.ScreenOrientationMode.PORTRAIT -> deviceTiltState.quadrant.isLandscape
-                com.example.manager.ScreenOrientationMode.LANDSCAPE -> !deviceTiltState.quadrant.isLandscape
-                com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> false
-            }
-        }
 
-        AnimatedVisibility(
-            visible = isTiltMismatch && !isElementZapperActive && !isImmersivePageFullscreen,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 16.dp, vertical = 76.dp)
-        ) {
-            val targetMode = if (deviceTiltState.quadrant.isLandscape) {
-                com.example.manager.ScreenOrientationMode.LANDSCAPE
-            } else {
-                com.example.manager.ScreenOrientationMode.PORTRAIT
-            }
-            val targetName = if (targetMode == com.example.manager.ScreenOrientationMode.LANDSCAPE) "Landscape" else "Portrait"
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.inverseSurface,
-                tonalElevation = 6.dp,
-                shadowElevation = 8.dp,
-                modifier = Modifier.testTag("smart_tilt_suggestion_bar")
-            ) {
-                Row(
-                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ScreenRotation,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.inversePrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Perangkat miring (${deviceTiltState.angleDegrees}°)",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.inverseOnSurface
-                    )
-                    FilledTonalButton(
-                        onClick = {
-                            viewModel.setScreenOrientationMode(targetMode)
-                            Toast.makeText(context, "Layar diputar ke $targetName", Toast.LENGTH_SHORT).show()
-                        },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Text("Ke $targetName", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                    TextButton(
-                        onClick = {
-                            viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.AUTO_SENSOR)
-                            Toast.makeText(context, "Mode Auto-Tilt diaktifkan", Toast.LENGTH_SHORT).show()
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Text(
-                            text = "Auto-Tilt",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.inversePrimary
-                        )
-                    }
-                    IconButton(
-                        onClick = { viewModel.dismissSmartTiltSuggestion() },
-                        modifier = Modifier.size(26.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Abaikan",
-                            tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.7f),
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-                }
-            }
-        }
 
         // Mobile Full-Screen Chrome Overlays (Only when in Mobile DisplayMode; Desktop Mode uses its own structured Sidebar)
         if (!isTablet && displayMode != DisplayMode.DESKTOP) {
@@ -2133,23 +2024,6 @@ fun TabletOrMobileToolbar(
                             onClick = {
                                 showOverflowMenu = false
                                 viewModel.requestFullScreenToolToggle()
-                            }
-                        )
-
-                        DropdownMenuItem(
-                            text = {
-                                val modeName = when (currentOrientation) {
-                                    com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> "Auto Sensor"
-                                    com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Landscape"
-                                    com.example.manager.ScreenOrientationMode.PORTRAIT -> "Portrait"
-                                }
-                                Text("Putar Layar ($modeName)")
-                            },
-                            leadingIcon = { Icon(Icons.Outlined.ScreenRotation, contentDescription = null) },
-                            onClick = {
-                                showOverflowMenu = false
-                                val next = viewModel.cycleScreenOrientationMode()
-                                Toast.makeText(context, "Orientasi: ${next.name}", Toast.LENGTH_SHORT).show()
                             }
                         )
 
@@ -4163,52 +4037,6 @@ fun DesktopTabBar(
             }
         }
 
-        Spacer(modifier = Modifier.width(4.dp))
-
-        // Right Window Status Cluster: Auto-Tilt Orientation Badge & Mobile Switch
-        val orientShortLabel = when (orientationMode) {
-            com.example.manager.ScreenOrientationMode.AUTO_SENSOR ->
-                if (tiltState.isSensorActive && tiltState.quadrant.isLandscape) "Auto•L" else "Auto•P"
-            com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Land"
-            com.example.manager.ScreenOrientationMode.PORTRAIT -> "Port"
-        }
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = if (orientationMode != com.example.manager.ScreenOrientationMode.AUTO_SENSOR)
-                accentColor.copy(alpha = 0.16f)
-            else MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier
-                .padding(bottom = 4.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable {
-                    val next = viewModel.cycleScreenOrientationMode()
-                    val modeMsg = when (next) {
-                        com.example.manager.ScreenOrientationMode.AUTO_SENSOR -> "Auto-Tilt Sensor (Otomatis Miring)"
-                        com.example.manager.ScreenOrientationMode.LANDSCAPE -> "Dikunci Landscape"
-                        com.example.manager.ScreenOrientationMode.PORTRAIT -> "Dikunci Portrait"
-                    }
-                    Toast.makeText(context, "Orientasi: $modeMsg", Toast.LENGTH_SHORT).show()
-                }
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.ScreenRotation,
-                    contentDescription = "Orientasi Layar",
-                    tint = accentColor,
-                    modifier = Modifier.size(13.dp)
-                )
-                Text(
-                    text = orientShortLabel,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
     }
 }
 
@@ -4601,33 +4429,6 @@ fun DesktopToolbar(
                                             }
                                         }
                                     }
-                                }
-
-                                // Structured Header 2: Quick Orientation & Auto-Tilt Selector
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    FilterChip(
-                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.AUTO_SENSOR,
-                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.AUTO_SENSOR) },
-                                        label = { Text("Auto-Tilt", fontSize = 11.sp) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    FilterChip(
-                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.LANDSCAPE,
-                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.LANDSCAPE) },
-                                        label = { Text("Landscape", fontSize = 11.sp) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    FilterChip(
-                                        selected = currentOrientation == com.example.manager.ScreenOrientationMode.PORTRAIT,
-                                        onClick = { viewModel.setScreenOrientationMode(com.example.manager.ScreenOrientationMode.PORTRAIT) },
-                                        label = { Text("Portrait", fontSize = 11.sp) },
-                                        modifier = Modifier.weight(1f)
-                                    )
                                 }
 
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

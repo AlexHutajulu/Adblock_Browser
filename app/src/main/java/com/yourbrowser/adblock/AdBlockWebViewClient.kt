@@ -141,7 +141,7 @@ class AdBlockWebViewClient(
 
     // ── Main intercept ────────────────────────────────────────────────────────
 
-    fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+    fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
         val mode = currentMode.get()
         val trackerEnabled = trackerBlockingEnabled.get()
         val trackerOnlyActive = (mode == PrivacyMode.OFF && trackerEnabled && trackerActiveWhenOff.get())
@@ -174,9 +174,14 @@ class AdBlockWebViewClient(
         }
 
         val lower = url.lowercase(Locale.US)
-        val blockReason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost)
+        val resType = com.example.manager.AbpRuleEngine.inferType(url, accept)
+        val blockReason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost, resType)
 
-        cache.put(cacheKey, blockReason ?: "")
+        val isFiltersLoaded = com.example.manager.FilterListManager.isLoaded()
+        // Keputusan "diizinkan" TIDAK di-cache sebelum daftar filter siap (isLoaded())
+        if (blockReason != null || isFiltersLoaded) {
+            cache.put(cacheKey, blockReason ?: "")
+        }
 
         return if (blockReason != null) {
             blockedCount.incrementAndGet()
@@ -189,17 +194,30 @@ class AdBlockWebViewClient(
 
     fun shouldBlockNavigationRedirect(url: String, mainPageUrl: String, hasGesture: Boolean): Boolean {
         if (currentMode.get() == PrivacyMode.OFF) return false
-        if (hasGesture) return false  // user initiated — jangan block
         val host = safeHost(url)
+        val mainHost = safeHost(mainPageUrl)
         if (isSafeDomain(host)) return false
         if (isWhitelistedHost(host)) return false
-        // Hanya block redirect ke domain iklan yang sudah dikenal
-        val isRedirectBlocked = REDIRECT_BLOCK_DOMAINS.any { host == it || host.endsWith(".$it") }
-        if (isRedirectBlocked) {
+        if (isCriticalBypassDomain(host)) return false
+
+        // Navigasi dalam situs yang sama dengan gestur user diizinkan
+        val isSameSite = (host.isNotEmpty() && mainHost.isNotEmpty()) &&
+            (host == mainHost || host.endsWith(".$mainHost") || mainHost.endsWith(".$host"))
+        if (hasGesture && isSameSite) return false
+
+        // Blok domain iklan yang dikenal walau ada gestur (scam/slot redirect)
+        val isKnownAd = REDIRECT_BLOCK_DOMAINS.any { host == it || host.endsWith(".$it") } ||
+            AD_DOMAINS.any { host == it || host.endsWith(".$it") } ||
+            (com.example.manager.FilterListManager.getCachedRules()?.ruleSet?.isDomainBlocked(host) == true)
+
+        if (isKnownAd) {
             blockedCount.incrementAndGet()
             onBlocked?.invoke(url, "popup-redirect")
+            return true
         }
-        return isRedirectBlocked
+
+        if (hasGesture) return false // legitimate cross-site navigation with user gesture
+        return false
     }
 
     // ─── Core rule check ──────────────────────────────────────────────────────
@@ -210,7 +228,8 @@ class AdBlockWebViewClient(
         lowerUrl: String,
         mode: PrivacyMode,
         trackerEnabled: Boolean,
-        streamBoost: Boolean
+        streamBoost: Boolean,
+        resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.OTHER
     ): String? {
         val isFirstParty = pgHost.isNotEmpty() &&
             (reqHost == pgHost || reqHost.endsWith(".$pgHost") || pgHost.endsWith(".$reqHost"))
@@ -264,24 +283,20 @@ class AdBlockWebViewClient(
             }
         }
 
-        // 4. EasyList rules evaluation (strictly third-party to prevent breaking site assets)
-        if (!isFirstParty) {
-            val rules = com.example.manager.FilterListManager.getCachedRules()
-            if (rules != null) {
-                if (rules.whitelistDomains.any { reqHost == it || reqHost.endsWith(".$it") }) return null
-                if (isDomainBlocked(reqHost, rules.blockDomains)) {
-                    val isTrackerLike = lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
-                        lowerUrl.contains("pixel") || lowerUrl.contains("telemetry") ||
-                        TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") } ||
-                        TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }
-                    if (isTrackerLike && !trackerEnabled) return null
-                    return if (isTrackerLike) "easylist-tracker" else "easylist-domain"
-                }
-
-                if (mode == PrivacyMode.AGGRESSIVE) {
-                    for (pattern in rules.blockPatterns) {
-                        if (pattern.containsMatchIn(lowerUrl)) return "easylist-pattern"
-                    }
+        // 4. AbpRuleEngine evaluation — berlaku juga untuk first-party (gaya Brave)
+        val cachedRules = com.example.manager.FilterListManager.getCachedRules()
+        if (cachedRules != null) {
+            val match = cachedRules.ruleSet.shouldBlock(lowerUrl, pgHost, resType)
+            if (match != null) {
+                val isTrackerLike = TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") } ||
+                    lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
+                    lowerUrl.contains("pixel") || lowerUrl.contains("telemetry") ||
+                    lowerUrl.contains("beacon") ||
+                    TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }
+                if (isTrackerLike) {
+                    if (trackerEnabled) return "filter-tracker"
+                } else {
+                    if (adBlockActive) return "filter-rule"
                 }
             }
         }
@@ -308,6 +323,7 @@ class AdBlockWebViewClient(
     // ─── Safe domains (NEVER blocked) ────────────────────────────────────────
 
     private fun isSafeDomain(host: String): Boolean {
+        if (SAFE_EXCLUSIONS.any { host == it || host.endsWith(".$it") }) return false
         return SAFE_DOMAINS.any { host == it || host.endsWith(".$it") }
     }
 
@@ -618,6 +634,14 @@ class AdBlockWebViewClient(
 })();
         """.trimIndent().toByteArray(Charsets.UTF_8)
 
+        private val SAFE_EXCLUSIONS = setOf(
+            "adservice.google.com",
+            "fundingchoicesmessages.google.com",
+            "analytics.google.com",
+            "pagead2.googlesyndication.com",
+            "googleads.g.doubleclick.net"
+        )
+
         /**
          * SAFE_DOMAINS — tidak pernah diblok dalam kondisi apapun.
          */
@@ -635,10 +659,7 @@ class AdBlockWebViewClient(
             "arkoselabs.com", "funcaptcha.com", "geetest.com",
             "auth0.com", "okta.com", "onelogin.com",
             // CDN infra
-            "cloudflare.com", "cloudflare.net",
-            "cloudfront.net",
-            "fastly.net", "fastly.com",
-            "akamaihd.net", "akamai.net", "akamai.com",
+            "cloudflare.com",
             "cdn.jsdelivr.net", "jsdelivr.net",
             "cdnjs.cloudflare.com",
             "unpkg.com",
@@ -656,8 +677,6 @@ class AdBlockWebViewClient(
             // Media & streaming
             "spotify.com",
             // Common API / infra
-            "amazonaws.com", "s3.amazonaws.com",
-            "azureedge.net", "azure.com",
             "web.whatsapp.com"
         )
 
@@ -688,13 +707,12 @@ class AdBlockWebViewClient(
 
         /** Tracker — diblok semua mode */
         private val TRACKER_DOMAINS = setOf(
-            "google-analytics.com", "analytics.google.com",
             "hotjar.com", "clarity.ms", "mixpanel.com",
             "amplitude.com", "segment.com", "segment.io",
             "fullstory.com", "logrocket.com", "inspectlet.com",
             "mouseflow.com", "crazyegg.com",
             "scorecardresearch.com", "quantserve.com",
-            "facebook.net", "connect.facebook.net", "pixel.facebook.com",
+            "pixel.facebook.com",
             "analytics.tiktok.com",
             "ads.linkedin.com", "snap.licdn.com",
             "static.ads-twitter.com"

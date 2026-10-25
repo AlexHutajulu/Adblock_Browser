@@ -121,16 +121,6 @@ object CustomJsToolbarManager {
   }
   function showExitBtn(){
     rmExit();
-    var btn=d.createElement("button");
-    btn.id=X;
-    btn.type="button";
-    btn.textContent="⤫ Keluar Full Screen";
-    btn.style.cssText="position:fixed;bottom:18px;right:16px;z-index:2147483646;background:rgba(15,23,42,0.84);color:#f8fafc;border:1px solid rgba(255,255,255,0.22);border-radius:999px;padding:7px 14px;font:600 12px system-ui,-apple-system,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,0.35);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity 0.35s ease;opacity:0.92;";
-    var fadeTimer=setTimeout(function(){btn.style.opacity="0.22";},2600);
-    btn.addEventListener("pointerenter",function(){clearTimeout(fadeTimer);btn.style.opacity="0.95";});
-    btn.addEventListener("touchstart",function(){clearTimeout(fadeTimer);btn.style.opacity="0.95";fadeTimer=setTimeout(function(){btn.style.opacity="0.22";},2600);},{passive:true});
-    btn.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();exFs();},true);
-    (d.body||r).appendChild(btn);
   }
   function exFs(){
     rm();
