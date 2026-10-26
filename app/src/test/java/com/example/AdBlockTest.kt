@@ -234,9 +234,19 @@ class AdBlockTest {
 
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val shortcuts = com.example.manager.CustomJsToolbarManager.getEnabledBuiltInShortcuts(context)
-        assertTrue(
-            "FULLSCREEN_PAGE shortcut must be enabled by default",
+        assertFalse(
+            "FULLSCREEN_PAGE shortcut must be disabled by default (default off)",
             shortcuts.contains(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
+        )
+        // Verify user can explicitly enable it and state persists
+        com.example.manager.CustomJsToolbarManager.setEnabledBuiltInShortcuts(
+            context,
+            setOf(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
+        )
+        assertTrue(
+            "FULLSCREEN_PAGE shortcut is enabled when saved",
+            com.example.manager.CustomJsToolbarManager.getEnabledBuiltInShortcuts(context)
+                .contains(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
         )
         assertTrue(
             "Default JS scripts must include tpl_fullscreen_kiwi_pro",

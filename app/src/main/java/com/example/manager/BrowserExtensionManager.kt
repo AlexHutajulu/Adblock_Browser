@@ -42,7 +42,7 @@ data class BrowserExtension(
     val cssCode: String = "",
     val matches: List<String> = listOf("*"), // "*" for all sites, or domain list e.g. ["youtube.com", "google.com"]
     val runAt: ExtensionRunAt = ExtensionRunAt.DOCUMENT_END,
-    val isEnabled: Boolean = true,
+    val isEnabled: Boolean = false,
     val isPinnedToToolbar: Boolean = false,
     val allowInPrivate: Boolean = false,
     val sourceType: ExtensionSourceType = ExtensionSourceType.CUSTOM_CODE,
@@ -54,6 +54,7 @@ object BrowserExtensionManager {
     private const val PREFS_NAME = "chrome_extensions_prefs_v1"
     private const val KEY_EXTENSIONS_JSON = "installed_extensions_json_v1"
     private const val KEY_SEEDED_DEFAULTS = "seeded_default_extensions_v1"
+    private const val KEY_DEFAULT_OFF_V2 = "builtin_extensions_default_off_v2"
 
     val BUILT_IN_EXTENSIONS: List<BrowserExtension> = listOf(
         BrowserExtension(
@@ -96,7 +97,7 @@ object BrowserExtensionManager {
             iconName = "FastForward",
             matches = listOf("youtube.com", "youtu.be", "*"),
             runAt = ExtensionRunAt.DOCUMENT_END,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = true,
             sourceType = ExtensionSourceType.BUILT_IN,
             jsCode = """
@@ -138,7 +139,7 @@ object BrowserExtensionManager {
             author = "Web Freedom Tools",
             iconName = "LockOpen",
             runAt = ExtensionRunAt.DOCUMENT_END,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = false,
             sourceType = ExtensionSourceType.BUILT_IN,
             cssCode = """
@@ -170,7 +171,7 @@ object BrowserExtensionManager {
             author = "Media Tools",
             iconName = "Speed",
             runAt = ExtensionRunAt.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = true,
             sourceType = ExtensionSourceType.BUILT_IN,
             jsCode = """
@@ -210,7 +211,7 @@ object BrowserExtensionManager {
             author = "Privacy Community",
             iconName = "Cookie",
             runAt = ExtensionRunAt.DOCUMENT_END,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = false,
             sourceType = ExtensionSourceType.BUILT_IN,
             cssCode = """
@@ -239,7 +240,7 @@ object BrowserExtensionManager {
             author = "Audio Labs",
             iconName = "VolumeUp",
             runAt = ExtensionRunAt.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = true,
             sourceType = ExtensionSourceType.BUILT_IN,
             jsCode = """
@@ -274,7 +275,7 @@ object BrowserExtensionManager {
             author = "Media Tools",
             iconName = "Collections",
             runAt = ExtensionRunAt.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = false,
             sourceType = ExtensionSourceType.BUILT_IN,
             jsCode = """
@@ -333,7 +334,7 @@ object BrowserExtensionManager {
             author = "Reader Labs",
             iconName = "MenuBook",
             runAt = ExtensionRunAt.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isPinnedToToolbar = false,
             sourceType = ExtensionSourceType.BUILT_IN,
             jsCode = """
@@ -410,7 +411,7 @@ object BrowserExtensionManager {
             return BUILT_IN_EXTENSIONS
         }
         val builtInById = BUILT_IN_EXTENSIONS.associateBy { it.id }
-        val parsed = parseExtensionsJson(raw)
+        var parsed = parseExtensionsJson(raw)
             .filter { it.id != "ext_fullscreen_kiwi_pro" && !it.name.equals("Full Screen Immersive Tool", ignoreCase = true) }
             .map { ext ->
                 val latestBuiltIn = builtInById[ext.id]
@@ -424,6 +425,12 @@ object BrowserExtensionManager {
                     ext
                 }
             }
+        // Migrasi sekali: bawaan yang tersimpan aktif dimatikan. Setelah ini, status hanya berubah saat user mengaktifkannya.
+        if (!prefs.getBoolean(KEY_DEFAULT_OFF_V2, false)) {
+            parsed = parsed.map { if (it.sourceType == ExtensionSourceType.BUILT_IN) it.copy(isEnabled = false) else it }
+            saveExtensions(context, parsed)
+            prefs.edit().putBoolean(KEY_DEFAULT_OFF_V2, true).apply()
+        }
         if (parsed.isEmpty()) return BUILT_IN_EXTENSIONS
 
         // Ensure any new built-in extensions are present
@@ -530,7 +537,7 @@ object BrowserExtensionManager {
 
                 val isExternalSource = sourceType == ExtensionSourceType.EXTERNAL_FILE ||
                     sourceType == ExtensionSourceType.EXTERNAL_URL
-                val defaultEnabled = !isExternalSource
+                val defaultEnabled = false
 
                 result.add(
                     BrowserExtension(

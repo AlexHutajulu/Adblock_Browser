@@ -45,13 +45,20 @@ object DocumentStartCosmetics {
 
     fun buildCosmeticCssForHost(host: String): String {
         val rules = FilterListManager.getCachedRules() ?: return ""
+        // Filter DULU, baru batasi jumlah: selektor tidak aman tidak boleh memakan kuota.
         val selectors = rules.ruleSet.cosmetic.selectorsFor(host)
-            .take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+            .asSequence()
             .filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
+            .filter { CosmeticFilterInjector.isSafeCssSelector(it) }
+            .take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+            .toList()
 
         if (selectors.isEmpty()) return ""
 
-        // Satu aturan per selektor untuk mencegah satu selektor korup merusak seluruh stylesheet
-        return selectors.joinToString("\n") { "$it { display: none !important; }" }
+        // Satu aturan per selektor: satu selektor korup tidak merusak yang lain.
+        return selectors.joinToString("\n") { sel ->
+            "$sel { opacity: 0 !important; pointer-events: none !important; " +
+                "max-height: 1px !important; overflow: hidden !important; }"
+        }
     }
 }

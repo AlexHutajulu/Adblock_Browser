@@ -270,13 +270,8 @@ object HeuristicsEngine {
     )
 
     private val GAMBLING_KEYWORDS = listOf(
-        "lu88",
         "hbet",
-        "vu88",
         "man88",
-        "k88.",
-        "tx88",
-        "du88",
         "x1bet",
         "bet88",
         "kubet",
@@ -284,20 +279,14 @@ object HeuristicsEngine {
         "789bet",
         "okvip",
         "jun88",
-        "hi88",
         "f8bet",
-        "mb66",
-        "123b",
         "fun88",
-        "bk8",
         "rikvip",
-        "cm88",
         "bom88",
         "vsbet",
         "78win",
         "gem88",
         "win79",
-        "bc.game",
         "tokyo77",
         "tokyo88"
     )
@@ -317,7 +306,6 @@ object HeuristicsEngine {
         "/vl-main-adx",
         "/vl-underplayer-adx",
         "/vl-native-adx",
-        "/catfish",
         "/static/js/ads-",
         "/no-adblock-access/",
         "/videoSliderAlt.js",
@@ -325,22 +313,22 @@ object HeuristicsEngine {
         "/aclib.js",
         "/suv5.js",
         "/js/cla/",
-        "/invoke.js",
-        "/bn.js",
-        "/sfp.js",
-        "/on.js",
-        "/apitiny",
-        "ezoic",
-        "AdsScript",
         "/jquery.openxtag.js",
-        "/metrika/tag",
-        "/tag.min.js",
-        "/static/doubleclick/instream",
-        "/signals_log",
-        "/privacy/mutation"
+        "/static/doubleclick/instream"
     )
 
-    
+    private val AD_PATH_PATTERNS_LOWER: List<String> =
+        AD_PATH_PATTERNS.map { it.lowercase(Locale.US) }
+
+    /** Cocokkan kata kunci judi hanya pada label host utuh untuk kata pendek; substring hanya untuk kata panjang. */
+    private fun isGamblingHost(host: String): Boolean {
+        val labels = host.split('.')
+        return GAMBLING_KEYWORDS.any { k ->
+            val key = k.trimEnd('.')
+            if (key.length < 6) labels.any { it == key } else host.contains(key)
+        }
+    }
+
     fun heuristicReason(host: String, lowerUrl: String, isFirstParty: Boolean): String? {
         val cleanHost = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
         if (cleanHost.isEmpty()) return null
@@ -353,11 +341,9 @@ object HeuristicsEngine {
         }
         if (isFirstParty) return null
         // 2. Kata kunci gambling di host
-        for (keyword in GAMBLING_KEYWORDS) {
-            if (cleanHost.contains(keyword)) return "heuristic-gambling"
-        }
+        if (isGamblingHost(cleanHost)) return "heuristic-gambling"
         // 3. Pola path iklan di URL lengkap
-        for (pattern in AD_PATH_PATTERNS) {
+        for (pattern in AD_PATH_PATTERNS_LOWER) {
             if (lowerUrl.contains(pattern)) return "heuristic-path"
         }
         return null

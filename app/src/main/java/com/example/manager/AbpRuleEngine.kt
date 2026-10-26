@@ -300,6 +300,7 @@ object AbpRuleEngine {
         val globalCosmetics = mutableListOf<String>()
         val domainCosmetics = mutableMapOf<String, MutableList<String>>()
         val domainExceptions = mutableMapOf<String, MutableSet<String>>()
+        val globalExceptions = mutableSetOf<String>()
         val scriptletRules = mutableListOf<ScriptletEngine.ScriptletRule>()
 
         var parsedCount = 0
@@ -348,11 +349,12 @@ object AbpRuleEngine {
                     val rawDomains = parts[0].trim()
                     val selector = parts[1].trim()
                     if (selector.isNotEmpty() && selector.length <= MAX_SELECTOR_LENGTH && isSafeCosmeticSelector(selector)) {
-                        for (d in rawDomains.split(',')) {
-                            val cleanD = cleanHost(d)
-                            if (cleanD.isNotEmpty()) {
-                                domainExceptions.getOrPut(cleanD) { mutableSetOf() }.add(selector)
-                            }
+                        val cleanList = rawDomains.split(',').map { cleanHost(it) }.filter { it.isNotEmpty() }
+                        if (cleanList.isEmpty()) {
+                            // #@#selector tanpa domain = exception global, berlaku untuk semua situs
+                            globalExceptions.add(selector)
+                        } else {
+                            for (cleanD in cleanList) domainExceptions.getOrPut(cleanD) { mutableSetOf() }.add(selector)
                         }
                         parsedCount++
                         continue
@@ -532,7 +534,7 @@ object AbpRuleEngine {
             allowRules = generalAllowList,
             blockRules = generalBlockList,
             cosmetic = CosmeticRuleSet(
-                globalSelectors = globalCosmetics,
+                globalSelectors = globalCosmetics.filter { it !in globalExceptions },
                 domainSelectors = domainCosmetics,
                 domainExceptions = domainExceptions
             ),

@@ -87,11 +87,11 @@ class EngineTest {
 
     @Test
     fun testHeuristicGamblingAndPathThirdPartyOnly() {
-        // Third-party + kata kunci gambling di host -> blok
+        // Third-party + kata kunci gambling di host -> blok (label utuh untuk kata pendek)
         assertEquals(
             "heuristic-gambling",
             HeuristicsEngine.heuristicReason(
-                "kubet123.example.com", "https://kubet123.example.com/", false
+                "kubet.example.com", "https://kubet.example.com/", false
             )
         )
         // First-party dengan path iklan -> TIDAK diblok lapisan heuristik

@@ -61,7 +61,7 @@ data class CustomToolbarScript(
     val jsCode: String,
     val autoRunMode: JsAutoRunMode = JsAutoRunMode.MANUAL_ONLY,
     val targetDomains: Set<String> = emptySet(),
-    val isEnabled: Boolean = true,
+    val isEnabled: Boolean = false,
     val isBuiltInTemplate: Boolean = false
 )
 
@@ -71,6 +71,8 @@ object CustomJsToolbarManager {
     private const val PREFS_NAME = "custom_js_toolbar_prefs"
     private const val KEY_SCRIPTS_JSON = "custom_js_scripts_v1"
     private const val KEY_SEEDED_DEFAULT = "seeded_default_templates_v1"
+    private const val KEY_TEMPLATES_DEFAULT_OFF_V2 = "templates_default_off_v2"
+    private const val KEY_SHORTCUTS_DEFAULT_OFF_V2 = "shortcuts_default_off_v2"
     private const val KEY_SHORTCUT_BAR_VISIBLE = "shortcut_bar_visible"
     private const val KEY_SHORTCUT_BAR_USER_SET = "shortcut_bar_user_explicit_set_v2"
     private const val KEY_SHORTCUT_BAR_POSITION = "shortcut_bar_position"
@@ -233,7 +235,7 @@ object CustomJsToolbarManager {
             description = "Masuk/keluar mode Layar Penuh (Full Screen) imersif dengan dukungan scroll penuh, deteksi warna latar otomatis, dan prompt sentuh cerdas.",
             jsCode = UPGRADED_FULLSCREEN_SCRIPT,
             autoRunMode = JsAutoRunMode.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isBuiltInTemplate = true
         ),
         CustomToolbarScript(
@@ -258,7 +260,7 @@ object CustomJsToolbarManager {
                 })();
             """.trimIndent(),
             autoRunMode = JsAutoRunMode.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isBuiltInTemplate = true
         ),
         CustomToolbarScript(
@@ -288,7 +290,7 @@ object CustomJsToolbarManager {
                 })();
             """.trimIndent(),
             autoRunMode = JsAutoRunMode.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isBuiltInTemplate = true
         ),
         CustomToolbarScript(
@@ -318,7 +320,7 @@ object CustomJsToolbarManager {
                 })();
             """.trimIndent(),
             autoRunMode = JsAutoRunMode.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isBuiltInTemplate = true
         ),
         CustomToolbarScript(
@@ -344,7 +346,7 @@ object CustomJsToolbarManager {
                 })();
             """.trimIndent(),
             autoRunMode = JsAutoRunMode.MANUAL_ONLY,
-            isEnabled = true,
+            isEnabled = false,
             isBuiltInTemplate = true
         ),
         CustomToolbarScript(
@@ -543,13 +545,18 @@ object CustomJsToolbarManager {
         }
 
         val builtInById = TEMPLATE_GALLERY.associateBy { it.id }
-        val parsed = parseScriptsFromJson(rawJson).map { script ->
+        var parsed = parseScriptsFromJson(rawJson).map { script ->
             val latestTpl = builtInById[script.id]
             if (latestTpl != null && script.isBuiltInTemplate) {
                 script.copy(jsCode = latestTpl.jsCode)
             } else {
                 script
             }
+        }
+        if (!prefs.getBoolean(KEY_TEMPLATES_DEFAULT_OFF_V2, false)) {
+            parsed = parsed.map { if (it.isBuiltInTemplate) it.copy(isEnabled = false) else it }
+            saveScripts(context, parsed)
+            prefs.edit().putBoolean(KEY_TEMPLATES_DEFAULT_OFF_V2, true).apply()
         }
         if (parsed.isEmpty()) return TEMPLATE_GALLERY
 
@@ -626,7 +633,7 @@ object CustomJsToolbarManager {
                         jsCode = jsCode,
                         autoRunMode = mode,
                         targetDomains = domains,
-                        isEnabled = obj.optBoolean("isEnabled", true),
+                        isEnabled = obj.optBoolean("isEnabled", false),
                         isBuiltInTemplate = obj.optBoolean("isBuiltInTemplate", false)
                     )
                 )
@@ -787,16 +794,15 @@ object CustomJsToolbarManager {
 
     fun getEnabledBuiltInShortcuts(context: Context): Set<String> {
         val prefs = EncryptedPreferencesManager.getPreferences(context)
-        val defaultSet = BuiltInShortcut.entries.map { it.id }.toSet()
-        val saved = prefs.getStringSet(KEY_ENABLED_SHORTCUTS, null)?.toMutableSet() ?: return defaultSet
-        if (!prefs.getBoolean("migrated_fullscreen_shortcut_v1", false)) {
-            saved.add(BuiltInShortcut.FULLSCREEN_PAGE.id)
+        // Default OFF: tidak ada shortcut aktif sampai user mengaktifkannya. Pilihan user lalu disimpan.
+        if (!prefs.getBoolean(KEY_SHORTCUTS_DEFAULT_OFF_V2, false)) {
             prefs.edit()
-                .putStringSet(KEY_ENABLED_SHORTCUTS, saved)
-                .putBoolean("migrated_fullscreen_shortcut_v1", true)
+                .remove(KEY_ENABLED_SHORTCUTS)
+                .putBoolean(KEY_SHORTCUTS_DEFAULT_OFF_V2, true)
                 .apply()
+            return emptySet()
         }
-        return saved
+        return prefs.getStringSet(KEY_ENABLED_SHORTCUTS, null)?.toSet() ?: emptySet()
     }
 
     fun setEnabledBuiltInShortcuts(context: Context, ids: Set<String>) {
