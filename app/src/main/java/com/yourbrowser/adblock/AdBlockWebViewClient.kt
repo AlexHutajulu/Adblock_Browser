@@ -121,6 +121,43 @@ class AdBlockWebViewClient(
         val host = safeHost(url)
         if (isWhitelistedHost(host) || isCriticalBypassDomain(host)) return
         view.evaluateJavascript(buildEarlyScript(host), null)
+        // Lapisan : pustaka scriptlet + pemanggilan per-aturan
+        // dari daftar filter (AbpRuleEngine), dan processor data YouTube.
+        // SAFE dicek ulang di sini karena onPageStarted tidak melewati
+        // shouldInterceptRequest.
+        if (!isSafeDomain(host)) {
+            if (scriptletLibraryJs == null) {
+                scriptletLibraryJs = loadAssetJs(view, "adblock/scriptlet_library.js")
+            }
+            val library = scriptletLibraryJs.orEmpty()
+            if (library.isNotBlank()) {
+                view.evaluateJavascript(library, null)
+                val ruleSet = com.example.manager.FilterListManager.getCachedRules()?.ruleSet?.scriptlets
+                if (ruleSet != null) {
+                    val invocation = com.example.manager.ScriptletEngine.buildInvocationJs(host, ruleSet)
+                    if (invocation.isNotBlank()) view.evaluateJavascript(invocation, null)
+                }
+            }
+            if (host.contains("youtube.com") || host.contains("music.youtube.com")) {
+                if (youtubeProcessorJs == null) {
+                    youtubeProcessorJs = loadAssetJs(view, "adblock/youtube_processor.js")
+                }
+                val processor = youtubeProcessorJs.orEmpty()
+                if (processor.isNotBlank()) view.evaluateJavascript(processor, null)
+            }
+        }
+    }
+
+    // Cache aset JS lapisan (dimuat sekali dari assets, lalu dipakai ulang).
+    @Volatile private var scriptletLibraryJs: String? = null
+    @Volatile private var youtubeProcessorJs: String? = null
+
+    private fun loadAssetJs(view: WebView, assetPath: String): String {
+        return try {
+            view.context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     fun onPageFinished(view: WebView, url: String?) {
@@ -298,6 +335,22 @@ class AdBlockWebViewClient(
                 } else {
                     if (adBlockActive) return "filter-rule"
                 }
+            }
+        }
+
+        // 5. Lapisan heuristik  (lapisan) — SETELAH ABP, dan hanya
+        //    kalau adBlock aktif. SAFE/whitelist/critical sudah disaring di
+        //    shouldInterceptRequest sebelum checkRules dipanggil, dan segmen
+        //    streaming sudah dikembalikan di awal fungsi ini. Kata kunci
+        //    gambling & pola path di HeuristicsEngine hanya berlaku
+        //    third-party, jadi first-party yang sah tidak ikut terblok.
+        if (adBlockActive) {
+            // Exception ABP menang atas heuristik: kalau URL ini eksplisit
+            // diizinkan @@, heuristik tidak boleh memblokirnya.
+            val explicitlyAllowed = cachedRules?.ruleSet?.matchesAllowRule(lowerUrl, pgHost, resType) == true
+            if (!explicitlyAllowed) {
+                val heuristic = HeuristicsEngine.heuristicReason(reqHost, lowerUrl, isFirstParty)
+                if (heuristic != null) return heuristic
             }
         }
 
@@ -518,6 +571,8 @@ class AdBlockWebViewClient(
                 SURROGATE_PREBID_JS
             lowerUrl.contains("analytics") || lowerUrl.contains("gtag") || lowerUrl.contains("fbevents") ->
                 SURROGATE_ANALYTICS_JS
+            lowerUrl.contains("inplayer-adx") || lowerUrl.contains("player-adx") ->
+                SURROGATE_INPLAYER_ADX_JS
             else ->
                 SURROGATE_GENERIC_AD_JS
         }
@@ -607,6 +662,19 @@ class AdBlockWebViewClient(
   pb.que.push=function(fn){if(typeof fn==='function'){try{fn();}catch(e){}}return 1;};
   pb.cmd.push=pb.que.push;
   window.pbjs=pb;
+})();
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+
+        private val SURROGATE_INPLAYER_ADX_JS = """
+(function(){
+  window.show_adx = 0;
+  window.COUNT_VAST = 0;
+  window.vastAdx = [];
+  window.bannerAdx = [];
+  window.funcGetvastAdx = function() { return []; };
+  window.funcJWonReadyVAST = function() {};
+  window.bannerAdxAllowed = function() { return false; };
+  window.hideInplayerBanner = function() {};
 })();
         """.trimIndent().toByteArray(Charsets.UTF_8)
 
