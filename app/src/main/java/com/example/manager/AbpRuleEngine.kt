@@ -161,7 +161,8 @@ object AbpRuleEngine {
         val blockRules: List<NetworkRule>,
         val cosmetic: CosmeticRuleSet,
         val totalRulesParsed: Int,
-        val totalRulesSkipped: Int
+        val totalRulesSkipped: Int,
+        val scriptlets: ScriptletEngine.ScriptletRuleSet = ScriptletEngine.ScriptletRuleSet(emptyList())
     ) {
         fun isDomainBlocked(host: String): Boolean {
             val clean = cleanHost(host)
@@ -258,6 +259,47 @@ object AbpRuleEngine {
 
             return null
         }
+
+        /**
+         * Apakah URL ini secara eksplisit diizinkan oleh aturan exception
+         * (@@) ABP? Berbeda dari shouldBlock()==null, yang juga berarti
+         * "tidak ada aturan yang cocok". Dibutuhkan oleh lapisan heuristik
+         *  di AdBlockWebViewClient: exception ABP HARUS menang atas
+         * heuristik, kalau tidak domain yang sengaja di-exception (mis.
+         * untuk login/pembayaran) bisa ikut terblok heuristik.
+         */
+        fun matchesAllowRule(
+            url: String,
+            sourceHost: String,
+            resourceType: ResourceType = ResourceType.OTHER
+        ): Boolean {
+            val reqHost = cleanHost(extractHost(url))
+            val srcHost = cleanHost(sourceHost)
+            val isThirdParty = isThirdParty(reqHost, srcHost)
+            var h = reqHost
+            while (h.isNotEmpty()) {
+                domainOnlyAllow[h]?.forEach { rule ->
+                    if (rule.matchesType(resourceType) &&
+                        rule.matchesParty(isThirdParty) &&
+                        rule.matchesSourceDomain(srcHost)
+                    ) {
+                        return true
+                    }
+                }
+                val dot = h.indexOf('.')
+                h = if (dot != -1) h.substring(dot + 1) else ""
+            }
+            for (rule in allowRules) {
+                if (rule.matchesType(resourceType) &&
+                    rule.matchesParty(isThirdParty) &&
+                    rule.matchesSourceDomain(srcHost) &&
+                    rule.matchesUrl(url, reqHost)
+                ) {
+                    return true
+                }
+            }
+            return false
+        }
     }
 
     fun build(lines: Sequence<String>): RuleSet {
@@ -269,6 +311,7 @@ object AbpRuleEngine {
         val globalCosmetics = mutableListOf<String>()
         val domainCosmetics = mutableMapOf<String, MutableList<String>>()
         val domainExceptions = mutableMapOf<String, MutableSet<String>>()
+        val scriptletRules = mutableListOf<ScriptletEngine.ScriptletRule>()
 
         var parsedCount = 0
         var skippedCount = 0
@@ -284,7 +327,23 @@ object AbpRuleEngine {
                 continue
             }
 
-            // Skip scriptlets, extended, and unsupported filters
+            // Scriptlet (lapisan ): diparsing, BUKAN dibuang lagi.
+            // Aturan ##+js / #@#+js / #%#//scriptlet masuk ke ScriptletEngine,
+            // lalu dieksekusi per-domain lewat scriptlet_library.js di early script.
+            if (trimmed.contains("##+js") || trimmed.contains("#@#+js") ||
+                trimmed.contains("#%#//scriptlet") || trimmed.contains("#@$#//scriptlet")
+            ) {
+                val scriptlet = ScriptletEngine.parseScriptletRule(trimmed)
+                if (scriptlet != null && scriptletRules.size < ScriptletEngine.MAX_SCRIPTLET_RULES) {
+                    scriptletRules.add(scriptlet)
+                    parsedCount++
+                } else {
+                    skippedCount++
+                }
+                continue
+            }
+
+            // Skip extended and unsupported filters (scriptlet sudah ditangani di atas)
             if (trimmed.startsWith("#?#") || trimmed.startsWith("#\$#") || trimmed.startsWith("#%#") ||
                 trimmed.contains("##+js") || trimmed.contains("#@#+js") ||
                 trimmed.contains("##^") || trimmed.startsWith("/") && trimmed.endsWith("/")
@@ -489,7 +548,8 @@ object AbpRuleEngine {
                 domainExceptions = domainExceptions
             ),
             totalRulesParsed = parsedCount,
-            totalRulesSkipped = skippedCount
+            totalRulesSkipped = skippedCount,
+            scriptlets = ScriptletEngine.ScriptletRuleSet(scriptletRules)
         )
     }
 
