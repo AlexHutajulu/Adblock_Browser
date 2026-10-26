@@ -105,7 +105,7 @@ class AbpRuleEngineTest {
             "||example.com^\$redirect=noopjs",
             "||bad.com^\$badfilter",
             "||csp.com^\$csp=default-src 'none'",
-            "##+js(set, test, true)"
+            "#?#.unsupported-extended"
         )
         val ruleSet = AbpRuleEngine.build(rules.asSequence())
         assertEquals(5, ruleSet.totalRulesSkipped)

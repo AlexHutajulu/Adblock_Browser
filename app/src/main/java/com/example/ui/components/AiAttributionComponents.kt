@@ -64,6 +64,18 @@ fun ChatGptLogoIcon(
 }
 
 @Composable
+fun MetaMuseLogoIcon(
+    modifier: Modifier = Modifier.size(20.dp)
+) {
+    Image(
+        painter = painterResource(id = R.drawable.img_logo_meta_muse),
+        contentDescription = "Meta Muse Logo",
+        contentScale = ContentScale.Fit,
+        modifier = modifier
+    )
+}
+
+@Composable
 fun AiAssistantBadge(
     name: String,
     iconBgColor: Color,
@@ -72,7 +84,7 @@ fun AiAssistantBadge(
     logo: @Composable () -> Unit
 ) {
     Surface(
-        modifier = modifier.testTag("ai_badge_${name.lowercase()}"),
+        modifier = modifier.testTag("ai_badge_${name.lowercase().replace(" ", "_")}"),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
@@ -103,14 +115,17 @@ fun AiAssistantBadge(
                 text = name,
                 style = MaterialTheme.typography.labelLarge.copy(
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = if (isCompact) 12.sp else 13.sp
+                    fontSize = if (isCompact) 11.5.sp else 13.sp
                 ),
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DeveloperAiAttributionSection(
     modifier: Modifier = Modifier,
@@ -121,7 +136,7 @@ fun DeveloperAiAttributionSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(if (showCardContainer) 16.dp else 4.dp),
+                .padding(if (showCardContainer) (if (isCompact) 12.dp else 16.dp) else 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Developer Credit Pill
@@ -144,9 +159,11 @@ fun DeveloperAiAttributionSection(
                         text = "Developed by Alex Hutajulu",
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = if (isCompact) 12.5.sp else 13.5.sp
+                            fontSize = if (isCompact) 12.sp else 13.5.sp
                         ),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
             }
@@ -154,23 +171,26 @@ fun DeveloperAiAttributionSection(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Browser ini dikembangkan dengan bantuan AI",
+                text = "Browser ini dikembangkan dengan kolaborasi 4 AI:",
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontWeight = FontWeight.Medium,
                     fontSize = if (isCompact) 11.5.sp else 12.sp
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 3 Modern AI Badge Cards: Gemini, Claude, ChatGPT using the uploaded logo images
-            val badgeIconSize: Dp = if (isCompact) 17.dp else 19.dp
-            Row(
+            // 4 Modern AI Badge Cards: Gemini, Claude, ChatGPT, Meta Muse
+            val badgeIconSize: Dp = if (isCompact) 16.dp else 19.dp
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                maxItemsInEachRow = 4
             ) {
                 AiAssistantBadge(
                     name = "Gemini",
@@ -194,6 +214,14 @@ fun DeveloperAiAttributionSection(
                     isCompact = isCompact
                 ) {
                     ChatGptLogoIcon(modifier = Modifier.size(badgeIconSize))
+                }
+
+                AiAssistantBadge(
+                    name = "Meta Muse",
+                    iconBgColor = Color(0xFFEBF3FF),
+                    isCompact = isCompact
+                ) {
+                    MetaMuseLogoIcon(modifier = Modifier.size(badgeIconSize))
                 }
             }
         }

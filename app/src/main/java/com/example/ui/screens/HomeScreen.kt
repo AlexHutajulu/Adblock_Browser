@@ -38,6 +38,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.*
+import com.example.ui.components.DeveloperAiAttributionSection
 import com.example.ui.viewmodel.BrowserViewModel
 
 private data class ChromeShortcutItem(
@@ -689,6 +690,14 @@ fun HomeScreen(
                 trackerBlockEnabled = trackerBlockEnabled,
                 trackersBlockedCount = trackersBlockedCount,
                 modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 4 AI Collaborator Attribution (Gemini, Claude, ChatGPT, Meta Muse)
+            DeveloperAiAttributionSection(
+                isCompact = !isWide,
+                showCardContainer = true
             )
 
             Spacer(modifier = Modifier.height(24.dp))

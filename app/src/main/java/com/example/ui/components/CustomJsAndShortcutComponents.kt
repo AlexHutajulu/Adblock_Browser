@@ -110,8 +110,8 @@ fun ChromeShortcutAndJsBar(
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = barBg,
-        tonalElevation = 1.dp
+        color = Color.Transparent,
+        tonalElevation = 0.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(

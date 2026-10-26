@@ -44,11 +44,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
@@ -128,7 +131,7 @@ fun BrowserScreen(
     DisposableEffect(context) {
         val orientationListener = object : android.view.OrientationEventListener(
             context,
-            android.hardware.SensorManager.SENSOR_DELAY_UI
+            android.hardware.SensorManager.SENSOR_DELAY_NORMAL
         ) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN) {
@@ -1185,157 +1188,262 @@ private fun ChromeMobileBottomBar(
     onOpenSecurityShield: () -> Unit,
     adBlockEnabled: Boolean
 ) {
-    val barBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
-    val iconTint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val iconTint = if (isIncognito) ChromeIncognitoText else if (isDark) Color(0xFFF1F5F9) else Color(0xFF1E293B)
     val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = barBg,
-        tonalElevation = 2.dp
-    ) {
-        Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
-            HorizontalDivider(
-                thickness = 0.5.dp,
-                color = if (isIncognito) Color.White.copy(alpha = 0.1f)
-                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+    // Liquid Glass Multi-Stop Refractive Gradients (iOS 28 Aesthetic)
+    val glassBrush = remember(isIncognito, isDark) {
+        if (isIncognito) {
+            Brush.verticalGradient(
+                listOf(
+                    Color(0xEE273042),
+                    Color(0xCC1A212E),
+                    Color(0xEE222938)
+                )
             )
+        } else if (isDark) {
+            Brush.verticalGradient(
+                listOf(
+                    Color(0xEE1E293B),
+                    Color(0xCC0F172A),
+                    Color(0xEE1A2234)
+                )
+            )
+        } else {
+            Brush.verticalGradient(
+                listOf(
+                    Color(0xF5FFFFFF),
+                    Color(0xD9F3F6FA),
+                    Color(0xEDFFFFFF)
+                )
+            )
+        }
+    }
 
-            // Integrated Collapsible Shortcut Bar (Auto Putar, Ekstensi, + Toolbar JS, etc.) inside Bottom Nav Dock
-            AnimatedVisibility(
-                visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
-                enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-                exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    ChromeShortcutAndJsBar(
-                        viewModel = viewModel,
-                        activeTab = activeTab,
-                        activeWebView = activeWebView,
-                        isIncognito = isIncognito,
-                        onOpenFindInPage = onOpenFindInPage,
-                        onOpenSecurityShield = onOpenSecurityShield
-                    )
-                    HorizontalDivider(
-                        thickness = 0.5.dp,
-                        color = if (isIncognito) Color.White.copy(alpha = 0.08f)
-                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                    )
-                }
-            }
+    // Specular liquid reflection border
+    val glassBorderBrush = remember(isIncognito, isDark) {
+        Brush.verticalGradient(
+            listOf(
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.50f else 0.85f),
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.15f else 0.40f),
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.05f else 0.20f)
+            )
+        )
+    }
 
-            Row(
+    val dockShape = RoundedCornerShape(26.dp)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier
+                .widthIn(max = 560.dp)
+                .fillMaxWidth()
+                .shadow(
+                    elevation = 14.dp,
+                    shape = dockShape,
+                    spotColor = if (isDark || isIncognito) Color(0x99000000) else Color(0x350F172A),
+                    ambientColor = if (isDark || isIncognito) Color(0x66000000) else Color(0x180F172A)
+                )
+                .border(
+                    width = 1.2.dp,
+                    brush = glassBorderBrush,
+                    shape = dockShape
+                ),
+            shape = dockShape,
+            color = Color.Transparent
+        ) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
-                    .padding(horizontal = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+                    .background(glassBrush)
             ) {
-                val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
-                IconButton(
-                    onClick = onBack,
-                    enabled = canNavigateBack,
+                // Top Specular Gleam Arc
+                Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .testTag("mobile_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = if (canNavigateBack) iconTint else iconTint.copy(alpha = 0.32f),
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = onForward,
-                    enabled = activeTab.canGoForward,
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Forward",
-                        tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.32f),
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // Center Chrome "+" New Tab Pill Button
-                FilledTonalIconButton(
-                    onClick = onNewTab,
-                    modifier = Modifier.size(40.dp),
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = if (isIncognito) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainer
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New Tab",
-                        tint = iconTint,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // 1-Tap Collapsible Shortcut Bar Toggle (Auto Putar, Ekstensi, Script JS)
-                IconButton(
-                    onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) },
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("mobile_toggle_shortcut_bar")
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (shortcutBarVisible) accentColor.copy(alpha = 0.16f)
-                                else Color.Transparent
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
-                            contentDescription = if (shortcutBarVisible) "Tutup Pintasan" else "Buka Pintasan & Ekstensi",
-                            tint = if (shortcutBarVisible) accentColor else iconTint.copy(alpha = 0.8f),
-                            modifier = Modifier.size(21.dp)
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    Color.Transparent,
+                                    Color.White.copy(alpha = if (isDark || isIncognito) 0.5f else 0.75f),
+                                    Color.Transparent
+                                )
+                            )
                         )
-                    }
-                }
-
-                // Iconic Chrome Rounded Square Tab Counter
-                ChromeTabCountButton(
-                    count = tabsCount,
-                    isIncognito = isIncognito,
-                    onClick = onOpenTabs
                 )
 
-                // AdShield Quick Button with live blocked badge
-                IconButton(
-                    onClick = onOpenShield,
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    BadgedBox(
-                        badge = {
-                            if (adBlockEnabled && pageBlockedCount > 0) {
-                                Badge(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ) {
-                                    Text(
-                                        text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
-                                        fontSize = 9.sp
-                                    )
-                                }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Collapsible Shortcut Bar with matching Liquid Glass integration
+                    AnimatedVisibility(
+                        visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
+                        enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+                        exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            ChromeShortcutAndJsBar(
+                                viewModel = viewModel,
+                                activeTab = activeTab,
+                                activeWebView = activeWebView,
+                                isIncognito = isIncognito,
+                                onOpenFindInPage = onOpenFindInPage,
+                                onOpenSecurityShield = onOpenSecurityShield
+                            )
+                            HorizontalDivider(
+                                thickness = 0.5.dp,
+                                color = if (isIncognito || isDark) Color.White.copy(alpha = 0.12f)
+                                else Color.Black.copy(alpha = 0.08f)
+                            )
+                        }
+                    }
+
+                    // Main Liquid Glass Taskbar Icons Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
+                        IconButton(
+                            onClick = onBack,
+                            enabled = canNavigateBack,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("mobile_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = if (canNavigateBack) iconTint else iconTint.copy(alpha = 0.28f),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onForward,
+                            enabled = activeTab.canGoForward,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Forward",
+                                tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.28f),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // iOS 28 Center Glowing Liquid Orb "+" New Tab Button
+                        val newTabOrbBrush = remember(isIncognito, accentColor) {
+                            if (isIncognito) {
+                                Brush.linearGradient(
+                                    listOf(ChromeIncognitoAccent, Color(0xFF6366F1))
+                                )
+                            } else {
+                                Brush.linearGradient(
+                                    listOf(Color(0xFF007AFF), Color(0xFF3B82F6), Color(0xFF6366F1))
+                                )
                             }
                         }
-                    ) {
-                        Icon(
-                            imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
-                            contentDescription = "AdShield Guard",
-                            tint = if (adBlockEnabled) MaterialTheme.colorScheme.primary else iconTint.copy(alpha = 0.65f),
-                            modifier = Modifier.size(21.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .shadow(
+                                    elevation = 8.dp,
+                                    shape = CircleShape,
+                                    spotColor = if (isIncognito) ChromeIncognitoAccent else Color(0xFF007AFF)
+                                )
+                                .background(newTabOrbBrush)
+                                .border(1.2.dp, Color.White.copy(alpha = 0.7f), CircleShape)
+                                .clickable(onClick = onNewTab)
+                                .testTag("mobile_new_tab_orb"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "New Tab",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // 1-Tap Collapsible Shortcut Bar Toggle (Lightning Bolt with liquid feedback)
+                        IconButton(
+                            onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("mobile_toggle_shortcut_bar")
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (shortcutBarVisible) accentColor.copy(alpha = 0.22f)
+                                        else Color.Transparent
+                                    )
+                                    .border(
+                                        width = if (shortcutBarVisible) 1.dp else 0.dp,
+                                        color = if (shortcutBarVisible) accentColor.copy(alpha = 0.5f) else Color.Transparent,
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                                    contentDescription = if (shortcutBarVisible) "Tutup Pintasan" else "Buka Pintasan & Ekstensi",
+                                    tint = if (shortcutBarVisible) accentColor else iconTint.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        // Iconic Chrome Rounded Square Tab Counter with Liquid Glass Finish
+                        ChromeTabCountButton(
+                            count = tabsCount,
+                            isIncognito = isIncognito,
+                            onClick = onOpenTabs
                         )
+
+                        // AdShield Quick Button with live blocked badge
+                        IconButton(
+                            onClick = onOpenShield,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (adBlockEnabled && pageBlockedCount > 0) {
+                                        Badge(
+                                            containerColor = Color(0xFF10B981),
+                                            contentColor = Color.White
+                                        ) {
+                                            Text(
+                                                text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
+                                    contentDescription = "AdShield Guard",
+                                    tint = if (adBlockEnabled) Color(0xFF10B981) else iconTint.copy(alpha = 0.65f),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1350,15 +1458,26 @@ fun ChromeTabCountButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val tint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val tint = if (isIncognito) ChromeIncognitoText else if (isDark) Color(0xFFF1F5F9) else Color(0xFF1E293B)
     IconButton(
         onClick = onClick,
-        modifier = modifier.size(44.dp)
+        modifier = modifier.size(48.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(21.dp)
-                .border(1.8.dp, tint, RoundedCornerShape(6.dp)),
+                .size(24.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(
+                    if (isIncognito || isDark) Color.White.copy(alpha = 0.12f)
+                    else Color.Black.copy(alpha = 0.06f)
+                )
+                .border(
+                    1.6.dp,
+                    if (isIncognito || isDark) Color.White.copy(alpha = 0.75f)
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                    RoundedCornerShape(7.dp)
+                ),
             contentAlignment = Alignment.Center
         ) {
             Text(
