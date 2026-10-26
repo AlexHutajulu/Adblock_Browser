@@ -268,6 +268,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _appTheme = MutableStateFlow(settings.appTheme)
     val appTheme = _appTheme.asStateFlow()
 
+    private val _appLanguage = MutableStateFlow(settings.appLanguage)
+    val appLanguage = _appLanguage.asStateFlow()
+
     private val _forceWebPageDarkMode = MutableStateFlow(settings.forceWebPageDarkMode)
     val forceWebPageDarkMode = _forceWebPageDarkMode.asStateFlow()
 
@@ -1373,6 +1376,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _appTheme.value = theme
     }
 
+    fun setAppLanguage(language: com.example.manager.AppLanguage) {
+        settings.appLanguage = language
+        _appLanguage.value = language
+        com.example.manager.AppLanguageManager.applyLocale(getApplication(), language)
+    }
+
     fun setForceWebPageDarkMode(enabled: Boolean) {
         settings.forceWebPageDarkMode = enabled
         _forceWebPageDarkMode.value = enabled
@@ -1418,6 +1427,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         setTrackerBlockEnabled(true)
         setSearchEngine("Google")
         setTheme(AppTheme.SYSTEM)
+        setAppLanguage(com.example.manager.AppLanguage.INDONESIAN)
         settings.clearAdBlockExceptions()
         _adBlockDisabledDomains.value = emptySet()
         val isTablet = getApplication<Application>().resources.configuration.smallestScreenWidthDp >= 600

@@ -251,6 +251,17 @@ class SettingsManager(private val context: Context) {
         }
         set(value) = prefs.edit().putString(KEY_THEME, value.name).apply()
 
+    var appLanguage: AppLanguage
+        get() {
+            val name = prefs.getString(AppLanguageManager.KEY_APP_LANGUAGE, AppLanguage.INDONESIAN.name) ?: AppLanguage.INDONESIAN.name
+            return try {
+                AppLanguage.valueOf(name)
+            } catch (e: Exception) {
+                AppLanguage.INDONESIAN
+            }
+        }
+        set(value) = prefs.edit().putString(AppLanguageManager.KEY_APP_LANGUAGE, value.name).apply()
+
     var forceWebPageDarkMode: Boolean
         get() = prefs.getBoolean("force_web_page_dark_mode", false)
         set(value) = prefs.edit().putBoolean("force_web_page_dark_mode", value).apply()

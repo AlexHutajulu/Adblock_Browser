@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -101,6 +102,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun attachBaseContext(newBase: Context) {
+        val settingsManager = com.example.manager.SettingsManager(newBase)
+        val localizedContext = com.example.manager.AppLanguageManager.createLocalizedContext(newBase, settingsManager.appLanguage)
+        super.attachBaseContext(localizedContext)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
@@ -111,6 +118,7 @@ class MainActivity : ComponentActivity() {
 
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]
+        com.example.manager.AppLanguageManager.applyLocale(this, viewModel.appLanguage.value)
 
         // Start TabPersistenceService to track if the application is swiped away/killed from recent task manager
         try {
@@ -122,6 +130,24 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            val currentLanguage by viewModel.appLanguage.collectAsState()
+
+            LaunchedEffect(currentLanguage) {
+                com.example.manager.AppLanguageManager.applyLocale(this@MainActivity, currentLanguage)
+            }
+
+            val localizedConfig = remember(currentLanguage) {
+                val locale = com.example.manager.AppLanguageManager.resolveEffectiveLocale(currentLanguage)
+                android.content.res.Configuration(resources.configuration).apply {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        setLocales(android.os.LocaleList(locale))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        setLocale(locale)
+                    }
+                }
+            }
+
             // Read settings theme choices dynamically
             val currentTheme by viewModel.appTheme.collectAsState()
             val allowScreenRecording by viewModel.allowScreenRecording.collectAsState()
@@ -141,32 +167,37 @@ class MainActivity : ComponentActivity() {
                 AppTheme.DARK -> true
             }
 
-            MyApplicationTheme(darkTheme = isDarkTheme) {
-                Scaffold(modifier = Modifier.fillMaxSize()) { _ ->
-                    // Custom state based navigation for bulletproof WebView lifecycle management
-                    var currentRoute by remember { mutableStateOf(NavigationRoute.SPLASH) }
+            CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalConfiguration provides localizedConfig,
+                androidx.activity.compose.LocalActivityResultRegistryOwner provides this@MainActivity
+            ) {
+                MyApplicationTheme(darkTheme = isDarkTheme) {
+                    Scaffold(modifier = Modifier.fillMaxSize()) { _ ->
+                        // Custom state based navigation for bulletproof WebView lifecycle management
+                        var currentRoute by remember { mutableStateOf(NavigationRoute.SPLASH) }
 
-                    when (currentRoute) {
-                        NavigationRoute.SPLASH -> {
-                            SplashScreen(
-                                onTimeout = { currentRoute = NavigationRoute.BROWSER }
-                            )
-                        }
-                        NavigationRoute.BROWSER, NavigationRoute.SETTINGS -> {
-                            androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
-                                BrowserScreen(
-                                    viewModel = viewModel,
-                                    onFileChooser = { filePathCallback, fileChooserParams ->
-                                        handleWebViewFileChooser(filePathCallback, fileChooserParams)
-                                    },
-                                    onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS }
+                        when (currentRoute) {
+                            NavigationRoute.SPLASH -> {
+                                SplashScreen(
+                                    onTimeout = { currentRoute = NavigationRoute.BROWSER }
                                 )
-                                
-                                if (currentRoute == NavigationRoute.SETTINGS) {
-                                    SettingsScreen(
+                            }
+                            NavigationRoute.BROWSER, NavigationRoute.SETTINGS -> {
+                                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
+                                    BrowserScreen(
                                         viewModel = viewModel,
-                                        onBack = { currentRoute = NavigationRoute.BROWSER }
+                                        onFileChooser = { filePathCallback, fileChooserParams ->
+                                            handleWebViewFileChooser(filePathCallback, fileChooserParams)
+                                        },
+                                        onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS }
                                     )
+                                    
+                                    if (currentRoute == NavigationRoute.SETTINGS) {
+                                        SettingsScreen(
+                                            viewModel = viewModel,
+                                            onBack = { currentRoute = NavigationRoute.BROWSER }
+                                        )
+                                    }
                                 }
                             }
                         }

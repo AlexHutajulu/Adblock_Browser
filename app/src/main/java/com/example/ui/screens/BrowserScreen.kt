@@ -54,9 +54,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -602,36 +605,14 @@ fun BrowserScreen(
                 onAddressFocusChanged = { isAddressBarFocused = it }
             )
         } else {
-            Scaffold(
-                containerColor = containerBg,
-                bottomBar = {
-                    if (!isTablet && !isImmersivePageFullscreen) {
-                        ChromeMobileBottomBar(
-                            viewModel = viewModel,
-                            activeTab = activeTab,
-                            activeWebView = webViewPool[activeTab.id],
-                            tabsCount = tabs.size,
-                            isIncognito = isIncognito,
-                            pageBlockedCount = pageBlockedCount,
-                            shortcutBarVisible = shortcutBarVisible,
-                            shortcutBarPosition = shortcutBarPosition,
-                            onBack = { viewModel.goBack() },
-                            onForward = { viewModel.goForward() },
-                            onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
-                            onHome = { viewModel.goHome() },
-                            onOpenTabs = { viewModel.setTabsDialogVisible(true) },
-                            onOpenShield = { showShieldDialog = true },
-                            onOpenFindInPage = { showFindInPage = true },
-                            onOpenSecurityShield = { showSecurityDashboard = true },
-                            adBlockEnabled = adBlockEnabled
-                        )
-                    }
-                }
-            ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(containerBg)
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(if (isImmersivePageFullscreen) PaddingValues(0.dp) else innerPadding)
                         .imePadding()
                 ) {
                     // Tablet inline side panel
@@ -879,6 +860,35 @@ fun BrowserScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
+                    }
+                }
+
+                // Liquid Glass Floating Bottom Taskbar Overlay (bening iOS 28 style)
+                if (!isTablet && !isImmersivePageFullscreen) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                    ) {
+                        ChromeMobileBottomBar(
+                            viewModel = viewModel,
+                            activeTab = activeTab,
+                            activeWebView = webViewPool[activeTab.id],
+                            tabsCount = tabs.size,
+                            isIncognito = isIncognito,
+                            pageBlockedCount = pageBlockedCount,
+                            shortcutBarVisible = shortcutBarVisible,
+                            shortcutBarPosition = shortcutBarPosition,
+                            onBack = { viewModel.goBack() },
+                            onForward = { viewModel.goForward() },
+                            onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
+                            onHome = { viewModel.goHome() },
+                            onOpenTabs = { viewModel.setTabsDialogVisible(true) },
+                            onOpenShield = { showShieldDialog = true },
+                            onOpenFindInPage = { showFindInPage = true },
+                            onOpenSecurityShield = { showSecurityDashboard = true },
+                            adBlockEnabled = adBlockEnabled
+                        )
                     }
                 }
             }
@@ -1189,45 +1199,46 @@ private fun ChromeMobileBottomBar(
     adBlockEnabled: Boolean
 ) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val iconTint = if (isIncognito) ChromeIncognitoText else if (isDark) Color(0xFFF1F5F9) else Color(0xFF1E293B)
+    val iconTint = if (isIncognito) Color.White else if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
     val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
 
-    // Liquid Glass Multi-Stop Refractive Gradients (iOS 28 Aesthetic)
+    // Liquid Glass Multi-Stop Crystal Refractive Gradients (Bening iOS 28 Aesthetic)
+    // Completely removes all muddy solid/semi-translucent gray backgrounds
     val glassBrush = remember(isIncognito, isDark) {
         if (isIncognito) {
             Brush.verticalGradient(
                 listOf(
-                    Color(0xEE273042),
-                    Color(0xCC1A212E),
-                    Color(0xEE222938)
+                    Color(0x59000000), // 35% black crystal
+                    Color(0x3B000000), // 23% black crystal
+                    Color(0x4D000000)  // 30% black crystal
                 )
             )
         } else if (isDark) {
             Brush.verticalGradient(
                 listOf(
-                    Color(0xEE1E293B),
-                    Color(0xCC0F172A),
-                    Color(0xEE1A2234)
+                    Color(0x590F172A),
+                    Color(0x3B0F172A),
+                    Color(0x4D0F172A)
                 )
             )
         } else {
             Brush.verticalGradient(
                 listOf(
-                    Color(0xF5FFFFFF),
-                    Color(0xD9F3F6FA),
-                    Color(0xEDFFFFFF)
+                    Color(0x73FFFFFF), // 45% white crystal
+                    Color(0x40FFFFFF), // 25% white crystal
+                    Color(0x66FFFFFF)  // 40% white crystal
                 )
             )
         }
     }
 
-    // Specular liquid reflection border
+    // Specular liquid reflection border (crystal glass rim, no gray borders)
     val glassBorderBrush = remember(isIncognito, isDark) {
         Brush.verticalGradient(
             listOf(
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.50f else 0.85f),
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.15f else 0.40f),
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.05f else 0.20f)
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.45f else 0.80f),
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.15f else 0.35f),
+                Color.White.copy(alpha = if (isDark || isIncognito) 0.05f else 0.15f)
             )
         )
     }
@@ -1245,26 +1256,21 @@ private fun ChromeMobileBottomBar(
             modifier = Modifier
                 .widthIn(max = 560.dp)
                 .fillMaxWidth()
-                .shadow(
-                    elevation = 14.dp,
-                    shape = dockShape,
-                    spotColor = if (isDark || isIncognito) Color(0x99000000) else Color(0x350F172A),
-                    ambientColor = if (isDark || isIncognito) Color(0x66000000) else Color(0x180F172A)
-                )
                 .border(
-                    width = 1.2.dp,
+                    width = 1.dp,
                     brush = glassBorderBrush,
                     shape = dockShape
                 ),
             shape = dockShape,
-            color = Color.Transparent
+            color = Color.Transparent,
+            shadowElevation = 0.dp
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(glassBrush)
             ) {
-                // Top Specular Gleam Arc
+                // Top Specular Gleam Arc (delicate crystal reflection)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1273,7 +1279,7 @@ private fun ChromeMobileBottomBar(
                             Brush.horizontalGradient(
                                 listOf(
                                     Color.Transparent,
-                                    Color.White.copy(alpha = if (isDark || isIncognito) 0.5f else 0.75f),
+                                    Color.White.copy(alpha = if (isDark || isIncognito) 0.40f else 0.70f),
                                     Color.Transparent
                                 )
                             )
@@ -1298,8 +1304,7 @@ private fun ChromeMobileBottomBar(
                             )
                             HorizontalDivider(
                                 thickness = 0.5.dp,
-                                color = if (isIncognito || isDark) Color.White.copy(alpha = 0.12f)
-                                else Color.Black.copy(alpha = 0.08f)
+                                color = Color.White.copy(alpha = if (isIncognito || isDark) 0.15f else 0.30f)
                             )
                         }
                     }
@@ -1459,7 +1464,7 @@ fun ChromeTabCountButton(
     modifier: Modifier = Modifier
 ) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val tint = if (isIncognito) ChromeIncognitoText else if (isDark) Color(0xFFF1F5F9) else Color(0xFF1E293B)
+    val tint = if (isIncognito) Color.White else if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
     IconButton(
         onClick = onClick,
         modifier = modifier.size(48.dp)
@@ -1469,13 +1474,13 @@ fun ChromeTabCountButton(
                 .size(24.dp)
                 .clip(RoundedCornerShape(7.dp))
                 .background(
-                    if (isIncognito || isDark) Color.White.copy(alpha = 0.12f)
-                    else Color.Black.copy(alpha = 0.06f)
+                    if (isIncognito || isDark) Color.White.copy(alpha = 0.15f)
+                    else Color.White.copy(alpha = 0.45f)
                 )
                 .border(
-                    1.6.dp,
-                    if (isIncognito || isDark) Color.White.copy(alpha = 0.75f)
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                    1.2.dp,
+                    if (isIncognito || isDark) Color.White.copy(alpha = 0.65f)
+                    else Color.White.copy(alpha = 0.85f),
                     RoundedCornerShape(7.dp)
                 ),
             contentAlignment = Alignment.Center
@@ -1911,6 +1916,14 @@ fun TabletOrMobileToolbar(
                 }
 
                 // Authentic Google Chrome 3-Dot Overflow Menu
+                val menuConfig = LocalConfiguration.current
+                val menuStatusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+                val menuNavBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                val maxMenuHeight = remember(menuConfig.screenHeightDp, menuStatusBarTop, menuNavBarBottom) {
+                    (menuConfig.screenHeightDp.dp - menuStatusBarTop - menuNavBarBottom - 110.dp).coerceAtLeast(240.dp)
+                }
+                val overflowScrollState = rememberScrollState()
+
                 Box {
                     IconButton(
                         onClick = { showOverflowMenu = true },
@@ -1918,7 +1931,7 @@ fun TabletOrMobileToolbar(
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options",
+                            contentDescription = stringResource(R.string.menu_more_options),
                             tint = contentTint,
                             modifier = Modifier.size(22.dp)
                         )
@@ -1927,7 +1940,10 @@ fun TabletOrMobileToolbar(
                     DropdownMenu(
                         expanded = showOverflowMenu,
                         onDismissRequest = { showOverflowMenu = false },
-                        modifier = Modifier.widthIn(min = 256.dp)
+                        scrollState = overflowScrollState,
+                        modifier = Modifier
+                            .widthIn(min = 260.dp, max = 320.dp)
+                            .heightIn(max = maxMenuHeight)
                     ) {
                         // Chrome Top 5-Icon Action Bar inside 3-dot Menu
                         Row(
@@ -1946,7 +1962,7 @@ fun TabletOrMobileToolbar(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "Forward"
+                                    contentDescription = stringResource(R.string.menu_forward)
                                 )
                             }
                             IconButton(
@@ -1957,7 +1973,7 @@ fun TabletOrMobileToolbar(
                             ) {
                                 Icon(
                                     imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
-                                    contentDescription = "Bookmark",
+                                    contentDescription = stringResource(R.string.menu_bookmark),
                                     tint = if (isCurrentUrlBookmarked) MaterialTheme.colorScheme.primary else LocalContentColor.current
                                 )
                             }
@@ -1969,7 +1985,7 @@ fun TabletOrMobileToolbar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.FileDownload,
-                                    contentDescription = "Downloads"
+                                    contentDescription = stringResource(R.string.menu_downloads)
                                 )
                             }
                             IconButton(
@@ -1980,7 +1996,7 @@ fun TabletOrMobileToolbar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Info,
-                                    contentDescription = "Page Info"
+                                    contentDescription = stringResource(R.string.menu_page_info)
                                 )
                             }
                             IconButton(
@@ -1991,7 +2007,7 @@ fun TabletOrMobileToolbar(
                             ) {
                                 Icon(
                                     imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                                    contentDescription = "Refresh"
+                                    contentDescription = if (activeTab.isLoading) stringResource(R.string.menu_stop) else stringResource(R.string.menu_refresh)
                                 )
                             }
                         }
@@ -1999,7 +2015,7 @@ fun TabletOrMobileToolbar(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         DropdownMenuItem(
-                            text = { Text("New tab") },
+                            text = { Text(stringResource(R.string.menu_new_tab)) },
                             leadingIcon = { Icon(Icons.Outlined.AddBox, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2007,7 +2023,7 @@ fun TabletOrMobileToolbar(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("New Incognito tab") },
+                            text = { Text(stringResource(R.string.menu_new_incognito_tab)) },
                             leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2015,7 +2031,7 @@ fun TabletOrMobileToolbar(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Recent tabs / Reopen closed") },
+                            text = { Text(stringResource(R.string.menu_recent_tabs)) },
                             leadingIcon = { Icon(Icons.Outlined.Restore, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2026,7 +2042,7 @@ fun TabletOrMobileToolbar(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         DropdownMenuItem(
-                            text = { Text("History") },
+                            text = { Text(stringResource(R.string.menu_history)) },
                             leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2034,7 +2050,7 @@ fun TabletOrMobileToolbar(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Downloads") },
+                            text = { Text(stringResource(R.string.menu_downloads)) },
                             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2042,7 +2058,7 @@ fun TabletOrMobileToolbar(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Bookmarks") },
+                            text = { Text(stringResource(R.string.menu_bookmarks)) },
                             leadingIcon = { Icon(Icons.Outlined.StarOutline, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2054,7 +2070,7 @@ fun TabletOrMobileToolbar(
 
                         if (activeTab.url.isNotBlank() && activeTab.url != "about:blank") {
                             DropdownMenuItem(
-                                text = { Text("Share...") },
+                                text = { Text(stringResource(R.string.menu_share)) },
                                 leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -2064,12 +2080,12 @@ fun TabletOrMobileToolbar(
                                             putExtra(Intent.EXTRA_SUBJECT, activeTab.title)
                                             putExtra(Intent.EXTRA_TEXT, activeTab.url)
                                         }
-                                        context.startActivity(Intent.createChooser(shareIntent, "Share link"))
+                                        context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.menu_share_link)))
                                     } catch (_: Exception) {}
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Find in page") },
+                                text = { Text(stringResource(R.string.menu_find_in_page)) },
                                 leadingIcon = { Icon(Icons.Outlined.FindInPage, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -2080,7 +2096,7 @@ fun TabletOrMobileToolbar(
 
                         // Chrome "Desktop site" toggle with Checkbox
                         DropdownMenuItem(
-                            text = { Text("Desktop site") },
+                            text = { Text(stringResource(R.string.menu_desktop_site)) },
                             leadingIcon = { Icon(Icons.Outlined.DesktopWindows, contentDescription = null) },
                             trailingIcon = {
                                 Checkbox(
@@ -2098,10 +2114,10 @@ fun TabletOrMobileToolbar(
                         DropdownMenuItem(
                             text = {
                                 Column {
-                                    Text("AdShield Guard")
+                                    Text(stringResource(R.string.menu_adshield_guard))
                                     if (pageBlockedCount > 0) {
                                         Text(
-                                            text = "$pageBlockedCount blocked on this page",
+                                            text = stringResource(R.string.menu_blocked_on_page, pageBlockedCount),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.primary
                                         )
@@ -2119,7 +2135,10 @@ fun TabletOrMobileToolbar(
                         val isImmersiveFsMenu by viewModel.isImmersivePageFullscreen.collectAsState()
                         DropdownMenuItem(
                             text = {
-                                Text(if (isImmersiveFsMenu) "Keluar Layar Penuh (Full Screen)" else "Layar Penuh (Full Screen)")
+                                Text(
+                                    if (isImmersiveFsMenu) stringResource(R.string.menu_fullscreen_exit)
+                                    else stringResource(R.string.menu_fullscreen_enter)
+                                )
                             },
                             leadingIcon = {
                                 Icon(
@@ -2136,9 +2155,9 @@ fun TabletOrMobileToolbar(
                         DropdownMenuItem(
                             text = {
                                 Column {
-                                    Text("Ekstensi Browser (WebExtensions)")
+                                    Text(stringResource(R.string.menu_extensions))
                                     Text(
-                                        text = "$enabledExtCount aktif • Impor dari luar (.js/.zip/.css)",
+                                        text = stringResource(R.string.menu_extensions_sub, enabledExtCount),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -2152,7 +2171,7 @@ fun TabletOrMobileToolbar(
                         )
 
                         DropdownMenuItem(
-                            text = { Text("Studio Pintasan & Custom JS") },
+                            text = { Text(stringResource(R.string.menu_custom_js_studio)) },
                             leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2163,7 +2182,7 @@ fun TabletOrMobileToolbar(
                         val inspectEnabledMenu by viewModel.inspectToolsEnabled.collectAsState()
                         if (inspectEnabledMenu) {
                             DropdownMenuItem(
-                                text = { Text("Developer Tools (Inspect)") },
+                                text = { Text(stringResource(R.string.menu_developer_tools)) },
                                 leadingIcon = { Icon(Icons.Outlined.Code, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -2175,7 +2194,7 @@ fun TabletOrMobileToolbar(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         DropdownMenuItem(
-                            text = { Text("Settings") },
+                            text = { Text(stringResource(R.string.menu_settings)) },
                             leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
                             onClick = {
                                 showOverflowMenu = false
@@ -2184,7 +2203,7 @@ fun TabletOrMobileToolbar(
                         )
 
                         DropdownMenuItem(
-                            text = { Text("Clear browsing data", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.menu_clear_browsing_data), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = {
                                 Icon(
                                     Icons.Outlined.DeleteSweep,
@@ -2196,9 +2215,11 @@ fun TabletOrMobileToolbar(
                                 showOverflowMenu = false
                                 viewModel.clearCacheAndCookies(context)
                                 viewModel.clearAllHistory()
-                                Toast.makeText(context, "Browsing data cleared", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.menu_browsing_data_cleared), Toast.LENGTH_SHORT).show()
                             }
                         )
+
+                        Spacer(modifier = Modifier.height(16.dp))
                     }
                 }
             }
@@ -4469,6 +4490,14 @@ fun DesktopToolbar(
                         }
 
                         // Unified Structured Desktop 3-Dot Chrome Menu
+                        val desktopMenuConfig = LocalConfiguration.current
+                        val desktopMenuStatusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+                        val desktopMenuNavBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                        val maxDesktopMenuHeight = remember(desktopMenuConfig.screenHeightDp, desktopMenuStatusBarTop, desktopMenuNavBarBottom) {
+                            (desktopMenuConfig.screenHeightDp.dp - desktopMenuStatusBarTop - desktopMenuNavBarBottom - 110.dp).coerceAtLeast(240.dp)
+                        }
+                        val desktopOverflowScrollState = rememberScrollState()
+
                         Box {
                             IconButton(
                                 onClick = { showDesktopOverflowMenu = true },
@@ -4476,7 +4505,7 @@ fun DesktopToolbar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
-                                    contentDescription = "More options",
+                                    contentDescription = stringResource(R.string.menu_more_options),
                                     tint = contentTint,
                                     modifier = Modifier.size(17.dp)
                                 )
@@ -4485,7 +4514,10 @@ fun DesktopToolbar(
                             DropdownMenu(
                                 expanded = showDesktopOverflowMenu,
                                 onDismissRequest = { showDesktopOverflowMenu = false },
-                                modifier = Modifier.widthIn(min = 272.dp)
+                                scrollState = desktopOverflowScrollState,
+                                modifier = Modifier
+                                    .widthIn(min = 272.dp, max = 340.dp)
+                                    .heightIn(max = maxDesktopMenuHeight)
                             ) {
                                 // Structured Header 1: Desktop Zoom & Viewport Controller
                                 Surface(
@@ -4658,6 +4690,7 @@ fun DesktopToolbar(
                                         onNavigateToSettings()
                                     }
                                 )
+                                Spacer(modifier = Modifier.height(16.dp))
                             }
                         }
                     }

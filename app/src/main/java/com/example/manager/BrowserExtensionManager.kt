@@ -57,19 +57,6 @@ object BrowserExtensionManager {
 
     val BUILT_IN_EXTENSIONS: List<BrowserExtension> = listOf(
         BrowserExtension(
-            id = "ext_fullscreen_kiwi_pro",
-            name = "Full Screen Immersive Tool",
-            version = "2.0.0",
-            description = "Mode Layar Penuh (Full Screen) imersif untuk seluruh situs web dengan dukungan scroll penuh, deteksi latar otomatis, tombol keluar mengambang, dan prompt sentuh cerdas.",
-            author = "Kiwi & Chrome Tools",
-            iconName = "Fullscreen",
-            runAt = ExtensionRunAt.MANUAL_ONLY,
-            isEnabled = true,
-            isPinnedToToolbar = true,
-            sourceType = ExtensionSourceType.BUILT_IN,
-            jsCode = CustomJsToolbarManager.UPGRADED_FULLSCREEN_SCRIPT
-        ),
-        BrowserExtension(
             id = "ext_dark_reader_pro",
             name = "Dark Reader Pro",
             version = "2.4.0",
@@ -423,18 +410,20 @@ object BrowserExtensionManager {
             return BUILT_IN_EXTENSIONS
         }
         val builtInById = BUILT_IN_EXTENSIONS.associateBy { it.id }
-        val parsed = parseExtensionsJson(raw).map { ext ->
-            val latestBuiltIn = builtInById[ext.id]
-            if (latestBuiltIn != null && ext.sourceType == ExtensionSourceType.BUILT_IN) {
-                ext.copy(
-                    jsCode = latestBuiltIn.jsCode,
-                    cssCode = latestBuiltIn.cssCode,
-                    version = latestBuiltIn.version
-                )
-            } else {
-                ext
+        val parsed = parseExtensionsJson(raw)
+            .filter { it.id != "ext_fullscreen_kiwi_pro" && !it.name.equals("Full Screen Immersive Tool", ignoreCase = true) }
+            .map { ext ->
+                val latestBuiltIn = builtInById[ext.id]
+                if (latestBuiltIn != null && ext.sourceType == ExtensionSourceType.BUILT_IN) {
+                    ext.copy(
+                        jsCode = latestBuiltIn.jsCode,
+                        cssCode = latestBuiltIn.cssCode,
+                        version = latestBuiltIn.version
+                    )
+                } else {
+                    ext
+                }
             }
-        }
         if (parsed.isEmpty()) return BUILT_IN_EXTENSIONS
 
         // Ensure any new built-in extensions are present

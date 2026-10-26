@@ -1,0 +1,131 @@
+<resources>
+    <string name="app_name">AdBlock Browser</string>
+    
+    <!-- 3-Dot Overflow Menu -->
+    <string name="menu_forward">Forward</string>
+    <string name="menu_bookmark">Bookmark</string>
+    <string name="menu_downloads">Downloads</string>
+    <string name="menu_page_info">Page Info</string>
+    <string name="menu_refresh">Refresh</string>
+    <string name="menu_stop">Stop</string>
+    <string name="menu_new_tab">New tab</string>
+    <string name="menu_new_incognito_tab">New Incognito tab</string>
+    <string name="menu_recent_tabs">Recent tabs / Reopen closed</string>
+    <string name="menu_history">History</string>
+    <string name="menu_bookmarks">Bookmarks</string>
+    <string name="menu_share">Share...</string>
+    <string name="menu_share_link">Share link</string>
+    <string name="menu_find_in_page">Find in page</string>
+    <string name="menu_desktop_site">Desktop site</string>
+    <string name="menu_adshield_guard">AdShield Guard</string>
+    <string name="menu_blocked_on_page">%1$d blocked on this page</string>
+    <string name="menu_fullscreen_enter">Full screen</string>
+    <string name="menu_fullscreen_exit">Exit full screen</string>
+    <string name="menu_extensions">Browser Extensions (WebExtensions)</string>
+    <string name="menu_extensions_sub">%1$d active • Import external (.js/.zip/.css)</string>
+    <string name="menu_custom_js_studio">Shortcut &amp; Custom JS Studio</string>
+    <string name="menu_developer_tools">Developer Tools (Inspect)</string>
+    <string name="menu_settings">Settings</string>
+    <string name="menu_clear_browsing_data">Clear browsing data</string>
+    <string name="menu_browsing_data_cleared">Browsing data cleared</string>
+    <string name="menu_more_options">More options</string>
+
+    <!-- Settings Screen Common -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_reset">Reset</string>
+    <string name="settings_reset_confirm">Settings reset to default</string>
+    <string name="settings_back">Back</string>
+
+    <!-- Settings Categories -->
+    <string name="category_general">Basics &amp; Search</string>
+    <string name="category_security">Privacy &amp; Security</string>
+    <string name="category_connectivity">Performance &amp; Downloads</string>
+    <string name="category_storage">Site Data &amp; Storage</string>
+    <string name="category_about">About Browser</string>
+
+    <!-- Language Settings (New Feature 2B) -->
+    <string name="pref_language_title">App Language</string>
+    <string name="pref_language_summary">Select display language for the application</string>
+    <string name="lang_indonesian">Bahasa Indonesia</string>
+    <string name="lang_english">English</string>
+    <string name="lang_system">System Default</string>
+    <string name="lang_changed_toast">Language changed to %1$s</string>
+
+    <!-- General Settings Module -->
+    <string name="pref_search_engine_title">Default Search Engine</string>
+    <string name="pref_search_engine_summary">Choose search engine for address bar</string>
+    <string name="pref_theme_title">Appearance &amp; Theme</string>
+    <string name="pref_theme_summary">Select light, dark, or system default mode</string>
+    <string name="theme_system">System Default</string>
+    <string name="theme_light">Light Mode</string>
+    <string name="theme_dark">Dark Mode</string>
+    <string name="pref_force_dark_title">Force Web Page Dark Mode</string>
+    <string name="pref_force_dark_summary">Render all websites in dark mode</string>
+    <string name="pref_display_mode_title">Display Mode</string>
+    <string name="mode_mobile">Mobile Mode</string>
+    <string name="mode_desktop">Desktop Mode</string>
+    <string name="pref_background_playback_title">Background Playback</string>
+    <string name="pref_background_playback_summary">Continue audio/video when switching tabs or backgrounded</string>
+    <string name="pref_screen_recording_title">Allow Screen Recording &amp; Screenshots</string>
+    <string name="pref_screen_recording_summary">Disable FLAG_SECURE to allow recording</string>
+    <string name="pref_devtools_title">Developer Tools (Inspect Element)</string>
+    <string name="pref_devtools_summary">Open console and DOM inspector below</string>
+
+    <!-- Security & Privacy Module -->
+    <string name="pref_adblock_title">AdBlock Mode</string>
+    <string name="adblock_off">Off</string>
+    <string name="adblock_balanced">Balanced (Recommended)</string>
+    <string name="adblock_aggressive">Aggressive (Maximum Blocking)</string>
+    <string name="pref_tracker_title">Block Trackers (Anti-Tracking)</string>
+    <string name="pref_tracker_summary">Prevent cross-site tracking and analytics scripts</string>
+    <string name="pref_popups_title">Open Popups in New Tab</string>
+    <string name="pref_popups_summary">Open popup windows as controlled new tabs</string>
+    <string name="pref_redirects_title">Block Suspicious Redirects</string>
+    <string name="pref_redirects_summary">Prevent automatic redirects to suspicious links</string>
+    <string name="pref_privacy_shield_title">Privacy Shield Mode</string>
+    <string name="privacy_shield_standard">Standard</string>
+    <string name="privacy_shield_strict">Strict (Anti-Fingerprint)</string>
+    <string name="pref_webrtc_leak_title">Prevent WebRTC IP Leaks</string>
+    <string name="pref_webrtc_leak_summary">Hide true IP address from WebRTC requests</string>
+    <string name="pref_clear_cookies_exit_title">Clear Cookies on Exit</string>
+    <string name="pref_clear_cookies_exit_summary">Clear login sessions and tracking cookies on exit</string>
+    <string name="pref_site_permissions_title">Manage Site Permissions</string>
+    <string name="pref_site_permissions_summary">Camera, Microphone, Location, and Sensors</string>
+
+    <!-- Connectivity & Performance Module -->
+    <string name="pref_streaming_boost_title">Video Streaming Acceleration</string>
+    <string name="pref_streaming_boost_summary">Optimize video buffer for smooth playback</string>
+    <string name="pref_download_accel_title">Download Acceleration</string>
+    <string name="pref_data_saver_title">Data Saver Mode</string>
+    <string name="pref_data_saver_summary">Compress images and reduce network usage</string>
+
+    <!-- Storage & Data Cleaners Module -->
+    <string name="pref_clear_history">Clear Browsing History</string>
+    <string name="pref_clear_bookmarks">Clear All Bookmarks</string>
+    <string name="pref_clear_cache">Clear Cache Only (Keep Logins)</string>
+    <string name="pref_clear_all_data">Clear Cookies, Site Data &amp; Cache</string>
+    <string name="toast_history_cleared">Browsing history cleared</string>
+    <string name="toast_bookmarks_cleared">Saved bookmarks cleared</string>
+    <string name="toast_cache_cleared">Browser cache cleared (cookies preserved)</string>
+    <string name="toast_all_data_cleared">Cookies, site data &amp; cache cleared</string>
+
+    <!-- Downloads UI & Notifications -->
+    <string name="download_blocked_unsafe">Download blocked: Unsafe URL</string>
+    <string name="download_warning_dangerous_file">⚠ Warning: This file may be dangerous!</string>
+    <string name="download_fast_accelerated">Using Fast Download (4 Connections)</string>
+    <string name="download_range_fallback_normal">Server does not support Range. Fallback to Normal Mode.</string>
+    <string name="downloading_file">Downloading file...</string>
+    <string name="download_failed_prefix">Download failed: %1$s</string>
+    
+    <!-- Extensions & Scripts UI -->
+    <string name="extension_tab_private_active">Private Tab: Active</string>
+    <string name="extension_tab_private_inactive">Private Tab: Inactive</string>
+    <string name="extension_pinned">Pinned to shortcut bar</string>
+    <string name="extension_unpinned">Unpinned from shortcut bar</string>
+    <string name="extension_deleted">Extension \'%1$s\' deleted</string>
+    
+    <!-- Console & Security -->
+    <string name="console_rate_limit_exceeded">Console messages rate limit exceeded (60 msgs/sec). Inspect tools throttling active.</string>
+    <string name="zapper_root_element_blocked">Root/body/html element cannot be hidden</string>
+    <string name="zapper_invalid_selector">Invalid element selector</string>
+</resources>

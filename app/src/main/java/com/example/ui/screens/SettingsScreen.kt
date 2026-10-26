@@ -27,21 +27,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
+import com.example.manager.AppLanguage
 import com.example.manager.AppTheme
 import com.example.manager.DisplayMode
 import com.example.ui.components.DeveloperAiAttributionSection
 import com.example.ui.viewmodel.BrowserViewModel
 
-enum class SettingsCategory(val title: String, val icon: ImageVector) {
-    GENERAL("Basics & Search", Icons.Outlined.Search),
-    SECURITY("Privacy & Security", Icons.Outlined.Shield),
-    CONNECTIVITY("Performance & Downloads", Icons.Outlined.Speed),
-    STORAGE("Site Data & Storage", Icons.Outlined.Storage),
-    ABOUT("About Chrome Browser", Icons.Outlined.Info)
+enum class SettingsCategory(val titleRes: Int, val icon: ImageVector) {
+    GENERAL(R.string.category_general, Icons.Outlined.Search),
+    SECURITY(R.string.category_security, Icons.Outlined.Shield),
+    CONNECTIVITY(R.string.category_connectivity, Icons.Outlined.Speed),
+    STORAGE(R.string.category_storage, Icons.Outlined.Storage),
+    ABOUT(R.string.category_about, Icons.Outlined.Info)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,6 +75,7 @@ fun SettingsScreen(
     val strictWebRtcMode by viewModel.strictWebRtcMode.collectAsState()
     val clearCookiesOnExit by viewModel.clearCookiesOnExit.collectAsState()
     val forceWebPageDarkMode by viewModel.forceWebPageDarkMode.collectAsState()
+    val currentLanguage by viewModel.appLanguage.collectAsState()
 
     var showEngineMenu by remember { mutableStateOf(false) }
     var showSitePermissions by remember { mutableStateOf(false) }
@@ -87,7 +91,7 @@ fun SettingsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Settings",
+                        text = stringResource(R.string.settings_title),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold)
                     )
                 },
@@ -95,7 +99,7 @@ fun SettingsScreen(
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.settings_back)
                         )
                     }
                 },
@@ -103,10 +107,10 @@ fun SettingsScreen(
                     TextButton(
                         onClick = {
                             viewModel.resetToDefaults()
-                            Toast.makeText(context, "Reset to default settings", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.settings_reset_confirm), Toast.LENGTH_SHORT).show()
                         }
                     ) {
-                        Text("Reset")
+                        Text(stringResource(R.string.settings_reset))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -141,7 +145,7 @@ fun SettingsScreen(
                             SettingsCategory.values().forEach { category ->
                                 val isSelected = category == selectedCategory
                                 NavigationDrawerItem(
-                                    label = { Text(category.title, fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal) },
+                                    label = { Text(stringResource(category.titleRes), fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal) },
                                     selected = isSelected,
                                     onClick = { selectedCategory = category },
                                     icon = { Icon(category.icon, contentDescription = null) },
@@ -183,6 +187,18 @@ fun SettingsScreen(
                                                 viewModel.setSearchEngine(engine)
                                                 showEngineMenu = false
                                                 Toast.makeText(context, "$engine set as default", Toast.LENGTH_SHORT).show()
+                                            }
+                                        )
+                                        AppLanguageModule(
+                                            currentLanguage = currentLanguage,
+                                            onSelectLanguage = { lang ->
+                                                viewModel.setAppLanguage(lang)
+                                                val langLabel = when (lang) {
+                                                    AppLanguage.INDONESIAN -> context.getString(R.string.lang_indonesian)
+                                                    AppLanguage.ENGLISH -> context.getString(R.string.lang_english)
+                                                    AppLanguage.SYSTEM -> context.getString(R.string.lang_system)
+                                                }
+                                                Toast.makeText(context, context.getString(R.string.lang_changed_toast, langLabel), Toast.LENGTH_SHORT).show()
                                             }
                                         )
                                         ThemeSelectionModule(
@@ -329,6 +345,19 @@ fun SettingsScreen(
                         onForceWebPageDarkModeToggle = { viewModel.setForceWebPageDarkMode(it) }
                     )
 
+                    AppLanguageModule(
+                        currentLanguage = currentLanguage,
+                        onSelectLanguage = { lang ->
+                            viewModel.setAppLanguage(lang)
+                            val langLabel = when (lang) {
+                                AppLanguage.INDONESIAN -> context.getString(R.string.lang_indonesian)
+                                AppLanguage.ENGLISH -> context.getString(R.string.lang_english)
+                                AppLanguage.SYSTEM -> context.getString(R.string.lang_system)
+                            }
+                            Toast.makeText(context, context.getString(R.string.lang_changed_toast, langLabel), Toast.LENGTH_SHORT).show()
+                        }
+                    )
+
                     DisplayModeModule(
                         currentMode = currentMode,
                         onSelectMode = { viewModel.setDisplayMode(it) }
@@ -375,6 +404,142 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun AppLanguageModule(
+    currentLanguage: com.example.manager.AppLanguage,
+    onSelectLanguage: (com.example.manager.AppLanguage) -> Unit
+) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    ChromeSettingsSectionCard(title = stringResource(R.string.pref_language_title)) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { showDialog = true },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Language,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = stringResource(R.string.pref_language_summary),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = when (currentLanguage) {
+                                com.example.manager.AppLanguage.INDONESIAN -> stringResource(R.string.lang_indonesian)
+                                com.example.manager.AppLanguage.ENGLISH -> stringResource(R.string.lang_english)
+                                com.example.manager.AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
+                            },
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ArrowDropDown,
+                    contentDescription = stringResource(R.string.pref_language_title),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = {
+                Text(
+                    text = stringResource(R.string.pref_language_title),
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val languages = listOf(
+                        com.example.manager.AppLanguage.INDONESIAN to stringResource(R.string.lang_indonesian),
+                        com.example.manager.AppLanguage.ENGLISH to stringResource(R.string.lang_english),
+                        com.example.manager.AppLanguage.SYSTEM to stringResource(R.string.lang_system)
+                    )
+
+                    languages.forEach { (lang, label) ->
+                        val isSelected = currentLanguage == lang
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    onSelectLanguage(lang)
+                                    showDialog = false
+                                },
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = {
+                                        onSelectLanguage(lang)
+                                        showDialog = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialog = false }) {
+                    Text(stringResource(R.string.settings_back))
+                }
+            }
+        )
     }
 }
 

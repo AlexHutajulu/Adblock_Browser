@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -101,10 +102,10 @@ fun ChromeShortcutAndJsBar(
     val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
     val tiltState by viewModel.deviceTiltState.collectAsState()
 
-    val barBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
-    val chipBg = if (isIncognito) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainerHigh
-    val chipContent = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
-    val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val chipBg = if (isIncognito || isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.60f)
+    val chipContent = if (isIncognito || isDark) Color.White else Color(0xFF0F172A)
+    val accentColor = if (isIncognito) ChromeIncognitoAccent else Color(0xFF007AFF)
 
     var scrolledDownToggle by remember { mutableStateOf(true) }
 

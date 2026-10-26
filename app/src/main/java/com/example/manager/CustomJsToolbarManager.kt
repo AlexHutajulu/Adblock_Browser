@@ -72,6 +72,7 @@ object CustomJsToolbarManager {
     private const val KEY_SCRIPTS_JSON = "custom_js_scripts_v1"
     private const val KEY_SEEDED_DEFAULT = "seeded_default_templates_v1"
     private const val KEY_SHORTCUT_BAR_VISIBLE = "shortcut_bar_visible"
+    private const val KEY_SHORTCUT_BAR_USER_SET = "shortcut_bar_user_explicit_set_v2"
     private const val KEY_SHORTCUT_BAR_POSITION = "shortcut_bar_position"
     private const val KEY_ORIENTATION_MODE = "screen_orientation_mode"
     private const val KEY_ENABLED_SHORTCUTS = "enabled_builtin_shortcuts"
@@ -738,13 +739,20 @@ object CustomJsToolbarManager {
     }
 
     fun getShortcutBarVisible(context: Context): Boolean {
-        return EncryptedPreferencesManager.getPreferences(context)
-            .getBoolean(KEY_SHORTCUT_BAR_VISIBLE, true)
+        val prefs = EncryptedPreferencesManager.getPreferences(context)
+        if (!prefs.getBoolean(KEY_SHORTCUT_BAR_USER_SET, false)) {
+            // Default: OFF (mati) pada data bersih / fresh install
+            return false
+        }
+        return prefs.getBoolean(KEY_SHORTCUT_BAR_VISIBLE, false)
     }
 
     fun setShortcutBarVisible(context: Context, visible: Boolean) {
         EncryptedPreferencesManager.getPreferences(context)
-            .edit().putBoolean(KEY_SHORTCUT_BAR_VISIBLE, visible).apply()
+            .edit()
+            .putBoolean(KEY_SHORTCUT_BAR_VISIBLE, visible)
+            .putBoolean(KEY_SHORTCUT_BAR_USER_SET, true)
+            .apply()
     }
 
     fun getShortcutBarPosition(context: Context): ShortcutBarPosition {

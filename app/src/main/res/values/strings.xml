@@ -1,13 +1,121 @@
 <resources>
     <string name="app_name">AdBlock Browser</string>
     
+    <!-- Menu Titik 3 (3-Dot Overflow Menu) -->
+    <string name="menu_forward">Maju</string>
+    <string name="menu_bookmark">Bookmark</string>
+    <string name="menu_downloads">Unduhan</string>
+    <string name="menu_page_info">Info Halaman</string>
+    <string name="menu_refresh">Muat Ulang</string>
+    <string name="menu_stop">Berhenti</string>
+    <string name="menu_new_tab">Tab baru</string>
+    <string name="menu_new_incognito_tab">Tab Samaran baru</string>
+    <string name="menu_recent_tabs">Tab terkini / Buka tab ditutup</string>
+    <string name="menu_history">Histori</string>
+    <string name="menu_bookmarks">Bookmark</string>
+    <string name="menu_share">Bagikan...</string>
+    <string name="menu_share_link">Bagikan tautan</string>
+    <string name="menu_find_in_page">Cari di halaman</string>
+    <string name="menu_desktop_site">Situs desktop</string>
+    <string name="menu_adshield_guard">Perlindungan AdShield</string>
+    <string name="menu_blocked_on_page">%1$d diblokir di halaman ini</string>
+    <string name="menu_fullscreen_enter">Layar Penuh (Full Screen)</string>
+    <string name="menu_fullscreen_exit">Keluar Layar Penuh</string>
+    <string name="menu_extensions">Ekstensi Browser (WebExtensions)</string>
+    <string name="menu_extensions_sub">%1$d aktif • Impor dari luar (.js/.zip/.css)</string>
+    <string name="menu_custom_js_studio">Studio Pintasan &amp; Custom JS</string>
+    <string name="menu_developer_tools">Alat Pengembang (Inspect)</string>
+    <string name="menu_settings">Pengaturan</string>
+    <string name="menu_clear_browsing_data">Hapus data penjelajahan</string>
+    <string name="menu_browsing_data_cleared">Data penjelajahan telah dibersihkan</string>
+    <string name="menu_more_options">Opsi lainnya</string>
+
+    <!-- Settings Screen Common -->
+    <string name="settings_title">Pengaturan</string>
+    <string name="settings_reset">Reset</string>
+    <string name="settings_reset_confirm">Pengaturan dikembalikan ke default</string>
+    <string name="settings_back">Kembali</string>
+
+    <!-- Settings Categories -->
+    <string name="category_general">Dasar &amp; Pencarian</string>
+    <string name="category_security">Privasi &amp; Keamanan</string>
+    <string name="category_connectivity">Performa &amp; Unduhan</string>
+    <string name="category_storage">Data Situs &amp; Penyimpanan</string>
+    <string name="category_about">Tentang Browser</string>
+
+    <!-- Language Settings (Fitur Baru 2B) -->
+    <string name="pref_language_title">Bahasa Aplikasi</string>
+    <string name="pref_language_summary">Pilih bahasa tampilan untuk aplikasi</string>
+    <string name="lang_indonesian">Bahasa Indonesia</string>
+    <string name="lang_english">English</string>
+    <string name="lang_system">Default Sistem (System Default)</string>
+    <string name="lang_changed_toast">Bahasa diubah ke %1$s</string>
+
+    <!-- General Settings Module -->
+    <string name="pref_search_engine_title">Mesin Pencari Default</string>
+    <string name="pref_search_engine_summary">Pilih mesin pencari untuk bilah alamat</string>
+    <string name="pref_theme_title">Tema Tampilan</string>
+    <string name="pref_theme_summary">Pilih mode terang, gelap, atau default sistem</string>
+    <string name="theme_system">Default Sistem</string>
+    <string name="theme_light">Mode Terang</string>
+    <string name="theme_dark">Mode Gelap</string>
+    <string name="pref_force_dark_title">Paksa Mode Gelap Halaman Web</string>
+    <string name="pref_force_dark_summary">Membuat semua situs web tampil gelap</string>
+    <string name="pref_display_mode_title">Mode Tampilan Halaman</string>
+    <string name="mode_mobile">Mode Mobile</string>
+    <string name="mode_desktop">Mode Desktop</string>
+    <string name="pref_background_playback_title">Pemutaran Latar Belakang</string>
+    <string name="pref_background_playback_summary">Lanjutkan audio/video saat berpindah tab atau aplikasi di latar</string>
+    <string name="pref_screen_recording_title">Izinkan Rekaman Layar &amp; Tangkapan</string>
+    <string name="pref_screen_recording_summary">Nonaktifkan FLAG_SECURE untuk merekam layar</string>
+    <string name="pref_devtools_title">Alat Pengembang (Inspect Element)</string>
+    <string name="pref_devtools_summary">Buka konsol dan inspektur DOM di bawah</string>
+
+    <!-- Security & Privacy Module -->
+    <string name="pref_adblock_title">Mode Pemblokir Iklan (AdBlock)</string>
+    <string name="adblock_off">Nonaktif</string>
+    <string name="adblock_balanced">Seimbang (Direkomendasikan)</string>
+    <string name="adblock_aggressive">Agresif (Blokir Maksimal)</string>
+    <string name="pref_tracker_title">Blokir Pelacak (Anti-Tracking)</string>
+    <string name="pref_tracker_summary">Cegah skrip analitik dan pelacak lintas situs</string>
+    <string name="pref_popups_title">Buka Popup di Tab Baru</string>
+    <string name="pref_popups_summary">Buka jendela popup sebagai tab baru yang terkontrol</string>
+    <string name="pref_redirects_title">Blokir Pengalihan Mencurigakan</string>
+    <string name="pref_redirects_summary">Cegah situs mengalihkan otomatis ke link berbahaya</string>
+    <string name="pref_privacy_shield_title">Mode Perisai Privasi</string>
+    <string name="privacy_shield_standard">Standar</string>
+    <string name="privacy_shield_strict">Ketat (Anti-Fingerprint)</string>
+    <string name="pref_webrtc_leak_title">Cegah Kebocoran IP WebRTC</string>
+    <string name="pref_webrtc_leak_summary">Sembunyikan alamat IP asli dari permintaan WebRTC</string>
+    <string name="pref_clear_cookies_exit_title">Hapus Cookie saat Aplikasi Ditutup</string>
+    <string name="pref_clear_cookies_exit_summary">Hapus sesi login dan cookie pelacak saat keluar</string>
+    <string name="pref_site_permissions_title">Kelola Izin Situs Web</string>
+    <string name="pref_site_permissions_summary">Kamera, Mikrofon, Lokasi, dan Sensor</string>
+
+    <!-- Connectivity & Performance Module -->
+    <string name="pref_streaming_boost_title">Akselerasi Streaming Video</string>
+    <string name="pref_streaming_boost_summary">Optimalkan buffer video untuk pemutaran mulus</string>
+    <string name="pref_download_accel_title">Akselerasi Unduhan</string>
+    <string name="pref_data_saver_title">Mode Hemat Kuota Data</string>
+    <string name="pref_data_saver_summary">Kompres gambar dan kurangi konsumsi jaringan</string>
+
+    <!-- Storage & Data Cleaners Module -->
+    <string name="pref_clear_history">Hapus Riwayat Penjelajahan</string>
+    <string name="pref_clear_bookmarks">Hapus Semua Bookmark</string>
+    <string name="pref_clear_cache">Hapus Cache Saja (Pertahankan Login)</string>
+    <string name="pref_clear_all_data">Hapus Cookie, Data Situs &amp; Cache</string>
+    <string name="toast_history_cleared">Riwayat penjelajahan dibersihkan</string>
+    <string name="toast_bookmarks_cleared">Semua bookmark tersimpan dibersihkan</string>
+    <string name="toast_cache_cleared">Cache peramban dibersihkan (cookie dipertahankan)</string>
+    <string name="toast_all_data_cleared">Cookie, data situs &amp; cache dibersihkan</string>
+
     <!-- Downloads UI & Notifications -->
-    <string name="download_blocked_unsafe">Download blocked: Unsafe URL</string>
+    <string name="download_blocked_unsafe">Unduhan diblokir: URL tidak aman</string>
     <string name="download_warning_dangerous_file">⚠ Peringatan: File ini mungkin berbahaya!</string>
     <string name="download_fast_accelerated">Menggunakan Fast Download (4 Koneksi)</string>
     <string name="download_range_fallback_normal">Server tidak mendukung Range. Fallback ke Normal Mode.</string>
-    <string name="downloading_file">Downloading file...</string>
-    <string name="download_failed_prefix">Download failed: %1$s</string>
+    <string name="downloading_file">Mengunduh file...</string>
+    <string name="download_failed_prefix">Unduhan gagal: %1$s</string>
     
     <!-- Extensions & Scripts UI -->
     <string name="extension_tab_private_active">Tab Privat: Aktif</string>
@@ -17,7 +125,7 @@
     <string name="extension_deleted">Ekstensi \'%1$s\' dihapus</string>
     
     <!-- Console & Security -->
-    <string name="console_rate_limit_exceeded">Console messages rate limit exceeded (60 msgs/sec). Inspect tools throttling active.</string>
+    <string name="console_rate_limit_exceeded">Batas pesan konsol terlampaui (60 pesan/detik). Pembatasan alat inspeksi aktif.</string>
     <string name="zapper_root_element_blocked">Elemen root/body/html tidak dapat disembunyikan</string>
     <string name="zapper_invalid_selector">Selector elemen tidak valid</string>
 </resources>
