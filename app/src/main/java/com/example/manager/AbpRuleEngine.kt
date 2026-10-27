@@ -40,6 +40,12 @@ object AbpRuleEngine {
         val excludedDomains: Set<String>?, // $domain=~a.com|~b.com
         val resourceTypes: Int // bitmask of 1 shl ResourceType.ordinal
     ) {
+        val anchorHost: String?
+            get() = domainTarget ?: pattern?.domainPrefix
+
+        val isGenericRule: Boolean
+            get() = !isDomainOnly && anchorHost == null && includedDomains.isNullOrEmpty()
+
         fun matchesType(type: ResourceType): Boolean {
             if (resourceTypes == 0) return true
             return (resourceTypes and (1 shl type.ordinal)) != 0
@@ -130,7 +136,10 @@ object AbpRuleEngine {
             h = clean
             while (h.isNotEmpty()) {
                 domainSelectors[h]?.forEach { sel ->
-                    if (!activeExceptions.contains(sel)) {
+                    if (!activeExceptions.contains(sel) &&
+                        isSafeCosmeticSelector(sel) &&
+                        CosmeticFilterInjector.isSafeCssSelector(sel)
+                    ) {
                         result.add(sel)
                         if (result.size >= MAX_COSMETIC_SELECTORS_PER_HOST) return result.toList()
                     }
@@ -141,7 +150,10 @@ object AbpRuleEngine {
 
             // Global rules
             for (sel in globalSelectors) {
-                if (!activeExceptions.contains(sel)) {
+                if (!activeExceptions.contains(sel) &&
+                    isSafeCosmeticSelector(sel) &&
+                    CosmeticFilterInjector.isSafeCssSelector(sel)
+                ) {
                     result.add(sel)
                     if (result.size >= MAX_COSMETIC_SELECTORS_PER_HOST) break
                 }
@@ -244,11 +256,21 @@ object AbpRuleEngine {
 
             // General & path block rules
             for (rule in blockRules) {
-                if (rule.matchesType(resourceType) &&
-                    rule.matchesParty(isThirdParty) &&
-                    rule.matchesSourceDomain(srcHost) &&
-                    rule.matchesUrl(url, reqHost)
+                if (!rule.matchesType(resourceType) ||
+                    !rule.matchesParty(isThirdParty) ||
+                    !rule.matchesSourceDomain(srcHost)
                 ) {
+                    continue
+                }
+                if (shouldSkipGenericFirstPartyRule(
+                        isGenericRule = rule.isGenericRule,
+                        thirdPartyOnly = rule.thirdPartyOnly,
+                        isThirdParty = isThirdParty
+                    )
+                ) {
+                    continue
+                }
+                if (rule.matchesUrl(url, reqHost)) {
                     return MatchResult(false, rule.rawLine, "filter-rule")
                 }
             }
@@ -571,6 +593,24 @@ object AbpRuleEngine {
                 domainPrefix = body.trim().lowercase(Locale.US)
                 body = ""
             }
+        } else if (anchorStart) {
+            val lowerBody = body.lowercase(Locale.US)
+            val schemeEnd = when {
+                lowerBody.startsWith("https://") -> 8
+                lowerBody.startsWith("http://") -> 7
+                else -> -1
+            }
+            if (schemeEnd != -1) {
+                val sepIdx = lowerBody.indexOfAny(charArrayOf('/', '^', '?'), schemeEnd)
+                val hostCandidate = if (sepIdx != -1) {
+                    lowerBody.substring(schemeEnd, sepIdx).trim()
+                } else {
+                    lowerBody.substring(schemeEnd).trim()
+                }
+                if (hostCandidate.contains('.') && !hostCandidate.contains('*')) {
+                    domainPrefix = hostCandidate
+                }
+            }
         }
 
         val segments = body.split('*').map { seg ->
@@ -584,6 +624,16 @@ object AbpRuleEngine {
             domainPrefix = domainPrefix?.takeIf { it.isNotEmpty() },
             segments = segments
         )
+    }
+
+    private fun shouldSkipGenericFirstPartyRule(
+        isGenericRule: Boolean,
+        thirdPartyOnly: Boolean?,
+        isThirdParty: Boolean
+    ): Boolean {
+        return isGenericRule &&
+            thirdPartyOnly == null &&
+            !isThirdParty
     }
 
     private fun isSeparatorChar(c: Char): Boolean {
@@ -662,7 +712,7 @@ object AbpRuleEngine {
         }
         if (s.count { it == '\'' } % 2 != 0 || s.count { it == '"' } % 2 != 0) return false
         if (s.count { it == '[' } != s.count { it == ']' }) return false
-        return true
+        return CosmeticFilterInjector.isSafeCssSelector(s)
     }
 
     fun inferType(url: String, acceptHeader: String? = null): ResourceType {

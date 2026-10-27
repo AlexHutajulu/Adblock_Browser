@@ -75,6 +75,25 @@ object AlexShieldV5LogStore {
         }
     }
 
+    fun getBlockedLogsForPage(mainPageUrl: String?): List<BlockedRequest> {
+        if (mainPageUrl.isNullOrBlank()) return emptyList()
+        return forPageHost(mainPageUrl).map { log ->
+            val blockedHost = try {
+                android.net.Uri.parse(log.blockedUrl).host?.lowercase(java.util.Locale.US).orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            val category = classifyReason(log.blockedUrl, log.reason)
+            BlockedRequest(
+                url = log.blockedUrl,
+                host = blockedHost,
+                type = category,
+                mainPageUrl = mainPageUrl,
+                timestamp = log.timestamp
+            )
+        }.distinctBy { "${it.url}|${it.timestamp}" }.takeLast(100)
+    }
+
     fun clearTab(tabId: String) {
         _logs.update { old -> old.filterNot { it.tabId == tabId } }
     }

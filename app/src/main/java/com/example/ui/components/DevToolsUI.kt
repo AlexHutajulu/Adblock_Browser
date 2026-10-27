@@ -258,7 +258,7 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                                 OutlinedTextField(
                                     value = cssProperty,
                                     onValueChange = { cssProperty = it },
-                                    label = { Text("CSS Property (e.g. background-color)") },
+                                    label = { Text(text = "CSS Property (e.g. background-color)") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth().testTag("css_prop_input")
                                 )
@@ -266,7 +266,7 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                                 OutlinedTextField(
                                     value = cssValue,
                                     onValueChange = { cssValue = it },
-                                    label = { Text("New Value (e.g. yellow, red)") },
+                                    label = { Text(text = "New Value (e.g. yellow, red)") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth().testTag("css_value_input")
                                 )
@@ -291,7 +291,7 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                                     },
                                     modifier = Modifier.align(Alignment.End).testTag("css_apply_style")
                                 ) {
-                                    Text("Apply inline Style")
+                                    Text(text = "Apply inline Style")
                                 }
                             }
                         }
@@ -315,7 +315,7 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                             )
                         }
                     } else {
-                        Text("No attributes found on class list.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+                        Text(text = "No attributes found on class list.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                 }
@@ -335,10 +335,11 @@ fun ElementsInspector(tabId: String, state: DevToolsState, webView: WebView?, vi
                     )
                     TextButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("dom_source", state.domSource))
+                        val clipLabel = "dom_source"
+                        clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, state.domSource))
                         Toast.makeText(context, "Copied HTML source to clipboard!", Toast.LENGTH_SHORT).show()
                     }) {
-                        Text("Copy DOM", fontSize = 10.sp)
+                        Text(text = "Copy DOM", fontSize = 10.sp)
                     }
                 }
                 Surface(
@@ -392,7 +393,7 @@ fun ConsoleInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
 
             Row {
                 TextButton(onClick = { viewModel.clearConsole(tabId) }, modifier = Modifier.testTag("console_clear")) {
-                    Text("Clear logs", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                    Text(text = "Clear logs", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -410,7 +411,7 @@ fun ConsoleInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
             if (state.consoleEntries.isEmpty()) {
                 item {
                     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No JS logs captured yet. Trigger console events on-page.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(text = "No JS logs captured yet. Trigger console events on-page.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                 }
             } else {
@@ -472,7 +473,7 @@ fun ConsoleInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
             value = jsInput,
             onValueChange = { jsInput = it },
             modifier = Modifier.fillMaxWidth().testTag("console_eval_input"),
-            placeholder = { Text("Run Javascript on web frame", fontSize = 11.sp) },
+            placeholder = { Text(text = "Run Javascript on web frame", fontSize = 11.sp) },
             textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
             singleLine = true,
             colors = TextFieldDefaults.colors(
@@ -557,18 +558,19 @@ fun NetworkInspector(tabId: String, state: DevToolsState, viewModel: BrowserView
                     onClick = {
                         val json = DevToolsExporter.exportNetworkEntriesToJson(state.networkEntries)
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("network_logs", json))
+                        val clipLabel = "network_logs"
+                        clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, json))
                         Toast.makeText(context, "Network logs exported & copied to clipboard!", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("network_export")
                 ) {
                     Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(12.dp))
                     Spacer(modifier = Modifier.width(3.dp))
-                    Text("Export", fontSize = 10.sp)
+                    Text(text = "Export", fontSize = 10.sp)
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 TextButton(onClick = { viewModel.clearNetwork(tabId) }, modifier = Modifier.testTag("network_clear")) {
-                    Text("Clear", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                    Text(text = "Clear", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -639,7 +641,7 @@ fun NetworkInspector(tabId: String, state: DevToolsState, viewModel: BrowserView
             if (filteredLogs.isEmpty()) {
                 item {
                     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No match for filter ${activeFilter?.name ?: "ALL"}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(text = "No match for filter ${activeFilter?.name ?: "ALL"}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                 }
             } else {
@@ -762,7 +764,7 @@ fun NetworkInspector(tabId: String, state: DevToolsState, viewModel: BrowserView
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Request Headers (secured & masked):", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(text = "Request Headers (secured & masked):", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     if (currentSelected.requestHeaders.isNotEmpty()) {
                         currentSelected.requestHeaders.forEach { (k, v) ->
                             Text(
@@ -772,7 +774,7 @@ fun NetworkInspector(tabId: String, state: DevToolsState, viewModel: BrowserView
                             )
                         }
                     } else {
-                        Text("  No headers captured", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(text = "  No headers captured", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                 }
             }
@@ -854,11 +856,11 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                 TextButton(onClick = { refreshSnapshot() }, modifier = Modifier.testTag("storage_refresh")) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(10.dp))
                     Spacer(modifier = Modifier.width(3.dp))
-                    Text("Refresh", fontSize = 10.sp)
+                    Text(text = "Refresh", fontSize = 10.sp)
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 TextButton(onClick = { showGlobalWarning = true }, modifier = Modifier.testTag("storage_clear_global")) {
-                    Text("Purge All", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                    Text(text = "Purge All", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -875,7 +877,7 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
             if (snapshot == null) {
                 item {
                     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No snapshot loaded. Refresh storage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(text = "No snapshot loaded. Refresh storage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                 }
             } else {
@@ -886,13 +888,13 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Cookies (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                        Text(text = "Cookies (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         TextButton(onClick = {
                             webView?.evaluateJavascript("document.cookie.split(';').forEach(el => { const eq = el.indexOf('='); const name = eq > -1 ? el.substr(0, eq) : el; document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;'; });", null)
                             Toast.makeText(context, "Cleared document cookies for this origin!", Toast.LENGTH_SHORT).show()
                             refreshSnapshot()
                         }, modifier = Modifier.testTag("storage_clear_cookies")) {
-                            Text("Clear Cookies", fontSize = 10.sp)
+                            Text(text = "Clear Cookies", fontSize = 10.sp)
                         }
                     }
                     if (snapshot.cookies.isNotBlank()) {
@@ -910,7 +912,7 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                             )
                         }
                     } else {
-                        Text("No public cookies available for this origin (or they are HttpOnly).", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
+                        Text(text = "No public cookies available for this origin (or they are HttpOnly).", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
                 }
@@ -922,13 +924,13 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("LocalStorage (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                        Text(text = "LocalStorage (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         TextButton(onClick = {
                             webView?.evaluateJavascript("localStorage.clear();", null)
                             Toast.makeText(context, "LocalStorage cleared for current site origin!", Toast.LENGTH_SHORT).show()
                             refreshSnapshot()
                         }, modifier = Modifier.testTag("storage_clear_ls")) {
-                            Text("Clear LS", fontSize = 10.sp)
+                            Text(text = "Clear LS", fontSize = 10.sp)
                         }
                     }
                     if (snapshot.localStorage.isNotEmpty()) {
@@ -949,7 +951,7 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                             }
                         }
                     } else {
-                        Text("No keys inside LocalStorage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
+                        Text(text = "No keys inside LocalStorage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
                 }
@@ -961,13 +963,13 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("SessionStorage (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                        Text(text = "SessionStorage (Sanitized)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         TextButton(onClick = {
                             webView?.evaluateJavascript("sessionStorage.clear();", null)
                             Toast.makeText(context, "SessionStorage cleared for current site origin!", Toast.LENGTH_SHORT).show()
                             refreshSnapshot()
                         }, modifier = Modifier.testTag("storage_clear_ss")) {
-                            Text("Clear SS", fontSize = 10.sp)
+                            Text(text = "Clear SS", fontSize = 10.sp)
                         }
                     }
                     if (snapshot.sessionStorage.isNotEmpty()) {
@@ -988,14 +990,14 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                             }
                         }
                     } else {
-                        Text("No keys inside SessionStorage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
+                        Text(text = "No keys inside SessionStorage.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
                 }
 
                 // Miscellaneous structures (IndexedDB availability check)
                 item {
-                    Text("Persistent Indexed Database Available: ${snapshot.indexedDbAvailable}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
+                    Text(text = "Persistent Indexed Database Available: ${snapshot.indexedDbAvailable}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
                 }
             }
         }
@@ -1005,8 +1007,8 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
     if (showGlobalWarning) {
         AlertDialog(
             onDismissRequest = { showGlobalWarning = false },
-            title = { Text("Purge Global Databases") },
-            text = { Text("Are you absolutely sure you want to delete ALL local databases, cookies, and cache files globally across ALL websites? This action can only be undone by re-authenticating on all pages.") },
+            title = { Text(text = "Purge Global Databases") },
+            text = { Text(text = "Are you absolutely sure you want to delete ALL local databases, cookies, and cache files globally across ALL websites? This action can only be undone by re-authenticating on all pages.") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1019,12 +1021,12 @@ fun StorageInspector(tabId: String, state: DevToolsState, webView: WebView?, vie
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.testTag("storage_purge_confirm")
                 ) {
-                    Text("Purge Everything")
+                    Text(text = "Purge Everything")
                 }
             },
             dismissButton = {
                 OutlinedButton(onClick = { showGlobalWarning = false }) {
-                    Text("Dismiss")
+                    Text(text = "Dismiss")
                 }
             }
         )
@@ -1053,7 +1055,7 @@ fun SecurityInspector(tabId: String, state: DevToolsState, viewModel: BrowserVie
         val sec = state.securitySnapshot
         if (sec == null) {
             Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
-                Text("No Security audit collected. Browse secure pages.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(text = "No Security audit collected. Browse secure pages.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
         } else {
             // SSL Visual Accent header (BUG-10 green active icon / HTTP warning red)
@@ -1093,7 +1095,7 @@ fun SecurityInspector(tabId: String, state: DevToolsState, viewModel: BrowserVie
             Spacer(modifier = Modifier.height(16.dp))
 
             // Settings audit checklist (BUG-6 settings diagnostic display)
-            Text("Browser Sandboxing & Content Policies:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            Text(text = "Browser Sandboxing & Content Policies:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(6.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1114,7 +1116,7 @@ fun SecurityInspector(tabId: String, state: DevToolsState, viewModel: BrowserVie
             Spacer(modifier = Modifier.height(16.dp))
 
             // Block activities visual list (BUG-6 block action metrics)
-            Text("AdBlock & Tracker Shield Metrics:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            Text(text = "AdBlock & Tracker Shield Metrics:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(6.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1131,7 +1133,7 @@ fun SecurityInspector(tabId: String, state: DevToolsState, viewModel: BrowserVie
             // Warnings, SSL details, and Threats reports (BUG-10 SSL logs)
             if (!sec.lastSslError.isNullOrBlank() || !sec.lastSafeBrowsingThreat.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Security Diagnostics Events:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                Text(text = "Security Diagnostics Events:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
                 Spacer(modifier = Modifier.height(6.dp))
                 Surface(
                     modifier = Modifier.fillMaxWidth(),

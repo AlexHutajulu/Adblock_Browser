@@ -676,7 +676,9 @@ fun CustomWebView(
                             if (adBlockMode != com.example.manager.AdBlockMode.OFF && !isAdBlockDisabledForSite && view != null) {
                                 // v5 page cleanup: aggressive CSS, anti-popup, anti-beacon, safe YouTube cleanup.
                                 alexShieldV5Client.onPageFinished(view, url)
-                                com.example.manager.CosmeticFilterInjector.inject(view, pageUrl = url)
+                                if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                                    com.example.manager.CosmeticFilterInjector.inject(view, pageUrl = url)
+                                }
                                 Log.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
                             }
 
@@ -1176,6 +1178,11 @@ fun CustomWebView(
                             }
                         }
 
+                        override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+                            super.onReceivedIcon(view, icon)
+                            com.example.manager.FaviconStore.put(view?.url, icon)
+                        }
+
                         override fun onShowFileChooser(
                             customWebView: WebView?,
                             filePathCallback: ValueCallback<Array<Uri>>?,
@@ -1267,7 +1274,8 @@ fun CustomWebView(
                             if (!hitUrl.isNullOrEmpty() && com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(hitUrl)) {
                                 menu.add("Copy link").setOnMenuItemClickListener {
                                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("URL", hitUrl))
+                                    val clipLabel = "URL"
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(clipLabel, hitUrl))
                                     android.widget.Toast.makeText(context, "Link Copied", android.widget.Toast.LENGTH_SHORT).show()
                                     true
                                 }

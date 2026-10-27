@@ -225,7 +225,7 @@ fun ChromeExtensionsHubDialog(
                         ) {
                             Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Impor dari Luar", fontSize = 12.sp)
+                            Text(text = "Impor dari Luar", fontSize = 12.sp)
                         }
                         Spacer(modifier = Modifier.width(6.dp))
                         IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
@@ -244,7 +244,7 @@ fun ChromeExtensionsHubDialog(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = { Text("Terpasang (${extensions.size})") },
+                        text = { Text(text = "Terpasang (${extensions.size})") },
                         icon = { Icon(Icons.Outlined.Extension, contentDescription = null, modifier = Modifier.size(18.dp)) }
                     )
                     Tab(
@@ -311,7 +311,7 @@ fun ChromeExtensionsHubDialog(
                                             ) {
                                                 Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                                                 Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Pilih File")
+                                                Text(text = "Pilih File")
                                             }
                                         }
                                     }
@@ -443,7 +443,7 @@ fun ChromeExtensionsHubDialog(
                                                     ) {
                                                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Jalankan di Situs Ini", fontSize = 11.sp)
+                                                        Text(text = "Jalankan di Situs Ini", fontSize = 11.sp)
                                                     }
 
                                                     OutlinedButton(
@@ -550,7 +550,7 @@ fun ChromeExtensionsHubDialog(
                                         ) {
                                             Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Pilih File Ekstensi (.zip / .user.js / .js / .css / .json)")
+                                            Text(text = "Pilih File Ekstensi (.zip / .user.js / .js / .css / .json)")
                                         }
                                     }
                                 }
@@ -589,7 +589,7 @@ fun ChromeExtensionsHubDialog(
                                         OutlinedTextField(
                                             value = externalUrlInput,
                                             onValueChange = { externalUrlInput = it },
-                                            label = { Text("URL Ekstensi (contoh: https://.../script.user.js)") },
+                                            label = { Text(text = "URL Ekstensi (contoh: https://.../script.user.js)") },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth()
                                         )
@@ -622,11 +622,11 @@ fun ChromeExtensionsHubDialog(
                                                     color = MaterialTheme.colorScheme.onPrimary
                                                 )
                                                 Spacer(modifier = Modifier.width(8.dp))
-                                                Text("Mengunduh & Memasang...")
+                                                Text(text = "Mengunduh & Memasang...")
                                             } else {
                                                 Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                                                 Spacer(modifier = Modifier.width(8.dp))
-                                                Text("Unduh & Pasang dari URL")
+                                                Text(text = "Unduh & Pasang dari URL")
                                             }
                                         }
                                     }
@@ -663,20 +663,21 @@ fun ChromeExtensionsHubDialog(
                                                 onClick = {
                                                     val json = viewModel.exportExtensionsToJson(onlyCustom = false)
                                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                    clipboard.setPrimaryClip(ClipData.newPlainText("Chrome_Extensions_Backup", json))
+                                                    val clipLabel = "Chrome_Extensions_Backup"
+                                                    clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, json))
                                                     Toast.makeText(context, "Seluruh ekstensi disalin ke Clipboard (JSON)", Toast.LENGTH_SHORT).show()
                                                 }
                                             ) {
                                                 Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Ekspor JSON", fontSize = 12.sp)
+                                                Text(text = "Ekspor JSON", fontSize = 12.sp)
                                             }
                                         }
 
                                         OutlinedTextField(
                                             value = rawPasteFileName,
                                             onValueChange = { rawPasteFileName = it },
-                                            label = { Text("Nama File / Jenis (.user.js / .css / .json)") },
+                                            label = { Text(text = "Nama File / Jenis (.user.js / .css / .json)") },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth()
                                         )
@@ -684,7 +685,7 @@ fun ChromeExtensionsHubDialog(
                                         OutlinedTextField(
                                             value = rawPasteInput,
                                             onValueChange = { rawPasteInput = it },
-                                            label = { Text("Tempel kode // ==UserScript==, CSS, atau JSON di sini") },
+                                            label = { Text(text = "Tempel kode // ==UserScript==, CSS, atau JSON di sini") },
                                             minLines = 5,
                                             maxLines = 10,
                                             textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
@@ -706,7 +707,7 @@ fun ChromeExtensionsHubDialog(
                                         ) {
                                             Icon(Icons.Default.AddCircleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Pasang Ekstensi dari Kode yang Ditempel")
+                                            Text(text = "Pasang Ekstensi dari Kode yang Ditempel")
                                         }
                                     }
                                 }
@@ -728,14 +729,14 @@ fun ChromeExtensionsHubDialog(
                                     OutlinedTextField(
                                         value = extName,
                                         onValueChange = { extName = it },
-                                        label = { Text("Nama Ekstensi") },
+                                        label = { Text(text = "Nama Ekstensi") },
                                         singleLine = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     OutlinedTextField(
                                         value = extVersion,
                                         onValueChange = { extVersion = it },
-                                        label = { Text("Versi") },
+                                        label = { Text(text = "Versi") },
                                         singleLine = true,
                                         modifier = Modifier.width(100.dp)
                                     )
@@ -744,7 +745,7 @@ fun ChromeExtensionsHubDialog(
                                 OutlinedTextField(
                                     value = extDesc,
                                     onValueChange = { extDesc = it },
-                                    label = { Text("Deskripsi Singkat") },
+                                    label = { Text(text = "Deskripsi Singkat") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
@@ -752,7 +753,7 @@ fun ChromeExtensionsHubDialog(
                                 OutlinedTextField(
                                     value = extMatchesText,
                                     onValueChange = { extMatchesText = it },
-                                    label = { Text("Target Domain (* untuk semua situs, atau pisahkan koma: youtube.com, google.com)") },
+                                    label = { Text(text = "Target Domain (* untuk semua situs, atau pisahkan koma: youtube.com, google.com)") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
@@ -770,24 +771,24 @@ fun ChromeExtensionsHubDialog(
                                     FilterChip(
                                         selected = extRunAt == ExtensionRunAt.DOCUMENT_START,
                                         onClick = { extRunAt = ExtensionRunAt.DOCUMENT_START },
-                                        label = { Text("Otomatis Awal (document_start)") }
+                                        label = { Text(text = "Otomatis Awal (document_start)") }
                                     )
                                     FilterChip(
                                         selected = extRunAt == ExtensionRunAt.DOCUMENT_END,
                                         onClick = { extRunAt = ExtensionRunAt.DOCUMENT_END },
-                                        label = { Text("Otomatis Selesai (document_end)") }
+                                        label = { Text(text = "Otomatis Selesai (document_end)") }
                                     )
                                     FilterChip(
                                         selected = extRunAt == ExtensionRunAt.MANUAL_ONLY,
                                         onClick = { extRunAt = ExtensionRunAt.MANUAL_ONLY },
-                                        label = { Text("Manual saat Diklik") }
+                                        label = { Text(text = "Manual saat Diklik") }
                                     )
                                 }
 
                                 OutlinedTextField(
                                     value = extJsCode,
                                     onValueChange = { extJsCode = it },
-                                    label = { Text("Kode JavaScript (content.js)") },
+                                    label = { Text(text = "Kode JavaScript (content.js)") },
                                     minLines = 5,
                                     maxLines = 10,
                                     textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
@@ -797,7 +798,7 @@ fun ChromeExtensionsHubDialog(
                                 OutlinedTextField(
                                     value = extCssCode,
                                     onValueChange = { extCssCode = it },
-                                    label = { Text("Kode CSS Kustom (style.css - Opsional)") },
+                                    label = { Text(text = "Kode CSS Kustom (style.css - Opsional)") },
                                     minLines = 3,
                                     maxLines = 7,
                                     textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
@@ -827,7 +828,7 @@ fun ChromeExtensionsHubDialog(
                                     ) {
                                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Uji di Halaman")
+                                        Text(text = "Uji di Halaman")
                                     }
 
                                     Button(
@@ -864,7 +865,7 @@ fun ChromeExtensionsHubDialog(
                                     ) {
                                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Simpan Ekstensi")
+                                        Text(text = "Simpan Ekstensi")
                                     }
                                 }
                             }

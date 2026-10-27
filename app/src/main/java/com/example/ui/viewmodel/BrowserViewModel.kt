@@ -274,6 +274,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _forceWebPageDarkMode = MutableStateFlow(settings.forceWebPageDarkMode)
     val forceWebPageDarkMode = _forceWebPageDarkMode.asStateFlow()
 
+    private val _liquidGlassEnabled = MutableStateFlow(settings.liquidGlassEnabled)
+    val liquidGlassEnabled = _liquidGlassEnabled.asStateFlow()
+
+    private val _quickLinks = MutableStateFlow(com.example.manager.QuickLinkStore.load(application))
+    val quickLinks = _quickLinks.asStateFlow()
+
     private val _displayMode = MutableStateFlow(settings.displayMode)
     val displayMode = _displayMode.asStateFlow()
 
@@ -612,12 +618,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _adBlockDisabledDomains.value = settings.getAdBlockDisabledDomains()
     }
 
-    fun getBlockedLogsForPage(url: String): List<com.example.manager.AdBlockEngine.BlockedRequest> {
-        return com.example.manager.AdBlockEngine.getBlockedLogsForPage(url)
+    fun getBlockedLogsForPage(url: String): List<com.yourbrowser.adblock.BlockedRequest> {
+        return com.yourbrowser.adblock.AlexShieldV5LogStore.getBlockedLogsForPage(url)
     }
 
     fun clearBlockedLogs() {
-        com.example.manager.AdBlockEngine.clearBlockedLogs()
+        com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
     }
 
     fun toggleTabMute(tabId: String) {
@@ -1385,6 +1391,54 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setForceWebPageDarkMode(enabled: Boolean) {
         settings.forceWebPageDarkMode = enabled
         _forceWebPageDarkMode.value = enabled
+    }
+
+    fun setLiquidGlassEnabled(enabled: Boolean) {
+        settings.liquidGlassEnabled = enabled
+        _liquidGlassEnabled.value = enabled
+    }
+
+    fun addQuickLink(title: String, rawUrl: String): Boolean {
+        val normUrl = com.example.manager.QuickLinkStore.normalizeUrl(rawUrl) ?: return false
+        val cleanTitle = title.trim().ifBlank {
+            try { android.net.Uri.parse(normUrl).host?.removePrefix("www.") ?: normUrl } catch (_: Exception) { normUrl }
+        }
+        val current = _quickLinks.value
+        val nextPos = (current.maxOfOrNull { it.position } ?: -1) + 1
+        val newItem = com.example.manager.QuickLink(
+            id = java.util.UUID.randomUUID().toString(),
+            title = cleanTitle,
+            url = normUrl,
+            enabled = true,
+            position = nextPos
+        )
+        val updated = current + newItem
+        com.example.manager.QuickLinkStore.save(getApplication<Application>(), updated)
+        _quickLinks.value = com.example.manager.QuickLinkStore.load(getApplication<Application>())
+        return true
+    }
+
+    fun updateQuickLink(id: String, title: String, rawUrl: String, enabled: Boolean): Boolean {
+        val normUrl = com.example.manager.QuickLinkStore.normalizeUrl(rawUrl) ?: return false
+        val cleanTitle = title.trim().ifBlank {
+            try { android.net.Uri.parse(normUrl).host?.removePrefix("www.") ?: normUrl } catch (_: Exception) { normUrl }
+        }
+        val updated = _quickLinks.value.map { item ->
+            if (item.id == id) item.copy(title = cleanTitle, url = normUrl, enabled = enabled) else item
+        }
+        com.example.manager.QuickLinkStore.save(getApplication<Application>(), updated)
+        _quickLinks.value = com.example.manager.QuickLinkStore.load(getApplication<Application>())
+        return true
+    }
+
+    fun deleteQuickLink(id: String) {
+        val updated = _quickLinks.value.filterNot { it.id == id }
+        com.example.manager.QuickLinkStore.save(getApplication<Application>(), updated)
+        _quickLinks.value = com.example.manager.QuickLinkStore.load(getApplication<Application>())
+    }
+
+    fun resetQuickLinksToDefaults() {
+        _quickLinks.value = com.example.manager.QuickLinkStore.resetToDefaults(getApplication<Application>())
     }
 
     fun setDisplayMode(mode: DisplayMode) {

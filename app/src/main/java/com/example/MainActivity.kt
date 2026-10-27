@@ -8,7 +8,7 @@ import android.os.Bundle
 import android.util.Log
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,7 +34,7 @@ enum class NavigationRoute {
     SPLASH, BROWSER, SETTINGS
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var viewModel: BrowserViewModel
     private var mFilePathCallback: ValueCallback<Array<Uri>>? = null
@@ -112,6 +112,9 @@ class MainActivity : ComponentActivity() {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Initialize local Favicon disk & memory cache (no third-party network calls)
+        com.example.manager.FaviconStore.init(applicationContext)
 
         // Install AdBlock ServiceWorker interceptor before WebView content starts
         com.example.manager.AdBlockServiceWorker.install()

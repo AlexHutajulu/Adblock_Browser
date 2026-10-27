@@ -41,11 +41,7 @@ object FilterListManager {
     )
 
     data class ParsedRules(
-        val ruleSet: AbpRuleEngine.RuleSet,
-        val blockDomains: HashSet<String>,
-        val whitelistDomains: HashSet<String>,
-        val blockPatterns: List<Regex> = emptyList(),
-        val cosmeticSelectors: List<String> = emptyList()
+        val ruleSet: AbpRuleEngine.RuleSet
     )
 
     @Volatile
@@ -313,21 +309,14 @@ object FilterListManager {
 
     internal fun parseRules(raw: String): ParsedRules {
         val ruleSet = AbpRuleEngine.build(raw.lineSequence())
-        val blockDomains = HashSet<String>(ruleSet.domainOnlyBlock.keys)
-        val whitelistDomains = HashSet<String>(ruleSet.domainOnlyAllow.keys)
-        val cosmeticSelectors = ruleSet.cosmetic.globalSelectors
 
         Log.d(
             TAG,
-            "Parsed: block=${ruleSet.blockRules.size} allow=${ruleSet.allowRules.size} domains=${blockDomains.size} skipped=${ruleSet.totalRulesSkipped} cosmetic=${cosmeticSelectors.size}"
+            "Parsed: block=${ruleSet.blockRules.size} allow=${ruleSet.allowRules.size} domains=${ruleSet.domainOnlyBlock.size} skipped=${ruleSet.totalRulesSkipped} cosmetic=${ruleSet.cosmetic.globalSelectors.size}"
         )
 
         return ParsedRules(
-            ruleSet = ruleSet,
-            blockDomains = blockDomains,
-            whitelistDomains = whitelistDomains,
-            blockPatterns = emptyList(),
-            cosmeticSelectors = cosmeticSelectors
+            ruleSet = ruleSet
         )
     }
 }

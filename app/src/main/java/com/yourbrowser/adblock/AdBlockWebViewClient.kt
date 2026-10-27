@@ -349,7 +349,7 @@ class AdBlockWebViewClient(
             // diizinkan @@, heuristik tidak boleh memblokirnya.
             val explicitlyAllowed = cachedRules?.ruleSet?.matchesAllowRule(lowerUrl, pgHost, resType) == true
             if (!explicitlyAllowed) {
-                val heuristic = HeuristicsEngine.heuristicReason(reqHost, lowerUrl, isFirstParty)
+                val heuristic = HeuristicsEngine.heuristicReason(reqHost, lowerUrl, isFirstParty, resType)
                 if (heuristic != null) return heuristic
             }
         }
@@ -433,14 +433,11 @@ class AdBlockWebViewClient(
 
     private fun buildPageScript(hostname: String): String {
         val mode = currentMode.get()
+        val isAggressive = mode == PrivacyMode.AGGRESSIVE
         return buildString {
-            append(BASE_CLEANUP_SCRIPT)
+            append(buildBaseCleanupScript(aggressive = isAggressive))
             append("\n").append(ANTI_ADBLOCK_NEUTRALIZER_SCRIPT)
-            if (mode == PrivacyMode.AGGRESSIVE) {
-                append("\n").append(buildVisualAdKiller(aggressive = true))
-            } else {
-                append("\n").append(buildVisualAdKiller(aggressive = false))
-            }
+            append("\n").append(buildVisualAdKiller(aggressive = isAggressive))
             if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
                 append("\n").append(YT_PAGE_SCRIPT)
             }
@@ -586,9 +583,8 @@ class AdBlockWebViewClient(
     companion object {
 
         // 43-byte valid 1x1 transparent GIF (prevents <img onerror="adblockDetected()">)
-        val TRANSPARENT_1X1_GIF: ByteArray = Base64.decode(
-            "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
-            Base64.DEFAULT
+        val TRANSPARENT_1X1_GIF: ByteArray = java.util.Base64.getDecoder().decode(
+            "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
         )
 
         private val SURROGATE_JSON_OK = """{"status":"ok"}""".toByteArray(Charsets.UTF_8)
@@ -1078,6 +1074,44 @@ class AdBlockWebViewClient(
 
         // ─── Anti-AdBlock Modal / Wall Neutralizer ────────────────────────────
 
+        internal val PROTECTED_DIALOG_KEYWORDS = listOf(
+            "login", "signin", "sign-in", "sign in", "signup", "sign-up", "sign up",
+            "register", "auth", "oauth", "password", "otp", "verification", "verify",
+            "captcha", "recaptcha", "hcaptcha", "turnstile",
+            "cookie", "consent", "gdpr", "privacy",
+            "paywall", "subscribe", "subscription", "checkout", "payment",
+            "age-gate", "agegate", "age_gate", "adult", "confirm"
+        )
+
+        internal val POSITIVE_ANTI_ADBLOCK_MARKERS = listOf(
+            "fc-ab-root", "fc-whitelist-root", "ab-message", "babasbmsgx",
+            "adblock", "adblocker", "adb-detected", "fuckadblock", "blockadblock"
+        )
+
+        internal val POSITIVE_ANTI_ADBLOCK_TEXTS = listOf(
+            "disable your adblock", "turn off adblock", "matikan adblock",
+            "nonaktifkan adblock", "adblock detected", "adblocker detected",
+            "allow ads", "izinkan iklan"
+        )
+
+        internal fun isAntiAdblockModalCandidate(
+            classAndId: String,
+            textContent: String,
+            hasProtectedFormOrInput: Boolean = false
+        ): Boolean {
+            if (hasProtectedFormOrInput) return false
+            val attrLower = classAndId.lowercase(Locale.US)
+            val textLower = textContent.lowercase(Locale.US)
+
+            if (PROTECTED_DIALOG_KEYWORDS.any { attrLower.contains(it) || textLower.contains(it) }) {
+                return false
+            }
+
+            val hasMarker = POSITIVE_ANTI_ADBLOCK_MARKERS.any { attrLower.contains(it) }
+            val hasPositiveText = POSITIVE_ANTI_ADBLOCK_TEXTS.any { textLower.contains(it) }
+            return hasMarker || hasPositiveText
+        }
+
         val ANTI_ADBLOCK_NEUTRALIZER_SCRIPT = """
 (function(){
   if(window.__asNeutralizer) return;
@@ -1085,21 +1119,90 @@ class AdBlockWebViewClient(
 
   var MODAL_SELS=[
     '.fc-ab-root','#fc-ab-root','.fc-whitelist-root',
-    '#babasbmsgx','.adblock-modal','#adblock-modal','.adblocker-modal',
+    '#babasbmsgx','.ab-message','#ab-message',
+    '.adblock-modal','#adblock-modal','.adblocker-modal',
     '[class*="adblock-notice"]','[id*="adblock-notice"]',
     '[class*="adblock-overlay"]','[id*="adblock-overlay"]',
-    '.tp-modal','.tp-backdrop'
+    '[class*="adb-detected"]','[id*="adb-detected"]',
+    '[class*="fuckadblock"]','[id*="fuckadblock"]',
+    '[class*="blockadblock"]','[id*="blockadblock"]'
   ];
 
-  function unlockScroll(){
+  var PROTECTED_KEYWORDS=[
+    'login','signin','sign-in','sign in','signup','sign-up','sign up',
+    'register','auth','oauth','password','otp','verification','verify',
+    'captcha','recaptcha','hcaptcha','turnstile',
+    'cookie','consent','gdpr','privacy',
+    'paywall','subscribe','subscription','checkout','payment',
+    'age-gate','agegate','age_gate','adult','confirm'
+  ];
+
+  var POSITIVE_MARKERS=[
+    'fc-ab-root','fc-whitelist-root','ab-message','babasbmsgx',
+    'adblock','adblocker','adb-detected','fuckadblock','blockadblock'
+  ];
+
+  var POSITIVE_TEXTS=[
+    'disable your adblock','turn off adblock','matikan adblock',
+    'nonaktifkan adblock','adblock detected','adblocker detected',
+    'allow ads','izinkan iklan'
+  ];
+
+  function attrString(el){
+    if(!el||el.nodeType!==1) return '';
+    var cls=typeof el.className==='string'?el.className:'';
+    var id=el.id||'';
+    var aria=el.getAttribute?el.getAttribute('aria-label')||'':'';
+    var role=el.getAttribute?el.getAttribute('role')||'':'';
+    return (cls+' '+id+' '+aria+' '+role).toLowerCase();
+  }
+
+  function isProtectedModal(el){
+    try{
+      if(!el||el.nodeType!==1) return true;
+      if(el.querySelector&&el.querySelector('input[type="password"],input[type="email"],form[action*="login"],form[action*="auth"],iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="turnstile"],video')){
+        return true;
+      }
+      var cur=el;
+      for(var d=0;cur&&cur.nodeType===1&&d<4;d++,cur=cur.parentElement){
+        var a=attrString(cur);
+        if(PROTECTED_KEYWORDS.some(function(k){return a.indexOf(k)>-1;})) return true;
+      }
+      var txt=((el.textContent||'')+'').substring(0,600).toLowerCase();
+      if(PROTECTED_KEYWORDS.some(function(k){return txt.indexOf(k)>-1;})) return true;
+      return false;
+    }catch(e){return true;}
+  }
+
+  function hasPositiveAntiAdblockSignal(el){
+    try{
+      var a=attrString(el);
+      var txt=((el.textContent||'')+'').substring(0,600).toLowerCase();
+      var hasMarker=POSITIVE_MARKERS.some(function(m){return a.indexOf(m)>-1;});
+      var hasText=POSITIVE_TEXTS.some(function(t){return txt.indexOf(t)>-1;});
+      return hasMarker||hasText;
+    }catch(e){return false;}
+  }
+
+  function neutralizeElement(el){
+    if(!el||el.getAttribute('data-as-neutralized')==='1') return false;
+    if(isProtectedModal(el)||!hasPositiveAntiAdblockSignal(el)) return false;
+    el.setAttribute('data-as-neutralized','1');
+    el.style.setProperty('opacity','0','important');
+    el.style.setProperty('pointer-events','none','important');
+    el.style.setProperty('max-height','0px','important');
+    el.style.setProperty('max-width','0px','important');
+    el.style.setProperty('overflow','hidden','important');
+    el.style.setProperty('position','absolute','important');
+    el.style.setProperty('left','-9999px','important');
+    return true;
+  }
+
+  function unlockScrollIfConfirmed(){
     try{
       [document.documentElement,document.body].forEach(function(el){
         if(!el) return;
-        var st=window.getComputedStyle(el);
-        if(st.overflow==='hidden'||el.classList.contains('fc-ab-root')||el.style.overflow==='hidden'){
-          el.style.setProperty('overflow','auto','important');
-          el.style.setProperty('position','static','important');
-        }
+        if(el.style.overflow==='hidden') el.style.setProperty('overflow','auto','important');
       });
     }catch(e){}
   }
@@ -1109,12 +1212,11 @@ class AdBlockWebViewClient(
     try{
       MODAL_SELS.forEach(function(sel){
         document.querySelectorAll(sel).forEach(function(el){
-          el.remove();
-          defused++;
+          if(neutralizeElement(el)) defused++;
         });
       });
       if(defused>0){
-        unlockScroll();
+        unlockScrollIfConfirmed();
         try{if(window.AlexBrowserNative&&window.AlexBrowserNative.onStealthTrapDefused)window.AlexBrowserNative.onStealthTrapDefused('anti-adblock-modal');}catch(e){}
       }
     }catch(e){}
@@ -1131,15 +1233,149 @@ class AdBlockWebViewClient(
 
         // ─── Base cleanup script ──────────────────────────────────────────────
 
-        private val BASE_CLEANUP_SCRIPT = """
+        internal val BASE_CLEANUP_AD_DOMAINS = setOf(
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googleadservices.com",
+            "adnxs.com",
+            "amazon-adsystem.com",
+            "rubiconproject.com",
+            "pubmatic.com",
+            "openx.net",
+            "taboola.com",
+            "outbrain.com",
+            "criteo.com",
+            "criteo.net"
+        )
+
+        internal val SAFE_VIDEO_EMBED_DOMAINS = setOf(
+            "youtube.com",
+            "youtube-nocookie.com",
+            "youtu.be",
+            "vimeo.com",
+            "player.vimeo.com",
+            "dailymotion.com",
+            "twitch.tv",
+            "player.twitch.tv",
+            "spotify.com"
+        )
+
+        internal fun shouldCleanIframeInBaseCleanup(
+            iframeSrc: String,
+            pageHost: String,
+            isInsideVideoPlayer: Boolean = false
+        ): Boolean {
+            if (isInsideVideoPlayer) return false
+            val rawSrc = iframeSrc.trim()
+            if (rawSrc.isEmpty() || rawSrc.startsWith("about:") || rawSrc.startsWith("javascript:") || rawSrc.startsWith("data:")) {
+                return false
+            }
+            val iframeHost = com.example.manager.AbpRuleEngine.extractHost(rawSrc)
+                .lowercase(Locale.US)
+                .removePrefix("www.")
+            if (iframeHost.isEmpty()) {
+                // Relative URL -> first-party iframe -> never clean in BASE_CLEANUP_SCRIPT
+                return false
+            }
+            val cleanPageHost = pageHost.trim().lowercase(Locale.US).removePrefix("www.")
+            if (cleanPageHost.isNotEmpty() && !com.example.manager.AbpRuleEngine.isThirdParty(iframeHost, cleanPageHost)) {
+                // First-party iframe -> never clean
+                return false
+            }
+            if (SAFE_VIDEO_EMBED_DOMAINS.any { iframeHost == it || iframeHost.endsWith(".$it") }) {
+                return false
+            }
+            if (CRITICAL_BYPASS_DOMAINS.any { iframeHost == it || iframeHost.endsWith(".$it") }) {
+                return false
+            }
+            return BASE_CLEANUP_AD_DOMAINS.any { iframeHost == it || iframeHost.endsWith(".$it") }
+        }
+
+        internal fun buildBaseCleanupScript(aggressive: Boolean = false): String = """
 (function(){
   if(window.__asBasePage) return;
   try{Object.defineProperty(window,'__asBasePage',{value:true,enumerable:false,configurable:false});}catch(e){window.__asBasePage=true;}
-  var BADSRC=['doubleclick','googlesyndication','adnxs','amazon-adsystem','rubiconproject','pubmatic','openx','taboola','outbrain','criteo'];
-  function badSrc(s){return BADSRC.some(function(x){return(s||'').indexOf(x)>-1;});}
+  var AGG=${aggressive};
+  var BAD_DOMAINS=[
+    'doubleclick.net','googlesyndication.com','googleadservices.com',
+    'adnxs.com','amazon-adsystem.com','rubiconproject.com',
+    'pubmatic.com','openx.net','taboola.com','outbrain.com',
+    'criteo.com','criteo.net'
+  ];
+  var SAFE_EMBED_DOMAINS=[
+    'youtube.com','youtube-nocookie.com','youtu.be',
+    'vimeo.com','player.vimeo.com','dailymotion.com',
+    'twitch.tv','player.twitch.tv','spotify.com'
+  ];
+  function cleanHost(h){
+    return String(h||'').toLowerCase().replace(/^www\./,'').replace(/\.$/,'');
+  }
+  function regDomain(h){
+    var c=cleanHost(h);
+    if(!c) return '';
+    var p=c.split('.');
+    if(p.length<=2) return c;
+    var last=p[p.length-1],sec=p[p.length-2];
+    var cc=(last==='id'||last==='uk'||last==='au'||last==='jp'||last==='nz'||last==='br')&&
+           (sec==='co'||sec==='ac'||sec==='go'||sec==='or'||sec==='sch'||sec==='com'||sec==='net'||sec==='org');
+    return (cc&&p.length>=3)?(p[p.length-3]+'.'+sec+'.'+last):(sec+'.'+last);
+  }
+  function isDomainMatch(host,list){
+    return list.some(function(d){return host===d||host.endsWith('.'+d);});
+  }
+  function isProtectedVideoOrPlayer(el){
+    try{
+      if(!el||el.nodeType!==1) return true;
+      var tag=(el.tagName||'').toUpperCase();
+      if(tag==='VIDEO'||tag==='AUDIO'||tag==='SOURCE'||tag==='CANVAS') return true;
+      if(el.closest&&el.closest('video,audio,.video-player,.player,[data-player],[class*="video-player"],[id*="video-player"]')) return true;
+      return false;
+    }catch(e){return true;}
+  }
+  function shouldCleanIframe(n){
+    try{
+      if(!n||n.nodeType!==1||(n.tagName||'').toUpperCase()!=='IFRAME') return false;
+      if(n.getAttribute('data-as-cleaned')==='1') return false;
+      if(isProtectedVideoOrPlayer(n)) return false;
+      var raw=n.getAttribute('src')||n.src||'';
+      if(!raw||raw.indexOf('about:')===0||raw.indexOf('javascript:')===0||raw.indexOf('data:')===0) return false;
+      var u=new URL(raw,location.href);
+      var iHost=cleanHost(u.hostname);
+      var pHost=cleanHost(location.hostname);
+      if(!iHost) return false;
+      if(pHost&&regDomain(iHost)===regDomain(pHost)) return false;
+      if(isDomainMatch(iHost,SAFE_EMBED_DOMAINS)) return false;
+      return isDomainMatch(iHost,BAD_DOMAINS);
+    }catch(e){return false;}
+  }
+  function hideIframe(n){
+    try{
+      n.setAttribute('data-as-cleaned','1');
+      if(AGG){
+        n.remove();
+      }else{
+        n.style.setProperty('opacity','0','important');
+        n.style.setProperty('pointer-events','none','important');
+        n.style.setProperty('max-height','0px','important');
+        n.style.setProperty('max-width','0px','important');
+        n.style.setProperty('overflow','hidden','important');
+        n.style.setProperty('position','absolute','important');
+        n.style.setProperty('left','-9999px','important');
+      }
+    }catch(e){}
+  }
   function clean(root){
     try{
-      (root||document).querySelectorAll('iframe[src]').forEach(function(n){if(badSrc(n.src||''))n.remove();});
+      var scope=root||document;
+      if(scope.nodeType===1&&(scope.tagName||'').toUpperCase()==='IFRAME'){
+        if(shouldCleanIframe(scope)) hideIframe(scope);
+        return;
+      }
+      if(scope.querySelectorAll){
+        scope.querySelectorAll('iframe[src]').forEach(function(n){
+          if(shouldCleanIframe(n)) hideIframe(n);
+        });
+      }
     }catch(e){}
   }
   clean(document);
@@ -1147,6 +1383,8 @@ class AdBlockWebViewClient(
     .observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()
+
+        internal val BASE_CLEANUP_SCRIPT: String = buildBaseCleanupScript(aggressive = false)
 
         // ─── YouTube skip script ───────────────────────────────────────────────
 

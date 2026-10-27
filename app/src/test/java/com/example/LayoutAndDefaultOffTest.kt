@@ -169,4 +169,75 @@ class LayoutAndDefaultOffTest {
             shortcuts.isEmpty()
         )
     }
+
+    @Test
+    fun testB1CosmeticFilterInjectorRejectsWeakAttributeSubstring() {
+        assertFalse(
+            "div[id*=\"ad\"] must be rejected because 'ad' is < 6 chars and matches 'header'",
+            CosmeticFilterInjector.isSafeCssSelector("div[id*=\"ad\"]")
+        )
+        assertFalse(
+            "a[href*=\"ad\"] must be rejected because 'ad' is < 6 chars and matches 'download'",
+            CosmeticFilterInjector.isSafeCssSelector("a[href*=\"ad\"]")
+        )
+        assertFalse(
+            "div[class*=\"header-banner\"] must be rejected because it contains weak word 'head'",
+            CosmeticFilterInjector.isSafeCssSelector("div[class*=\"header-banner\"]")
+        )
+        assertTrue(
+            "div[id*='adblock-warning'] should remain valid",
+            CosmeticFilterInjector.isSafeCssSelector("div[id*='adblock-warning']")
+        )
+    }
+
+    @Test
+    fun testB2AbpRuleEngineFirstPartyUnanchoredRuleDoesNotBlockCdn() {
+        val rules = sequenceOf("/ads/banner.js", "||doubleclick.net^")
+        val parsed = AbpRuleEngine.build(rules)
+        // First-party request to unanchored rule should NOT be blocked (returns null)
+        assertNull(
+            "1st-party request should not be blocked by unanchored substring rule",
+            parsed.shouldBlock(
+                url = "https://cdn.toko.id/ads/banner.js",
+                sourceHost = "www.toko.id",
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        // 3rd-party request to anchored rule should still be blocked (returns non-null MatchResult)
+        assertTrue(
+            "3rd-party request to doubleclick.net should still be blocked",
+            parsed.shouldBlock(
+                url = "https://ad.doubleclick.net/ads/banner.js",
+                sourceHost = "www.toko.id",
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
+            ) != null
+        )
+    }
+
+    @Test
+    fun testB3HeuristicsEngineDoesNotBlockGenericPathsOrStylesheets() {
+        // Generic paths like /pop.js, /banner.js, /adv/ must not be in PATH_PATTERNS
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                "cdn.BootstrapSite.com",
+                "https://cdn.bootstrapsite.com/js/pop.js",
+                true
+            )
+        )
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                "assets.example.org",
+                "https://assets.example.org/banner.js",
+                true
+            )
+        )
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                "static.example.org",
+                "https://static.example.org/adv/style.css",
+                true
+            )
+        )
+    }
 }
+

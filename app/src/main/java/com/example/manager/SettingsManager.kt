@@ -266,6 +266,20 @@ class SettingsManager(private val context: Context) {
         get() = prefs.getBoolean("force_web_page_dark_mode", false)
         set(value) = prefs.edit().putBoolean("force_web_page_dark_mode", value).apply()
 
+    var liquidGlassEnabled: Boolean
+        get() = prefs.getBoolean("liquid_glass_enabled_v1", defaultLiquidGlass(context))
+        set(value) = prefs.edit().putBoolean("liquid_glass_enabled_v1", value).apply()
+
+    private fun defaultLiquidGlass(ctx: Context): Boolean {
+        return try {
+            val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            mi.totalMem >= 6L * 1024 * 1024 * 1024 // >= 6 GB RAM
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
     fun saveTabs(tabs: List<com.example.ui.viewmodel.BrowserTab>, activeTabId: String) {
         val jsonArray = org.json.JSONArray()
         tabs.filter { !it.isPrivate }.forEach { tab ->

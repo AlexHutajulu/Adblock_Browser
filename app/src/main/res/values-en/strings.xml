@@ -35,15 +35,23 @@
     <string name="settings_reset">Reset</string>
     <string name="settings_reset_confirm">Settings reset to default</string>
     <string name="settings_back">Back</string>
+    <string name="settings_done">Done</string>
+    <string name="settings_clear_all">Clear All</string>
 
-    <!-- Settings Categories -->
+    <!-- Settings Categories (Legacy & 5 Clean Sections) -->
     <string name="category_general">Basics &amp; Search</string>
     <string name="category_security">Privacy &amp; Security</string>
     <string name="category_connectivity">Performance &amp; Downloads</string>
     <string name="category_storage">Site Data &amp; Storage</string>
     <string name="category_about">About Browser</string>
 
-    <!-- Language Settings (New Feature 2B) -->
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_section_privacy">Privacy &amp; security</string>
+    <string name="settings_section_adblock">AdBlock</string>
+    <string name="settings_section_language">Language</string>
+    <string name="settings_section_advanced">Advanced</string>
+
+    <!-- Language Settings -->
     <string name="pref_language_title">App Language</string>
     <string name="pref_language_summary">Select display language for the application</string>
     <string name="lang_indonesian">Bahasa Indonesia</string>
@@ -51,53 +59,64 @@
     <string name="lang_system">System Default</string>
     <string name="lang_changed_toast">Language changed to %1$s</string>
 
-    <!-- General Settings Module -->
+    <!-- Appearance & General Settings -->
     <string name="pref_search_engine_title">Default Search Engine</string>
     <string name="pref_search_engine_summary">Choose search engine for address bar</string>
-    <string name="pref_theme_title">Appearance &amp; Theme</string>
+    <string name="settings_default_engine_toast">%1$s set as default search engine</string>
+    <string name="pref_theme_title">Theme</string>
     <string name="pref_theme_summary">Select light, dark, or system default mode</string>
-    <string name="theme_system">System Default</string>
-    <string name="theme_light">Light Mode</string>
-    <string name="theme_dark">Dark Mode</string>
-    <string name="pref_force_dark_title">Force Web Page Dark Mode</string>
-    <string name="pref_force_dark_summary">Render all websites in dark mode</string>
-    <string name="pref_display_mode_title">Display Mode</string>
-    <string name="mode_mobile">Mobile Mode</string>
-    <string name="mode_desktop">Desktop Mode</string>
-    <string name="pref_background_playback_title">Background Playback</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="settings_liquid_glass_title">Liquid Glass Effect</string>
+    <string name="settings_liquid_glass_summary">Translucent blur &amp; sheen on top and bottom bars</string>
+    <string name="pref_force_dark_title">Force Dark Mode on Web Pages</string>
+    <string name="pref_force_dark_summary">Automatically render websites in dark mode</string>
+    <string name="pref_display_mode_title">Default Display Mode</string>
+    <string name="mode_mobile">Mobile</string>
+    <string name="mode_desktop">Desktop</string>
+    <string name="settings_reset_quick_links">Restore default quick links</string>
+    <string name="settings_reset_quick_links_summary">Restore Google, YouTube, Wikipedia, and GitHub in the bookmark bar</string>
+    <string name="settings_reset_quick_links_toast">Quick links restored to default</string>
+    <string name="pref_background_playback_title">Background Audio Playback</string>
     <string name="pref_background_playback_summary">Continue audio/video when switching tabs or backgrounded</string>
-    <string name="pref_screen_recording_title">Allow Screen Recording &amp; Screenshots</string>
-    <string name="pref_screen_recording_summary">Disable FLAG_SECURE to allow recording</string>
+    <string name="pref_screen_recording_title">Allow Screenshots</string>
+    <string name="pref_screen_recording_summary">Disable FLAG_SECURE to allow screenshots &amp; screen recording</string>
     <string name="pref_devtools_title">Developer Tools (Inspect Element)</string>
-    <string name="pref_devtools_summary">Open console and DOM inspector below</string>
+    <string name="pref_devtools_summary">Show DOM, Console, Network, and Storage inspector</string>
 
-    <!-- Security & Privacy Module -->
+    <!-- Security, Privacy & AdBlock -->
     <string name="pref_adblock_title">AdBlock Mode</string>
     <string name="adblock_off">Off</string>
-    <string name="adblock_balanced">Balanced (Recommended)</string>
-    <string name="adblock_aggressive">Aggressive (Maximum Blocking)</string>
-    <string name="pref_tracker_title">Block Trackers (Anti-Tracking)</string>
+    <string name="adblock_balanced">Balanced</string>
+    <string name="adblock_aggressive">Aggressive</string>
+    <string name="pref_tracker_title">Block Trackers</string>
     <string name="pref_tracker_summary">Prevent cross-site tracking and analytics scripts</string>
-    <string name="pref_popups_title">Open Popups in New Tab</string>
-    <string name="pref_popups_summary">Open popup windows as controlled new tabs</string>
+    <string name="pref_popups_title">Open Pop-ups in New Tab</string>
+    <string name="pref_popups_summary">Open allowed pop-up windows as separate tabs</string>
     <string name="pref_redirects_title">Block Suspicious Redirects</string>
-    <string name="pref_redirects_summary">Prevent automatic redirects to suspicious links</string>
+    <string name="pref_redirects_summary">Prevent automatic third-party ad redirects</string>
     <string name="pref_privacy_shield_title">Privacy Shield Mode</string>
     <string name="privacy_shield_standard">Standard</string>
     <string name="privacy_shield_strict">Strict (Anti-Fingerprint)</string>
     <string name="pref_webrtc_leak_title">Prevent WebRTC IP Leaks</string>
-    <string name="pref_webrtc_leak_summary">Hide true IP address from WebRTC requests</string>
-    <string name="pref_clear_cookies_exit_title">Clear Cookies on Exit</string>
-    <string name="pref_clear_cookies_exit_summary">Clear login sessions and tracking cookies on exit</string>
+    <string name="pref_webrtc_leak_summary">Hide local IP address from WebRTC peer requests</string>
+    <string name="settings_strict_webrtc_title">Strict WebRTC Block</string>
+    <string name="settings_strict_webrtc_summary">Completely disable non-relay ICE candidates</string>
+    <string name="pref_clear_cookies_exit_title">Clear Cookies &amp; Site Data on Exit</string>
+    <string name="pref_clear_cookies_exit_summary">Automatically wipe cookies, site storage, and sessions when exiting</string>
     <string name="pref_site_permissions_title">Manage Site Permissions</string>
-    <string name="pref_site_permissions_summary">Camera, Microphone, Location, and Sensors</string>
+    <string name="pref_site_permissions_summary">Camera, Microphone, Location, and Sensors per domain</string>
+    <string name="settings_site_permissions_empty">No customized site permissions saved.</string>
+    <string name="settings_db_status_prefix">Database Status: %1$s</string>
+    <string name="settings_about_description">Fast, lightweight, and responsive modern web browser with built-in AdShield protection. External connections are limited to your selected search engine, Android Safe Browsing, HTTPS AdBlock filter list updates (EasyList, EasyPrivacy, Peter Lowe), and URLs you explicitly open.</string>
 
     <!-- Connectivity & Performance Module -->
     <string name="pref_streaming_boost_title">Video Streaming Acceleration</string>
-    <string name="pref_streaming_boost_summary">Optimize video buffer for smooth playback</string>
-    <string name="pref_download_accel_title">Download Acceleration</string>
+    <string name="pref_streaming_boost_summary">Optimize video buffer for smoother playback</string>
+    <string name="pref_download_accel_title">Parallel Download Acceleration</string>
     <string name="pref_data_saver_title">Data Saver Mode</string>
-    <string name="pref_data_saver_summary">Compress images and reduce network usage</string>
+    <string name="pref_data_saver_summary">Reduce data usage by restricting heavy page bloat</string>
 
     <!-- Storage & Data Cleaners Module -->
     <string name="pref_clear_history">Clear Browsing History</string>
@@ -109,6 +128,54 @@
     <string name="toast_cache_cleared">Browser cache cleared (cookies preserved)</string>
     <string name="toast_all_data_cleared">Cookies, site data &amp; cache cleared</string>
 
+    <!-- Quick Links & Common Actions -->
+    <string name="quick_link_add">Add Quick Link</string>
+    <string name="quick_link_edit">Edit Quick Link</string>
+    <string name="quick_link_title_label">Title</string>
+    <string name="quick_link_url_label">URL (https://...)</string>
+    <string name="quick_link_invalid_url">Enter a valid http/https URL</string>
+    <string name="quick_link_show_in_bar">Show in shortcut bar</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_block">Block</string>
+    <string name="action_open">Open</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_reload">Reload</string>
+    <string name="action_home">Home</string>
+    <string name="action_more">More</string>
+
+    <!-- Browser Dialogs & Actions -->
+    <string name="dialog_external_app_title">Open External App?</string>
+    <string name="dialog_external_app_message">This site wants to open an application outside AlexBrowser:\n%1$s</string>
+    <string name="omnibox_copy_link">Copy link</string>
+    <string name="omnibox_edit_url">Edit URL</string>
+    <string name="omnibox_paste_go">Paste &amp; Go</string>
+    <string name="tab_hibernate_ram">Hibernate other tabs (Save RAM)</string>
+    <string name="tab_close_all">Close all tabs</string>
+    <string name="bookmarks_search_hint">Search your bookmarks</string>
+    <string name="history_search_hint">Search history</string>
+    <string name="sidebar_tab_label">Tab</string>
+    <string name="sidebar_history_label">History</string>
+    <string name="desktop_switch_mobile">Return to Mobile Mode</string>
+    <string name="desktop_sidebar_tabs">Side Panel: Tab List (%1$s)</string>
+    <string name="desktop_sidebar_bookmarks">Side Panel: Bookmarks</string>
+    <string name="desktop_sidebar_history">Side Panel: History</string>
+    <string name="zapper_remove_element">Remove Element</string>
+    <string name="zapper_ram_saver">Save RAM</string>
+    <string name="zapper_reset_host">Reset %1$d Removed Elements on %2$s</string>
+    <string name="shield_fix_captcha">Fix CAPTCHA / Verification Loop</string>
+    <string name="security_https_only_title">Force HTTPS-Only</string>
+    <string name="security_https_only_sub">Upgrade HTTP to HTTPS &amp; show warnings</string>
+    <string name="security_phishing_title">Phishing &amp; Malware Site Detection</string>
+    <string name="security_phishing_sub">Block lookalike domains, scams &amp; IDN homographs</string>
+    <string name="security_cam_mic_title">Block Camera &amp; Microphone</string>
+    <string name="security_cam_mic_sub">Automatically deny webcam &amp; audio access</string>
+    <string name="security_clipboard_title">Clipboard &amp; Pop-up Protection</string>
+    <string name="security_clipboard_sub">Prevent clipboard hijacking &amp; ad redirects</string>
+    <string name="home_switch_regular_tab">Switch to Regular Tab</string>
+
     <!-- Downloads UI & Notifications -->
     <string name="download_blocked_unsafe">Download blocked: Unsafe URL</string>
     <string name="download_warning_dangerous_file">⚠ Warning: This file may be dangerous!</string>
@@ -116,6 +183,7 @@
     <string name="download_range_fallback_normal">Server does not support Range. Fallback to Normal Mode.</string>
     <string name="downloading_file">Downloading file...</string>
     <string name="download_failed_prefix">Download failed: %1$s</string>
+    <string name="downloads_clear_done">Clear Done</string>
     
     <!-- Extensions & Scripts UI -->
     <string name="extension_tab_private_active">Private Tab: Active</string>

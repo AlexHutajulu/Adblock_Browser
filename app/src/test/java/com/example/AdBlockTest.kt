@@ -766,7 +766,7 @@ class AdBlockTest {
         val rawRules = filterMgr.readBoundedUtf8Stream(smallStream, maxBytes = 4096)
         assertNotNull(rawRules)
         val parsed = filterMgr.parseRules(rawRules!!)
-        assertTrue("Exact domain rule must be parsed", parsed.blockDomains.contains("doubleclick.net"))
+        assertTrue("Exact domain rule must be parsed", parsed.ruleSet.domainOnlyBlock.containsKey("doubleclick.net"))
         assertTrue("Rule set must block exact domain", parsed.ruleSet.isDomainBlocked("doubleclick.net"))
         val overLimitStream = ByteArray(2048) { 'x'.code.toByte() }.inputStream()
         assertNull(
@@ -1175,20 +1175,20 @@ class AdBlockTest {
         assertTrue(client.isCriticalBypassDomain("challenges.cloudflare.com"))
         assertTrue(client.isCriticalBypassDomain("snap.midtrans.com"))
 
-        // 5. Unified log store across AlexShieldV5LogStore and AdBlockEngine
-        com.example.manager.AdBlockEngine.clearBlockedLogs()
+        // 5. Unified log store across AlexShieldV5LogStore
+        com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
         com.yourbrowser.adblock.AlexShieldV5LogStore.add(
             tabId = "tab-t6",
             pageUrl = "https://m.news.example.com/story/1",
             blockedUrl = "https://hotjar.com/script.js",
             reason = "tracker-domain"
         )
-        val logs = com.example.manager.AdBlockEngine.getBlockedLogsForPage("https://www.news.example.com/")
+        val logs = com.yourbrowser.adblock.AlexShieldV5LogStore.getBlockedLogsForPage("https://www.news.example.com/")
         assertEquals("Unified log store must return subdomain-matched blocked log", 1, logs.size)
         assertEquals("Tracker", logs[0].type)
         assertEquals("hotjar.com", logs[0].host)
-        com.example.manager.AdBlockEngine.clearBlockedLogs()
-        assertTrue(com.example.manager.AdBlockEngine.getBlockedLogsForPage("https://news.example.com").isEmpty())
+        com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
+        assertTrue(com.yourbrowser.adblock.AlexShieldV5LogStore.getBlockedLogsForPage("https://news.example.com").isEmpty())
     }
 
     @Test

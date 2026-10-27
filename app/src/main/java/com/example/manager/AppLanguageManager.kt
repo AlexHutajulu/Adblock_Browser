@@ -5,6 +5,8 @@ import android.content.res.Configuration
 import android.content.res.Resources
 import android.os.Build
 import android.os.LocaleList
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import java.util.Locale
 
 /**
@@ -21,6 +23,22 @@ enum class AppLanguage(val code: String, val displayNameRes: String) {
 
 object AppLanguageManager {
     const val KEY_APP_LANGUAGE = "app_language_preference"
+
+    /**
+     * Applies per-app language via AndroidX AppCompatDelegate.
+     */
+    fun apply(lang: AppLanguage) {
+        val locales = when (lang) {
+            AppLanguage.SYSTEM -> LocaleListCompat.getEmptyLocaleList()
+            AppLanguage.INDONESIAN -> LocaleListCompat.forLanguageTags("id")
+            AppLanguage.ENGLISH -> LocaleListCompat.forLanguageTags("en")
+        }
+        try {
+            AppCompatDelegate.setApplicationLocales(locales)
+        } catch (_: Throwable) {
+            // Safe fallback in unit test environments without a running AppCompat host
+        }
+    }
 
     /**
      * Resolves the effective Locale to apply:
@@ -87,9 +105,10 @@ object AppLanguageManager {
     }
 
     /**
-     * Applies the resolved locale to the context and application resources.
+     * Applies the resolved locale to the context, application resources, and AppCompatDelegate.
      */
     fun applyLocale(context: Context, language: AppLanguage) {
+        apply(language)
         val locale = resolveEffectiveLocale(language)
         Locale.setDefault(locale)
         

@@ -514,7 +514,7 @@ fun CustomJsStudioDialog(
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Buat JS Baru", fontSize = 12.sp)
+                            Text(text = "Buat JS Baru", fontSize = 12.sp)
                         }
                     }
                 )
@@ -533,7 +533,7 @@ fun CustomJsStudioDialog(
                     Tab(
                         selected = selectedTabIndex == 0,
                         onClick = { selectedTabIndex = 0 },
-                        text = { Text("Toolbar JS (${scripts.size})") }
+                        text = { Text(text = "Toolbar JS (${scripts.size})") }
                     )
                     Tab(
                         selected = selectedTabIndex == 1,
@@ -541,12 +541,12 @@ fun CustomJsStudioDialog(
                             if (jsCodeInput.isBlank()) resetEditorForNew()
                             selectedTabIndex = 1
                         },
-                        text = { Text(if (editingScriptId == null) "Buat Toolbar JS" else "Edit Toolbar JS") }
+                        text = { Text(text = if (editingScriptId == null) "Buat Toolbar JS" else "Edit Toolbar JS") }
                     )
                     Tab(
                         selected = selectedTabIndex == 2,
                         onClick = { selectedTabIndex = 2 },
-                        text = { Text("Template & Pintasan") }
+                        text = { Text(text = "Template & Pintasan") }
                     )
                     Tab(
                         selected = selectedTabIndex == 3,
@@ -554,7 +554,7 @@ fun CustomJsStudioDialog(
                             jsonTransferInput = viewModel.exportCustomJsScriptsToJson()
                             selectedTabIndex = 3
                         },
-                        text = { Text("Impor / Ekspor JSON") }
+                        text = { Text(text = "Impor / Ekspor JSON") }
                     )
                 }
 
@@ -686,7 +686,7 @@ fun CustomJsStudioDialog(
                                             ) {
                                                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Jalankan Sekarang", fontSize = 12.sp)
+                                                Text(text = "Jalankan Sekarang", fontSize = 12.sp)
                                             }
                                             OutlinedButton(
                                                 onClick = { loadScriptIntoEditor(item) },
@@ -694,7 +694,7 @@ fun CustomJsStudioDialog(
                                             ) {
                                                 Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Edit Kode", fontSize = 12.sp)
+                                                Text(text = "Edit Kode", fontSize = 12.sp)
                                             }
                                             Spacer(modifier = Modifier.weight(1f))
                                             IconButton(
@@ -728,7 +728,7 @@ fun CustomJsStudioDialog(
                             OutlinedTextField(
                                 value = nameInput,
                                 onValueChange = { nameInput = it },
-                                label = { Text("Nama Tombol Toolbar (misal: Video 2x, AutoKlik)") },
+                                label = { Text(text = "Nama Tombol Toolbar (misal: Video 2x, AutoKlik)") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -736,7 +736,7 @@ fun CustomJsStudioDialog(
                             OutlinedTextField(
                                 value = descInput,
                                 onValueChange = { descInput = it },
-                                label = { Text("Deskripsi Singkat (Opsional)") },
+                                label = { Text(text = "Deskripsi Singkat (Opsional)") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -781,17 +781,17 @@ fun CustomJsStudioDialog(
                                 FilterChip(
                                     selected = autoRunMode == JsAutoRunMode.MANUAL_ONLY,
                                     onClick = { autoRunMode = JsAutoRunMode.MANUAL_ONLY },
-                                    label = { Text("Klik Manual di Toolbar") }
+                                    label = { Text(text = "Klik Manual di Toolbar") }
                                 )
                                 FilterChip(
                                     selected = autoRunMode == JsAutoRunMode.ALL_SITES,
                                     onClick = { autoRunMode = JsAutoRunMode.ALL_SITES },
-                                    label = { Text("Auto-Run di Semua Situs") }
+                                    label = { Text(text = "Auto-Run di Semua Situs") }
                                 )
                                 FilterChip(
                                     selected = autoRunMode == JsAutoRunMode.SPECIFIC_DOMAINS,
                                     onClick = { autoRunMode = JsAutoRunMode.SPECIFIC_DOMAINS },
-                                    label = { Text("Auto-Run per Domain") }
+                                    label = { Text(text = "Auto-Run per Domain") }
                                 )
                             }
 
@@ -799,7 +799,7 @@ fun CustomJsStudioDialog(
                                 OutlinedTextField(
                                     value = targetDomainsInput,
                                     onValueChange = { targetDomainsInput = it },
-                                    label = { Text("Daftar Domain (pisahkan koma, misal: youtube.com, kompas.com)") },
+                                    label = { Text(text = "Daftar Domain (pisahkan koma, misal: youtube.com, kompas.com)") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
@@ -871,7 +871,7 @@ fun CustomJsStudioDialog(
                                 ) {
                                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Uji di Tab Aktif")
+                                    Text(text = "Uji di Tab Aktif")
                                 }
 
                                 Button(
@@ -903,7 +903,7 @@ fun CustomJsStudioDialog(
                                 ) {
                                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Simpan ke Toolbar")
+                                    Text(text = "Simpan ke Toolbar")
                                 }
                             }
                         }
@@ -965,7 +965,7 @@ fun CustomJsStudioDialog(
                                         viewModel.restoreDefaultJsTemplates()
                                         Toast.makeText(context, "Semua template bawaan telah dipulihkan ke daftar Anda", Toast.LENGTH_SHORT).show()
                                     }) {
-                                        Text("Pulihkan Semua")
+                                        Text(text = "Pulihkan Semua")
                                     }
                                 }
                             }
@@ -1001,7 +1001,7 @@ fun CustomJsStudioDialog(
                                                 Toast.makeText(context, "Template '${tpl.name}' ditambahkan ke Toolbar!", Toast.LENGTH_SHORT).show()
                                             }
                                         ) {
-                                            Text("Pakai", fontSize = 12.sp)
+                                            Text(text = "Pakai", fontSize = 12.sp)
                                         }
                                     }
                                 }
@@ -1033,14 +1033,15 @@ fun CustomJsStudioDialog(
                                         val exported = viewModel.exportCustomJsScriptsToJson()
                                         jsonTransferInput = exported
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clipboard.setPrimaryClip(ClipData.newPlainText("CustomJS_JSON", exported))
+                                        val clipLabel = "CustomJS_JSON"
+                                        clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, exported))
                                         Toast.makeText(context, "JSON berhasil disalin ke Clipboard", Toast.LENGTH_SHORT).show()
                                     },
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Salin JSON")
+                                    Text(text = "Salin JSON")
                                 }
 
                                 OutlinedButton(
@@ -1059,14 +1060,14 @@ fun CustomJsStudioDialog(
                                 ) {
                                     Icon(Icons.Outlined.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Bagikan JSON")
+                                    Text(text = "Bagikan JSON")
                                 }
                             }
 
                             OutlinedTextField(
                                 value = jsonTransferInput,
                                 onValueChange = { jsonTransferInput = it },
-                                label = { Text("Data JSON Script Toolbar") },
+                                label = { Text(text = "Data JSON Script Toolbar") },
                                 textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                 minLines = 10,
                                 maxLines = 18,
@@ -1087,7 +1088,7 @@ fun CustomJsStudioDialog(
                             ) {
                                 Icon(Icons.Outlined.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Impor & Gabungkan Script dari JSON")
+                                Text(text = "Impor & Gabungkan Script dari JSON")
                             }
                         }
                     }
@@ -1172,7 +1173,7 @@ fun ChromeSecurityThreatInterstitial(
                     contentColor = if (isHttpWarning) MaterialTheme.colorScheme.onPrimary else Color(0xFF8C1D18)
                 )
             ) {
-                Text("Kembali ke Halaman Aman", fontWeight = FontWeight.SemiBold)
+                Text(text = "Kembali ke Halaman Aman", fontWeight = FontWeight.SemiBold)
             }
         }
 

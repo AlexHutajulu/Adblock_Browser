@@ -6,18 +6,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,18 +30,24 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.manager.AdBlockMode
 import com.example.manager.AppLanguage
 import com.example.manager.AppTheme
 import com.example.manager.DisplayMode
+import com.example.manager.PrivacyShieldMode
 import com.example.ui.components.DeveloperAiAttributionSection
+import com.example.ui.components.SettingsDivider
+import com.example.ui.components.SettingsNavRow
+import com.example.ui.components.SettingsSection
+import com.example.ui.components.SettingsSwitchRow
 import com.example.ui.viewmodel.BrowserViewModel
 
 enum class SettingsCategory(val titleRes: Int, val icon: ImageVector) {
-    GENERAL(R.string.category_general, Icons.Outlined.Search),
-    SECURITY(R.string.category_security, Icons.Outlined.Shield),
-    CONNECTIVITY(R.string.category_connectivity, Icons.Outlined.Speed),
-    STORAGE(R.string.category_storage, Icons.Outlined.Storage),
-    ABOUT(R.string.category_about, Icons.Outlined.Info)
+    APPEARANCE(R.string.settings_section_appearance, Icons.Outlined.Palette),
+    PRIVACY(R.string.settings_section_privacy, Icons.Outlined.Lock),
+    ADBLOCK(R.string.settings_section_adblock, Icons.Outlined.Shield),
+    LANGUAGE(R.string.settings_section_language, Icons.Outlined.Language),
+    ADVANCED(R.string.settings_section_advanced, Icons.Outlined.Tune)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,6 +64,7 @@ fun SettingsScreen(
     val isTrackerEnabled by viewModel.trackerBlockEnabled.collectAsState()
     val currentTheme by viewModel.appTheme.collectAsState()
     val currentMode by viewModel.displayMode.collectAsState()
+    val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
     val isInspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
     val allowScreenRecording by viewModel.allowScreenRecording.collectAsState()
     val isStreamingBoostEnabled by viewModel.streamingBoostEnabled.collectAsState()
@@ -77,12 +81,429 @@ fun SettingsScreen(
     val forceWebPageDarkMode by viewModel.forceWebPageDarkMode.collectAsState()
     val currentLanguage by viewModel.appLanguage.collectAsState()
 
-    var showEngineMenu by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(SettingsCategory.APPEARANCE) }
+    var showThemeDialog by remember { mutableStateOf(false) }
+    var showDisplayModeDialog by remember { mutableStateOf(false) }
+    var showPrivacyShieldDialog by remember { mutableStateOf(false) }
     var showSitePermissions by remember { mutableStateOf(false) }
-    var selectedCategory by remember { mutableStateOf(SettingsCategory.GENERAL) }
+    var showClearDataDialog by remember { mutableStateOf(false) }
+    var showAdBlockModeDialog by remember { mutableStateOf(false) }
+    var showLanguageDialog by remember { mutableStateOf(false) }
+    var showSearchEngineDialog by remember { mutableStateOf(false) }
+    var showDownloadThreadsDialog by remember { mutableStateOf(false) }
 
     if (showSitePermissions) {
         SitePermissionsDialog(viewModel = viewModel, onDismiss = { showSitePermissions = false })
+    }
+
+    if (showThemeDialog) {
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_theme_title),
+            options = listOf(
+                AppTheme.SYSTEM to stringResource(R.string.theme_system),
+                AppTheme.LIGHT to stringResource(R.string.theme_light),
+                AppTheme.DARK to stringResource(R.string.theme_dark)
+            ),
+            selected = currentTheme,
+            onSelect = {
+                viewModel.setTheme(it)
+                showThemeDialog = false
+            },
+            onDismiss = { showThemeDialog = false }
+        )
+    }
+
+    if (showDisplayModeDialog) {
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_display_mode_title),
+            options = listOf(
+                DisplayMode.MOBILE to stringResource(R.string.mode_mobile),
+                DisplayMode.DESKTOP to stringResource(R.string.mode_desktop)
+            ),
+            selected = currentMode,
+            onSelect = {
+                viewModel.setDisplayMode(it)
+                showDisplayModeDialog = false
+            },
+            onDismiss = { showDisplayModeDialog = false }
+        )
+    }
+
+    if (showPrivacyShieldDialog) {
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_privacy_shield_title),
+            options = listOf(
+                PrivacyShieldMode.STANDARD to stringResource(R.string.privacy_shield_standard),
+                PrivacyShieldMode.STRICT to stringResource(R.string.privacy_shield_strict)
+            ),
+            selected = privacyShieldMode,
+            onSelect = {
+                viewModel.setPrivacyShieldMode(it)
+                showPrivacyShieldDialog = false
+            },
+            onDismiss = { showPrivacyShieldDialog = false }
+        )
+    }
+
+    if (showAdBlockModeDialog) {
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_adblock_title),
+            options = listOf(
+                AdBlockMode.OFF to stringResource(R.string.adblock_off),
+                AdBlockMode.BALANCED to stringResource(R.string.adblock_balanced),
+                AdBlockMode.AGGRESSIVE to stringResource(R.string.adblock_aggressive)
+            ),
+            selected = adBlockMode,
+            onSelect = {
+                viewModel.setAdBlockMode(it)
+                showAdBlockModeDialog = false
+            },
+            onDismiss = { showAdBlockModeDialog = false }
+        )
+    }
+
+    if (showLanguageDialog) {
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_language_title),
+            options = listOf(
+                AppLanguage.SYSTEM to stringResource(R.string.lang_system),
+                AppLanguage.INDONESIAN to stringResource(R.string.lang_indonesian),
+                AppLanguage.ENGLISH to stringResource(R.string.lang_english)
+            ),
+            selected = currentLanguage,
+            onSelect = { lang ->
+                viewModel.setAppLanguage(lang)
+                showLanguageDialog = false
+                val langLabel = when (lang) {
+                    AppLanguage.INDONESIAN -> context.getString(R.string.lang_indonesian)
+                    AppLanguage.ENGLISH -> context.getString(R.string.lang_english)
+                    AppLanguage.SYSTEM -> context.getString(R.string.lang_system)
+                }
+                Toast.makeText(context, context.getString(R.string.lang_changed_toast, langLabel), Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showLanguageDialog = false }
+        )
+    }
+
+    if (showSearchEngineDialog) {
+        val engines = remember { com.example.manager.SearchEngine.getAllEngines() }
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_search_engine_title),
+            options = engines.map { it.engineName to it.engineName },
+            selected = currentEngine,
+            onSelect = { engine ->
+                viewModel.setSearchEngine(engine)
+                showSearchEngineDialog = false
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.settings_default_engine_toast, engine),
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showSearchEngineDialog = false }
+        )
+    }
+
+    if (showDownloadThreadsDialog) {
+        val threadOptions = listOf("1", "4", "8", "16")
+        SingleChoiceSelectionDialog(
+            title = stringResource(R.string.pref_download_accel_title),
+            options = threadOptions.map { it to "${it}x" },
+            selected = downloadAcceleration,
+            onSelect = { threads ->
+                viewModel.setDownloadAcceleration(threads)
+                showDownloadThreadsDialog = false
+            },
+            onDismiss = { showDownloadThreadsDialog = false }
+        )
+    }
+
+    if (showClearDataDialog) {
+        ClearBrowsingDataDialog(
+            onClearCacheOnly = {
+                viewModel.clearBrowserCacheOnly(context)
+                Toast.makeText(context, context.getString(R.string.toast_cache_cleared), Toast.LENGTH_SHORT).show()
+                showClearDataDialog = false
+            },
+            onClearAllData = {
+                viewModel.clearCacheAndCookies(context, closeTabs = false)
+                Toast.makeText(context, context.getString(R.string.toast_all_data_cleared), Toast.LENGTH_SHORT).show()
+                showClearDataDialog = false
+            },
+            onClearHistory = {
+                viewModel.clearAllHistory()
+                Toast.makeText(context, context.getString(R.string.toast_history_cleared), Toast.LENGTH_SHORT).show()
+                showClearDataDialog = false
+            },
+            onClearBookmarks = {
+                viewModel.clearAllBookmarks()
+                Toast.makeText(context, context.getString(R.string.toast_bookmarks_cleared), Toast.LENGTH_SHORT).show()
+                showClearDataDialog = false
+            },
+            onDismiss = { showClearDataDialog = false }
+        )
+    }
+
+    val themeLabel = when (currentTheme) {
+        AppTheme.SYSTEM -> stringResource(R.string.theme_system)
+        AppTheme.LIGHT -> stringResource(R.string.theme_light)
+        AppTheme.DARK -> stringResource(R.string.theme_dark)
+    }
+    val displayModeLabel = when (currentMode) {
+        DisplayMode.MOBILE -> stringResource(R.string.mode_mobile)
+        DisplayMode.DESKTOP -> stringResource(R.string.mode_desktop)
+    }
+    val privacyShieldLabel = when (privacyShieldMode) {
+        PrivacyShieldMode.STANDARD -> stringResource(R.string.privacy_shield_standard)
+        PrivacyShieldMode.STRICT -> stringResource(R.string.privacy_shield_strict)
+    }
+    val adBlockLabel = when (adBlockMode) {
+        AdBlockMode.OFF -> stringResource(R.string.adblock_off)
+        AdBlockMode.BALANCED -> stringResource(R.string.adblock_balanced)
+        AdBlockMode.AGGRESSIVE -> stringResource(R.string.adblock_aggressive)
+    }
+    val languageLabel = when (currentLanguage) {
+        AppLanguage.INDONESIAN -> stringResource(R.string.lang_indonesian)
+        AppLanguage.ENGLISH -> stringResource(R.string.lang_english)
+        AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
+    }
+
+    @Composable
+    fun renderAppearanceSection() {
+        SettingsSection(title = stringResource(R.string.settings_section_appearance)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_theme_title),
+                subtitle = stringResource(R.string.pref_theme_summary),
+                value = themeLabel,
+                icon = Icons.Outlined.Palette,
+                onClick = { showThemeDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.settings_liquid_glass_title),
+                subtitle = stringResource(R.string.settings_liquid_glass_summary),
+                icon = Icons.Outlined.BlurOn,
+                checked = liquidGlassEnabled,
+                onCheckedChange = { viewModel.setLiquidGlassEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_force_dark_title),
+                subtitle = stringResource(R.string.pref_force_dark_summary),
+                icon = Icons.Outlined.DarkMode,
+                checked = forceWebPageDarkMode,
+                onCheckedChange = { viewModel.setForceWebPageDarkMode(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_display_mode_title),
+                value = displayModeLabel,
+                icon = Icons.Outlined.Devices,
+                onClick = { showDisplayModeDialog = true }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.settings_reset_quick_links),
+                subtitle = stringResource(R.string.settings_reset_quick_links_summary),
+                icon = Icons.Outlined.Restore,
+                onClick = {
+                    viewModel.resetQuickLinksToDefaults()
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_reset_quick_links_toast),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+    }
+
+    @Composable
+    fun renderPrivacySection() {
+        SettingsSection(title = stringResource(R.string.settings_section_privacy)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_privacy_shield_title),
+                value = privacyShieldLabel,
+                icon = Icons.Outlined.Security,
+                onClick = { showPrivacyShieldDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_webrtc_leak_title),
+                subtitle = stringResource(R.string.pref_webrtc_leak_summary),
+                icon = Icons.Outlined.VpnLock,
+                checked = preventWebRtcLeak,
+                onCheckedChange = { viewModel.setPreventWebRtcLeak(it) }
+            )
+            if (preventWebRtcLeak) {
+                SettingsDivider()
+                SettingsSwitchRow(
+                    title = stringResource(R.string.settings_strict_webrtc_title),
+                    subtitle = stringResource(R.string.settings_strict_webrtc_summary),
+                    icon = Icons.Outlined.GppGood,
+                    checked = strictWebRtcMode,
+                    onCheckedChange = { viewModel.setStrictWebRtcMode(it) }
+                )
+            }
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_clear_cookies_exit_title),
+                subtitle = stringResource(R.string.pref_clear_cookies_exit_summary),
+                icon = Icons.Outlined.Cookie,
+                checked = clearCookiesOnExit,
+                onCheckedChange = { viewModel.setClearCookiesOnExit(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_screen_recording_title),
+                subtitle = stringResource(R.string.pref_screen_recording_summary),
+                icon = Icons.Outlined.ScreenshotMonitor,
+                checked = allowScreenRecording,
+                onCheckedChange = { viewModel.setAllowScreenRecording(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_site_permissions_title),
+                subtitle = stringResource(R.string.pref_site_permissions_summary),
+                icon = Icons.Outlined.AdminPanelSettings,
+                onClick = { showSitePermissions = true }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.menu_clear_browsing_data),
+                icon = Icons.Outlined.DeleteSweep,
+                onClick = { showClearDataDialog = true }
+            )
+        }
+    }
+
+    @Composable
+    fun renderAdBlockSection() {
+        SettingsSection(title = stringResource(R.string.settings_section_adblock)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_adblock_title),
+                value = adBlockLabel,
+                icon = Icons.Outlined.Shield,
+                onClick = { showAdBlockModeDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_tracker_title),
+                subtitle = stringResource(R.string.pref_tracker_summary),
+                icon = Icons.Outlined.TrackChanges,
+                checked = isTrackerEnabled,
+                onCheckedChange = { viewModel.setTrackerBlockEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_redirects_title),
+                subtitle = stringResource(R.string.pref_redirects_summary),
+                icon = Icons.Outlined.Block,
+                checked = blockSuspiciousRedirects,
+                onCheckedChange = { viewModel.setBlockSuspiciousRedirects(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_popups_title),
+                subtitle = stringResource(R.string.pref_popups_summary),
+                icon = Icons.Outlined.OpenInNew,
+                checked = openPopupsInNewTab,
+                onCheckedChange = { viewModel.setOpenPopupsInNewTab(it) }
+            )
+        }
+    }
+
+    @Composable
+    fun renderLanguageSection() {
+        SettingsSection(title = stringResource(R.string.settings_section_language)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_language_title),
+                subtitle = stringResource(R.string.pref_language_summary),
+                value = languageLabel,
+                icon = Icons.Outlined.Language,
+                onClick = { showLanguageDialog = true }
+            )
+        }
+    }
+
+    @Composable
+    fun renderAdvancedSection() {
+        val dbEncryptionStatus by com.example.data.AppDatabase.encryptionStatusFlow.collectAsState()
+        SettingsSection(title = stringResource(R.string.settings_section_advanced)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_search_engine_title),
+                subtitle = stringResource(R.string.pref_search_engine_summary),
+                value = currentEngine,
+                icon = Icons.Outlined.Search,
+                onClick = { showSearchEngineDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_background_playback_title),
+                subtitle = stringResource(R.string.pref_background_playback_summary),
+                icon = Icons.Outlined.Headphones,
+                checked = isBackgroundPlaybackEnabled,
+                onCheckedChange = { viewModel.setBackgroundPlaybackEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_streaming_boost_title),
+                subtitle = stringResource(R.string.pref_streaming_boost_summary),
+                icon = Icons.Outlined.Speed,
+                checked = isStreamingBoostEnabled,
+                onCheckedChange = { viewModel.setStreamingBoostEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_download_accel_title),
+                value = "${downloadAcceleration}x",
+                icon = Icons.Outlined.Download,
+                onClick = { showDownloadThreadsDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_data_saver_title),
+                subtitle = stringResource(R.string.pref_data_saver_summary),
+                icon = Icons.Outlined.DataSaverOn,
+                checked = isDataSaverEnabled,
+                onCheckedChange = { viewModel.setDataSaverEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_devtools_title),
+                subtitle = stringResource(R.string.pref_devtools_summary),
+                icon = Icons.Outlined.Code,
+                checked = isInspectToolsEnabled,
+                onCheckedChange = { viewModel.setInspectToolsEnabled(it) }
+            )
+            SettingsDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = if (dbEncryptionStatus.isEncrypted) Icons.Outlined.Lock else Icons.Outlined.Info,
+                    contentDescription = null,
+                    tint = if (dbEncryptionStatus.isEncrypted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.settings_db_status_prefix, dbEncryptionStatus.title),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = dbEncryptionStatus.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 
     Scaffold(
@@ -107,7 +528,12 @@ fun SettingsScreen(
                     TextButton(
                         onClick = {
                             viewModel.resetToDefaults()
-                            Toast.makeText(context, context.getString(R.string.settings_reset_confirm), Toast.LENGTH_SHORT).show()
+                            viewModel.resetQuickLinksToDefaults()
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.settings_reset_confirm),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     ) {
                         Text(stringResource(R.string.settings_reset))
@@ -128,11 +554,10 @@ fun SettingsScreen(
 
             if (isTablet) {
                 Row(modifier = Modifier.fillMaxSize()) {
-                    // Left Chrome Settings Navigation Rail / Pane
                     Surface(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .width(260.dp),
+                            .width(250.dp),
                         color = MaterialTheme.colorScheme.surface,
                         tonalElevation = 1.dp
                     ) {
@@ -145,7 +570,12 @@ fun SettingsScreen(
                             SettingsCategory.values().forEach { category ->
                                 val isSelected = category == selectedCategory
                                 NavigationDrawerItem(
-                                    label = { Text(stringResource(category.titleRes), fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(category.titleRes),
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                    },
                                     selected = isSelected,
                                     onClick = { selectedCategory = category },
                                     icon = { Icon(category.icon, contentDescription = null) },
@@ -157,7 +587,6 @@ fun SettingsScreen(
 
                     VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
 
-                    // Detail Content Pane
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
@@ -167,119 +596,26 @@ fun SettingsScreen(
                         AnimatedContent(
                             targetState = selectedCategory,
                             transitionSpec = { fadeIn() togetherWith fadeOut() },
-                            label = "chrome_settings_pane"
+                            label = "settings_pane"
                         ) { category ->
                             Column(
                                 modifier = Modifier
                                     .widthIn(max = 680.dp)
                                     .fillMaxSize()
                                     .verticalScroll(rememberScrollState())
-                                    .padding(24.dp),
+                                    .padding(vertical = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 when (category) {
-                                    SettingsCategory.GENERAL -> {
-                                        SearchEngineModule(
-                                            currentEngine = currentEngine,
-                                            showEngineMenu = showEngineMenu,
-                                            onShowMenuChange = { showEngineMenu = it },
-                                            onSelectEngine = { engine ->
-                                                viewModel.setSearchEngine(engine)
-                                                showEngineMenu = false
-                                                Toast.makeText(context, "$engine set as default", Toast.LENGTH_SHORT).show()
-                                            }
-                                        )
-                                        AppLanguageModule(
-                                            currentLanguage = currentLanguage,
-                                            onSelectLanguage = { lang ->
-                                                viewModel.setAppLanguage(lang)
-                                                val langLabel = when (lang) {
-                                                    AppLanguage.INDONESIAN -> context.getString(R.string.lang_indonesian)
-                                                    AppLanguage.ENGLISH -> context.getString(R.string.lang_english)
-                                                    AppLanguage.SYSTEM -> context.getString(R.string.lang_system)
-                                                }
-                                                Toast.makeText(context, context.getString(R.string.lang_changed_toast, langLabel), Toast.LENGTH_SHORT).show()
-                                            }
-                                        )
-                                        ThemeSelectionModule(
-                                            currentTheme = currentTheme,
-                                            onSelectTheme = { viewModel.setTheme(it) },
-                                            forceWebPageDarkMode = forceWebPageDarkMode,
-                                            onForceWebPageDarkModeToggle = { viewModel.setForceWebPageDarkMode(it) }
-                                        )
-                                        DisplayModeModule(
-                                            currentMode = currentMode,
-                                            onSelectMode = { viewModel.setDisplayMode(it) }
-                                        )
-                                        MediaSettingsModule(
-                                            isBackgroundPlaybackEnabled = isBackgroundPlaybackEnabled,
-                                            onBackgroundPlaybackToggle = { viewModel.setBackgroundPlaybackEnabled(it) }
-                                        )
-                                        ScreenCompatibilityModule(
-                                            allowScreenRecording = allowScreenRecording,
-                                            onToggle = { viewModel.setAllowScreenRecording(it) }
-                                        )
-                                        DeveloperToolsModule(
-                                            isInspectToolsEnabled = isInspectToolsEnabled,
-                                            onInspectToolsToggle = { viewModel.setInspectToolsEnabled(it) },
-                                            currentMode = currentMode
-                                        )
-                                    }
-
-                                    SettingsCategory.SECURITY -> {
-                                        SecurityShieldsModule(
-                                            adBlockMode = adBlockMode,
-                                            isTrackerEnabled = isTrackerEnabled,
-                                            openPopupsInNewTab = openPopupsInNewTab,
-                                            blockSuspiciousRedirects = blockSuspiciousRedirects,
-                                            onAdBlockModeChange = { viewModel.setAdBlockMode(it) },
-                                            onTrackerToggle = { viewModel.setTrackerBlockEnabled(it) },
-                                            onOpenPopupsInNewTabToggle = { viewModel.setOpenPopupsInNewTab(it) },
-                                            onBlockSuspiciousRedirectsToggle = { viewModel.setBlockSuspiciousRedirects(it) }
-                                        )
-                                        PrivacySettingsModule(
-                                            privacyShieldMode = privacyShieldMode,
-                                            preventWebRtcLeak = preventWebRtcLeak,
-                                            strictWebRtcMode = strictWebRtcMode,
-                                            clearCookiesOnExit = clearCookiesOnExit,
-                                            onPrivacyShieldModeChange = { viewModel.setPrivacyShieldMode(it) },
-                                            onPreventWebRtcLeakToggle = { viewModel.setPreventWebRtcLeak(it) },
-                                            onStrictWebRtcModeToggle = { viewModel.setStrictWebRtcMode(it) },
-                                            onClearCookiesOnExitToggle = { viewModel.setClearCookiesOnExit(it) },
-                                            onOpenSitePermissions = { showSitePermissions = true }
-                                        )
-                                    }
-
-                                    SettingsCategory.CONNECTIVITY -> {
-                                        FastInternetModule(
-                                            isStreamingBoostEnabled = isStreamingBoostEnabled,
-                                            downloadAcceleration = downloadAcceleration,
-                                            isDataSaverEnabled = isDataSaverEnabled,
-                                            onStreamingBoostToggle = { viewModel.setStreamingBoostEnabled(it) },
-                                            onDownloadAccelerationSelect = { viewModel.setDownloadAcceleration(it) },
-                                            onDataSaverToggle = { viewModel.setDataSaverEnabled(it) }
-                                        )
-                                    }
-
-                                    SettingsCategory.STORAGE -> {
-                                        DataCleanersModule(
-                                            onClearHistory = {
-                                                viewModel.clearAllHistory()
-                                                Toast.makeText(context, "Browsing history cleared", Toast.LENGTH_SHORT).show()
-                                            },
-                                            onClearBookmarks = {
-                                                viewModel.clearAllBookmarks()
-                                                Toast.makeText(context, "Saved bookmarks cleared", Toast.LENGTH_SHORT).show()
-                                            },
-                                            onClearCache = {
-                                                viewModel.clearCacheAndCookies(context)
-                                                Toast.makeText(context, "Cache and cookies cleared", Toast.LENGTH_SHORT).show()
-                                            }
-                                        )
-                                    }
-
-                                    SettingsCategory.ABOUT -> {
-                                        SettingsAboutBanner()
+                                    SettingsCategory.APPEARANCE -> renderAppearanceSection()
+                                    SettingsCategory.PRIVACY -> renderPrivacySection()
+                                    SettingsCategory.ADBLOCK -> renderAdBlockSection()
+                                    SettingsCategory.LANGUAGE -> renderLanguageSection()
+                                    SettingsCategory.ADVANCED -> {
+                                        renderAdvancedSection()
+                                        Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                                            SettingsAboutBanner()
+                                        }
                                     }
                                 }
                             }
@@ -287,119 +623,21 @@ fun SettingsScreen(
                     }
                 }
             } else {
-                // Responsive Single-Column Chrome Settings on Handhelds
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                        .padding(vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    SearchEngineModule(
-                        currentEngine = currentEngine,
-                        showEngineMenu = showEngineMenu,
-                        onShowMenuChange = { showEngineMenu = it },
-                        onSelectEngine = { engine ->
-                            viewModel.setSearchEngine(engine)
-                            showEngineMenu = false
-                            Toast.makeText(context, "$engine set as default", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-
-                    SecurityShieldsModule(
-                        adBlockMode = adBlockMode,
-                        isTrackerEnabled = isTrackerEnabled,
-                        openPopupsInNewTab = openPopupsInNewTab,
-                        blockSuspiciousRedirects = blockSuspiciousRedirects,
-                        onAdBlockModeChange = { viewModel.setAdBlockMode(it) },
-                        onTrackerToggle = { viewModel.setTrackerBlockEnabled(it) },
-                        onOpenPopupsInNewTabToggle = { viewModel.setOpenPopupsInNewTab(it) },
-                        onBlockSuspiciousRedirectsToggle = { viewModel.setBlockSuspiciousRedirects(it) }
-                    )
-
-                    PrivacySettingsModule(
-                        privacyShieldMode = privacyShieldMode,
-                        preventWebRtcLeak = preventWebRtcLeak,
-                        strictWebRtcMode = strictWebRtcMode,
-                        clearCookiesOnExit = clearCookiesOnExit,
-                        onPrivacyShieldModeChange = { viewModel.setPrivacyShieldMode(it) },
-                        onPreventWebRtcLeakToggle = { viewModel.setPreventWebRtcLeak(it) },
-                        onStrictWebRtcModeToggle = { viewModel.setStrictWebRtcMode(it) },
-                        onClearCookiesOnExitToggle = { viewModel.setClearCookiesOnExit(it) },
-                        onOpenSitePermissions = { showSitePermissions = true }
-                    )
-
-                    FastInternetModule(
-                        isStreamingBoostEnabled = isStreamingBoostEnabled,
-                        downloadAcceleration = downloadAcceleration,
-                        isDataSaverEnabled = isDataSaverEnabled,
-                        onStreamingBoostToggle = { viewModel.setStreamingBoostEnabled(it) },
-                        onDownloadAccelerationSelect = { viewModel.setDownloadAcceleration(it) },
-                        onDataSaverToggle = { viewModel.setDataSaverEnabled(it) }
-                    )
-
-                    ThemeSelectionModule(
-                        currentTheme = currentTheme,
-                        onSelectTheme = { viewModel.setTheme(it) },
-                        forceWebPageDarkMode = forceWebPageDarkMode,
-                        onForceWebPageDarkModeToggle = { viewModel.setForceWebPageDarkMode(it) }
-                    )
-
-                    AppLanguageModule(
-                        currentLanguage = currentLanguage,
-                        onSelectLanguage = { lang ->
-                            viewModel.setAppLanguage(lang)
-                            val langLabel = when (lang) {
-                                AppLanguage.INDONESIAN -> context.getString(R.string.lang_indonesian)
-                                AppLanguage.ENGLISH -> context.getString(R.string.lang_english)
-                                AppLanguage.SYSTEM -> context.getString(R.string.lang_system)
-                            }
-                            Toast.makeText(context, context.getString(R.string.lang_changed_toast, langLabel), Toast.LENGTH_SHORT).show()
-                        }
-                    )
-
-                    DisplayModeModule(
-                        currentMode = currentMode,
-                        onSelectMode = { viewModel.setDisplayMode(it) }
-                    )
-
-                    MediaSettingsModule(
-                        isBackgroundPlaybackEnabled = isBackgroundPlaybackEnabled,
-                        onBackgroundPlaybackToggle = { viewModel.setBackgroundPlaybackEnabled(it) }
-                    )
-
-                    ScreenCompatibilityModule(
-                        allowScreenRecording = allowScreenRecording,
-                        onToggle = { viewModel.setAllowScreenRecording(it) }
-                    )
-
-                    DeveloperToolsModule(
-                        isInspectToolsEnabled = isInspectToolsEnabled,
-                        onInspectToolsToggle = { viewModel.setInspectToolsEnabled(it) },
-                        currentMode = currentMode
-                    )
-
-                    DataCleanersModule(
-                        onClearHistory = {
-                            viewModel.clearAllHistory()
-                            Toast.makeText(context, "History cleared", Toast.LENGTH_SHORT).show()
-                        },
-                        onClearBookmarks = {
-                            viewModel.clearAllBookmarks()
-                            Toast.makeText(context, "Bookmarks cleared", Toast.LENGTH_SHORT).show()
-                        },
-                        onClearCacheOnly = {
-                            viewModel.clearBrowserCacheOnly(context)
-                            Toast.makeText(context, "Browser cache cleared (cookies preserved)", Toast.LENGTH_SHORT).show()
-                        },
-                        onClearCache = {
-                            viewModel.clearCacheAndCookies(context, closeTabs = false)
-                            Toast.makeText(context, "Cookies, site data & cache cleared", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-
-                    SettingsAboutBanner()
-
+                    renderAppearanceSection()
+                    renderPrivacySection()
+                    renderAdBlockSection()
+                    renderLanguageSection()
+                    renderAdvancedSection()
+                    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                        SettingsAboutBanner()
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
             }
@@ -408,773 +646,132 @@ fun SettingsScreen(
 }
 
 @Composable
-fun AppLanguageModule(
-    currentLanguage: com.example.manager.AppLanguage,
-    onSelectLanguage: (com.example.manager.AppLanguage) -> Unit
+private fun <T> SingleChoiceSelectionDialog(
+    title: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    var showDialog by remember { mutableStateOf(false) }
-
-    ChromeSettingsSectionCard(title = stringResource(R.string.pref_language_title)) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .clickable { showDialog = true },
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
+                options.forEach { (value, label) ->
+                    val isSelected = value == selected
+                    Surface(
                         modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onSelect(value) },
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent,
+                        shape = RoundedCornerShape(10.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Language,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Column {
-                        Text(
-                            text = stringResource(R.string.pref_language_summary),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = when (currentLanguage) {
-                                com.example.manager.AppLanguage.INDONESIAN -> stringResource(R.string.lang_indonesian)
-                                com.example.manager.AppLanguage.ENGLISH -> stringResource(R.string.lang_english)
-                                com.example.manager.AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
-                            },
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-                Icon(
-                    imageVector = Icons.Default.ArrowDropDown,
-                    contentDescription = stringResource(R.string.pref_language_title),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-
-    if (showDialog) {
-        AlertDialog(
-            onDismissRequest = { showDialog = false },
-            title = {
-                Text(
-                    text = stringResource(R.string.pref_language_title),
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val languages = listOf(
-                        com.example.manager.AppLanguage.INDONESIAN to stringResource(R.string.lang_indonesian),
-                        com.example.manager.AppLanguage.ENGLISH to stringResource(R.string.lang_english),
-                        com.example.manager.AppLanguage.SYSTEM to stringResource(R.string.lang_system)
-                    )
-
-                    languages.forEach { (lang, label) ->
-                        val isSelected = currentLanguage == lang
-                        Surface(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    onSelectLanguage(lang)
-                                    showDialog = false
-                                },
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent,
-                            shape = RoundedCornerShape(10.dp)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    ),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                )
-                                RadioButton(
-                                    selected = isSelected,
-                                    onClick = {
-                                        onSelectLanguage(lang)
-                                        showDialog = false
-                                    }
-                                )
-                            }
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                ),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = { onSelect(value) }
+                            )
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showDialog = false }) {
-                    Text(stringResource(R.string.settings_back))
-                }
             }
-        )
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    )
 }
 
 @Composable
-private fun ChromeSettingsSectionCard(
-    title: String,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-fun SearchEngineModule(
-    currentEngine: String,
-    showEngineMenu: Boolean,
-    onShowMenuChange: (Boolean) -> Unit,
-    onSelectEngine: (String) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Search engine") {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onShowMenuChange(true) },
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Address bar search engine",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = currentEngine,
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Select engine")
-                }
-            }
-
-            DropdownMenu(
-                expanded = showEngineMenu,
-                onDismissRequest = { onShowMenuChange(false) },
-                modifier = Modifier.widthIn(min = 240.dp)
-            ) {
-                com.example.manager.SearchEngine.getAllEngines().forEach { engine ->
-                    val isSelected = currentEngine.equals(engine.engineName, ignoreCase = true)
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(
-                                    text = engine.engineName,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                )
-                                if (engine.description.isNotBlank()) {
-                                    Text(
-                                        text = engine.description,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        },
-                        trailingIcon = {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Selected",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        },
-                        onClick = { onSelectEngine(engine.engineName) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ThemeSelectionModule(
-    currentTheme: AppTheme,
-    onSelectTheme: (AppTheme) -> Unit,
-    forceWebPageDarkMode: Boolean,
-    onForceWebPageDarkModeToggle: (Boolean) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Theme & Appearance") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            AppTheme.values().forEach { theme ->
-                val isSelected = currentTheme == theme
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onSelectTheme(theme) },
-                    label = {
-                        Text(
-                            text = theme.name,
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Dark theme for web contents", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Automatically render web pages in dark mode",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = forceWebPageDarkMode,
-                onCheckedChange = onForceWebPageDarkModeToggle
-            )
-        }
-    }
-}
-
-@Composable
-fun DisplayModeModule(
-    currentMode: DisplayMode,
-    onSelectMode: (DisplayMode) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Default Site View") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            DisplayMode.values().forEach { mode ->
-                val isSelected = currentMode == mode
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onSelectMode(mode) },
-                    label = {
-                        Text(
-                            text = mode.name,
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun MediaSettingsModule(
-    isBackgroundPlaybackEnabled: Boolean,
-    onBackgroundPlaybackToggle: (Boolean) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Media & Playback") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Background audio playback", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Keep media playing when switching apps or locking screen",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = isBackgroundPlaybackEnabled,
-                onCheckedChange = onBackgroundPlaybackToggle
-            )
-        }
-    }
-}
-
-@Composable
-fun ScreenCompatibilityModule(
-    allowScreenRecording: Boolean,
-    onToggle: (Boolean) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Screen Capture Privacy") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Allow screenshots & screen sharing", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    if (allowScreenRecording) "Screen recording and sharing enabled"
-                    else "Screenshots and screen recording blocked for privacy",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = allowScreenRecording,
-                onCheckedChange = onToggle
-            )
-        }
-    }
-}
-
-@Composable
-fun DeveloperToolsModule(
-    isInspectToolsEnabled: Boolean,
-    onInspectToolsToggle: (Boolean) -> Unit,
-    currentMode: DisplayMode
-) {
-    ChromeSettingsSectionCard(title = "Developer Options") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Enable Chrome DevTools Inspector", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Inspect DOM, Console, Network, and Storage in Desktop mode",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = isInspectToolsEnabled,
-                onCheckedChange = onInspectToolsToggle
-            )
-        }
-    }
-}
-
-@Composable
-fun SecurityShieldsModule(
-    adBlockMode: com.example.manager.AdBlockMode,
-    isTrackerEnabled: Boolean,
-    openPopupsInNewTab: Boolean,
-    blockSuspiciousRedirects: Boolean,
-    onAdBlockModeChange: (com.example.manager.AdBlockMode) -> Unit,
-    onTrackerToggle: (Boolean) -> Unit,
-    onOpenPopupsInNewTabToggle: (Boolean) -> Unit,
-    onBlockSuspiciousRedirectsToggle: (Boolean) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "AdShield & Content Filtering") {
-        Text("AdBlock level", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            com.example.manager.AdBlockMode.values().forEach { mode ->
-                val isSelected = adBlockMode == mode
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onAdBlockModeChange(mode) },
-                    label = {
-                        Text(
-                            text = mode.name,
-                            fontSize = 11.sp,
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Anti-tracking protection", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Block cross-site analytics and tracking scripts",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = isTrackerEnabled, onCheckedChange = onTrackerToggle)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Open pop-ups in new tab", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Isolate allowed pop-up links into separate tabs",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = openPopupsInNewTab, onCheckedChange = onOpenPopupsInNewTabToggle)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Block suspicious redirects", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Prevent automatic third-party ad redirects",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = blockSuspiciousRedirects, onCheckedChange = onBlockSuspiciousRedirectsToggle)
-        }
-    }
-}
-
-@Composable
-fun PrivacySettingsModule(
-    privacyShieldMode: com.example.manager.PrivacyShieldMode,
-    preventWebRtcLeak: Boolean,
-    strictWebRtcMode: Boolean,
-    clearCookiesOnExit: Boolean,
-    onPrivacyShieldModeChange: (com.example.manager.PrivacyShieldMode) -> Unit,
-    onPreventWebRtcLeakToggle: (Boolean) -> Unit,
-    onStrictWebRtcModeToggle: (Boolean) -> Unit,
-    onClearCookiesOnExitToggle: (Boolean) -> Unit,
-    onOpenSitePermissions: () -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Privacy & Security") {
-        Text("Safe Browsing & Privacy Mode", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            com.example.manager.PrivacyShieldMode.values().forEach { mode ->
-                val isSelected = privacyShieldMode == mode
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onPrivacyShieldModeChange(mode) },
-                    label = {
-                        Text(
-                            text = mode.name,
-                            fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("WebRTC IP leak protection", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Wraps WebRTC peer connections at page load (onPageStarted) to restrict local IP candidate exposure",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = preventWebRtcLeak, onCheckedChange = onPreventWebRtcLeakToggle)
-        }
-
-        if (preventWebRtcLeak) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = !strictWebRtcMode,
-                    onClick = { onStrictWebRtcModeToggle(false) },
-                    label = { Text("Standard Compatible", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
-                    modifier = Modifier.weight(1f)
-                )
-                FilterChip(
-                    selected = strictWebRtcMode,
-                    onClick = { onStrictWebRtcModeToggle(true) },
-                    label = { Text("Strict Block", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Clear cookies & site data on exit", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Automatically wipe cookies, site storage, and saved tabs when closing the browser",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = clearCookiesOnExit, onCheckedChange = onClearCookiesOnExitToggle)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        val dbEncryptionStatus by com.example.data.AppDatabase.encryptionStatusFlow.collectAsState()
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(
-                    imageVector = if (dbEncryptionStatus.isEncrypted) Icons.Outlined.Lock else Icons.Outlined.Info,
-                    contentDescription = null,
-                    tint = if (dbEncryptionStatus.isEncrypted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Status Database: ${dbEncryptionStatus.title}",
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp
-                    )
-                    Text(
-                        text = dbEncryptionStatus.detail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        FilledTonalButton(
-            onClick = onOpenSitePermissions,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Site Settings & Permissions")
-        }
-    }
-}
-
-@Composable
-fun FastInternetModule(
-    isStreamingBoostEnabled: Boolean,
-    downloadAcceleration: String,
-    isDataSaverEnabled: Boolean,
-    onStreamingBoostToggle: (Boolean) -> Unit,
-    onDownloadAccelerationSelect: (String) -> Unit,
-    onDataSaverToggle: (Boolean) -> Unit
-) {
-    ChromeSettingsSectionCard(title = "Performance & Downloads") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Preload pages & media buffer", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Pre-fetches resources for faster browsing and video playback",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = isStreamingBoostEnabled, onCheckedChange = onStreamingBoostToggle)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Text("Parallel download threads", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf("1", "4", "8", "16").forEach { threads ->
-                FilterChip(
-                    selected = downloadAcceleration == threads,
-                    onClick = { onDownloadAccelerationSelect(threads) },
-                    label = {
-                        Text(
-                            text = "${threads}x",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Lite mode / Data Saver", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(
-                    "Reduce mobile data usage by blocking heavy page bloat",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = isDataSaverEnabled, onCheckedChange = onDataSaverToggle)
-        }
-    }
-}
-
-@Composable
-fun DataCleanersModule(
+private fun ClearBrowsingDataDialog(
+    onClearCacheOnly: () -> Unit,
+    onClearAllData: () -> Unit,
     onClearHistory: () -> Unit,
     onClearBookmarks: () -> Unit,
-    onClearCacheOnly: () -> Unit = {},
-    onClearCache: () -> Unit
+    onDismiss: () -> Unit
 ) {
-    ChromeSettingsSectionCard(title = "Clear Browsing Data") {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = stringResource(R.string.menu_clear_browsing_data),
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 FilledTonalButton(
                     onClick = onClearCacheOnly,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Clear Cache Only", textAlign = TextAlign.Center)
+                    Text(stringResource(R.string.pref_clear_cache), textAlign = TextAlign.Center)
                 }
                 Button(
-                    onClick = onClearCache,
+                    onClick = onClearAllData,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
                         contentColor = MaterialTheme.colorScheme.onError
                     ),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Clear Cookies & Site Data", textAlign = TextAlign.Center)
+                    Text(stringResource(R.string.pref_clear_all_data), textAlign = TextAlign.Center)
                 }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
                 OutlinedButton(
                     onClick = onClearHistory,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Clear History")
+                    Text(stringResource(R.string.pref_clear_history))
                 }
                 OutlinedButton(
                     onClick = onClearBookmarks,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Clear Bookmarks")
+                    Text(stringResource(R.string.pref_clear_bookmarks))
                 }
             }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
         }
-    }
+    )
 }
 
 @Composable
 fun SettingsAboutBanner() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
     ) {
         Column(
@@ -1184,17 +781,17 @@ fun SettingsAboutBanner() {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             AdBlockBrandEmblem(
-                size = 66.dp,
+                size = 64.dp,
                 cornerRadius = 18.dp
             )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = "Alex Browser",
+                text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Fast, lightweight, and responsive modern web browser with built-in AdShield protection. External connections are limited to your selected search engine, Android Safe Browsing, HTTPS AdBlock filter list updates (EasyList, EasyPrivacy, Peter Lowe), and URLs you explicitly open.",
+                text = stringResource(R.string.settings_about_description),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -1222,7 +819,7 @@ fun SitePermissionsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Site Settings & Permissions", fontWeight = FontWeight.SemiBold) },
+        title = { Text(stringResource(R.string.pref_site_permissions_title), fontWeight = FontWeight.SemiBold) },
         text = {
             Column(
                 modifier = Modifier
@@ -1231,7 +828,7 @@ fun SitePermissionsDialog(
             ) {
                 if (permissionsMap.isEmpty()) {
                     Text(
-                        text = "No customized site permissions saved.",
+                        text = stringResource(R.string.settings_site_permissions_empty),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 12.dp)
                     )
@@ -1273,7 +870,7 @@ fun SitePermissionsDialog(
                                         },
                                         modifier = Modifier.align(Alignment.End)
                                     ) {
-                                        Text("Reset", fontSize = 12.sp)
+                                        Text(stringResource(R.string.settings_reset), fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -1284,7 +881,7 @@ fun SitePermissionsDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Done")
+                Text(stringResource(R.string.settings_done))
             }
         },
         dismissButton = {
@@ -1295,7 +892,7 @@ fun SitePermissionsDialog(
                         permissionsMap = emptyMap()
                     }
                 ) {
-                    Text("Clear All", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.settings_clear_all), color = MaterialTheme.colorScheme.error)
                 }
             }
         }

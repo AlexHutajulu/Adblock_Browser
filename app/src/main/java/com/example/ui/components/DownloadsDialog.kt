@@ -27,7 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.FileProvider
+import com.example.R
 import com.example.data.DownloadItem
 import com.example.manager.ActiveDownload
 import com.example.ui.viewmodel.BrowserViewModel
@@ -152,7 +154,7 @@ fun DownloadsDialog(
                                 }
                             }
                         ) {
-                            Text("Clear Done", fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.downloads_clear_done), fontWeight = FontWeight.SemiBold)
                         }
                     }
                     IconButton(onClick = onDismiss) {
@@ -421,7 +423,7 @@ private fun ChromeDownloadItemCard(
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                                 modifier = Modifier.height(32.dp)
                             ) {
-                                Text("Open", fontSize = 12.sp)
+                                Text(stringResource(R.string.action_open), fontSize = 12.sp)
                             }
                             IconButton(onClick = onRemove, modifier = Modifier.size(36.dp)) {
                                 Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", modifier = Modifier.size(18.dp))

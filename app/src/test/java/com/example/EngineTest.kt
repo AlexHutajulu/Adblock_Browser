@@ -128,4 +128,225 @@ class EngineTest {
         val ruleSet2 = AbpRuleEngine.build(rules2.asSequence())
         assertFalse(ruleSet2.matchesAllowRule("https://doubleclick.net/ad.js", "news.com"))
     }
+
+    @Test
+    fun testAb03HeuristicsMandatoryScenarios() {
+        // 1. https://cdn.123bank.co.id/app.js pada 123bank.co.id -> tidak terblokir
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "cdn.123bank.co.id",
+                lowerUrl = "https://cdn.123bank.co.id/app.js",
+                isFirstParty = true,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "cdn.123bank.co.id",
+                lowerUrl = "https://cdn.123bank.co.id/app.js",
+                isFirstParty = false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertFalse(HeuristicsEngine.matchesDomainKeyword("cdn.123bank.co.id", "123b"))
+        assertTrue(HeuristicsEngine.matchesDomainKeyword("123b.casino.example", "123b"))
+        assertTrue(HeuristicsEngine.matchesDomainKeyword("play-123b.casino.example", "123b"))
+
+        // 2. https://cdn.jsdelivr.net/npm/tag.min.js pada situs-saya.com -> tidak terblokir
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "cdn.jsdelivr.net",
+                lowerUrl = "https://cdn.jsdelivr.net/npm/tag.min.js",
+                isFirstParty = false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+
+        // 3. https://situs-saya.com/js/bn.js pada situs-saya.com (maupun third-party CDN) -> tidak terblokir
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "situs-saya.com",
+                lowerUrl = "https://situs-saya.com/js/bn.js",
+                isFirstParty = true,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "cdn.situs-lain.com",
+                lowerUrl = "https://cdn.situs-lain.com/js/bn.js",
+                isFirstParty = false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+
+        // 4. https://situs-saya.com/static/pop.js pada situs-saya.com (maupun third-party CDN) -> tidak terblokir
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "situs-saya.com",
+                lowerUrl = "https://situs-saya.com/static/pop.js",
+                isFirstParty = true,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertNull(
+            HeuristicsEngine.heuristicReason(
+                host = "cdn.situs-lain.com",
+                lowerUrl = "https://cdn.situs-lain.com/static/pop.js",
+                isFirstParty = false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+
+        // 5. https://ads.doubleclick.net/pagead/ads.js pada situs-saya.com -> terblokir
+        assertEquals(
+            "heuristic-domain",
+            HeuristicsEngine.heuristicReason(
+                host = "ads.doubleclick.net",
+                lowerUrl = "https://ads.doubleclick.net/pagead/ads.js",
+                isFirstParty = false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+    }
+
+    @Test
+    fun testAb04AntiAdblockNeutralizerProtectsLegitimateDialogs() {
+        // 1. Modal login tidak dianggap anti-adblock
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "modal login-dialog auth-overlay",
+                textContent = "Sign in to continue to your account"
+            )
+        )
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "adblock-overlay",
+                textContent = "Enter your password and OTP code",
+                hasProtectedFormOrInput = true
+            )
+        )
+
+        // 2. Cookie consent / GDPR tidak dianggap anti-adblock
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "cookie-consent-modal gdpr-banner",
+                textContent = "We use cookies to personalize content and respect your privacy."
+            )
+        )
+
+        // 3. Paywall / langganan tidak dianggap anti-adblock
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "paywall-overlay subscribe-modal",
+                textContent = "Subscribe now to unlock unlimited articles and checkout."
+            )
+        )
+
+        // 4. Age-gate / konfirmasi umur tidak dianggap anti-adblock
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "age-gate-modal",
+                textContent = "Please confirm you are 18+ adult to view this content."
+            )
+        )
+
+        // 5. Overlay dengan class .fc-ab-root atau teks "Please disable your adblock" terdeteksi sebagai anti-adblock
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "fc-ab-root",
+                textContent = ""
+            )
+        )
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "custom-wall-dialog",
+                textContent = "Adblock detected! Please disable your adblock or allow ads to continue."
+            )
+        )
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.isAntiAdblockModalCandidate(
+                classAndId = "notice-box",
+                textContent = "Mohon matikan adblock atau nonaktifkan adblock untuk membaca."
+            )
+        )
+
+        // 6. Pastikan script JS memuat daftar penjaga konteks penting dan hanya unlockScroll jika defused > 0
+        val script = com.yourbrowser.adblock.AdBlockWebViewClient.ANTI_ADBLOCK_NEUTRALIZER_SCRIPT
+        assertTrue(script.contains("isProtectedModal"))
+        assertTrue(script.contains("hasPositiveAntiAdblockSignal"))
+        assertTrue(script.contains("if(defused>0)"))
+        assertTrue(script.contains("disable your adblock"))
+        assertTrue(script.contains("paywall"))
+        assertTrue(script.contains("cookie"))
+        assertTrue(script.contains("login"))
+    }
+
+    @Test
+    fun testAb05BaseCleanupScriptProtectsFirstPartyAndVideoIframes() {
+        // 1. First-party iframe tidak dibersihkan walaupun URL mengandung kata kunci iklan
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://situs-saya.com/embed/player.html?ad=doubleclick",
+                pageHost = "www.situs-saya.com"
+            )
+        )
+        // Relative first-party iframe tidak dibersihkan
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "/embed/video-player.html",
+                pageHost = "situs-saya.com"
+            )
+        )
+
+        // 2. Third-party video player embed (YouTube, Vimeo, Dailymotion, Twitch) tidak dibersihkan
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://www.youtube.com/embed/dQw4w9WgXcQ",
+                pageHost = "situs-saya.com"
+            )
+        )
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://player.vimeo.com/video/123456",
+                pageHost = "situs-saya.com"
+            )
+        )
+
+        // 3. Elemen di dalam container video player tidak dibersihkan
+        assertFalse(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://googleads.g.doubleclick.net/pagead/ads",
+                pageHost = "situs-saya.com",
+                isInsideVideoPlayer = true
+            )
+        )
+
+        // 4. Third-party iframe dengan domain iklan jelas (doubleclick, googlesyndication, taboola, criteo) dibersihkan
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-123",
+                pageHost = "situs-saya.com"
+            )
+        )
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://tpc.googlesyndication.com/safeframe/1-0-40/html/container.html",
+                pageHost = "situs-saya.com"
+            )
+        )
+        assertTrue(
+            com.yourbrowser.adblock.AdBlockWebViewClient.shouldCleanIframeInBaseCleanup(
+                iframeSrc = "https://cdn.taboola.com/libtrc/impl.html",
+                pageHost = "situs-saya.com"
+            )
+        )
+
+        // 5. Verifikasi script Balanced memakai stealth hide dan melindungi VIDEO/AUDIO/player
+        val balancedScript = com.yourbrowser.adblock.AdBlockWebViewClient.buildBaseCleanupScript(aggressive = false)
+        assertTrue(balancedScript.contains("var AGG=false;"))
+        assertTrue(balancedScript.contains("isProtectedVideoOrPlayer"))
+        assertTrue(balancedScript.contains("regDomain(iHost)===regDomain(pHost)"))
+        assertTrue(balancedScript.contains("SAFE_EMBED_DOMAINS"))
+    }
 }

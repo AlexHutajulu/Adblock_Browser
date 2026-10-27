@@ -44,9 +44,13 @@ object DocumentStartCosmetics {
     }
 
     fun buildCosmeticCssForHost(host: String): String {
+        val clean = host.trim().lowercase().removePrefix("www.")
+        if (clean.isNotEmpty() && com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { clean == it || clean.endsWith(".$it") }) {
+            return ""
+        }
         val rules = FilterListManager.getCachedRules() ?: return ""
         // Filter DULU, baru batasi jumlah: selektor tidak aman tidak boleh memakan kuota.
-        val selectors = rules.ruleSet.cosmetic.selectorsFor(host)
+        val selectors = rules.ruleSet.cosmetic.selectorsFor(clean)
             .asSequence()
             .filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
             .filter { CosmeticFilterInjector.isSafeCssSelector(it) }

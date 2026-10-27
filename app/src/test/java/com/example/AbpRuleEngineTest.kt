@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.manager.AbpRuleEngine
+import com.example.manager.CosmeticFilterInjector
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -159,5 +160,199 @@ class AbpRuleEngineTest {
         assertEquals(AbpRuleEngine.ResourceType.WEBSOCKET, AbpRuleEngine.inferType("wss://example.com/socket"))
         assertEquals(AbpRuleEngine.ResourceType.PING, AbpRuleEngine.inferType("https://google-analytics.com/collect"))
         assertEquals(AbpRuleEngine.ResourceType.XMLHTTPREQUEST, AbpRuleEngine.inferType("https://example.com/api/data", "application/json"))
+    }
+
+    @Test
+    fun genericRuleDoesNotBlockFirstPartyCss() {
+        val ruleSet = AbpRuleEngine.build(sequenceOf("/banner."))
+        val result = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/css/banner.css",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.STYLESHEET
+        )
+        assertNull("Generic rule without domain anchor must not block first-party CSS", result)
+    }
+
+    @Test
+    fun genericRuleDoesNotBlockFirstPartyImage() {
+        val ruleSet = AbpRuleEngine.build(sequenceOf("/banner."))
+        val result = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/img/banner.png",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.IMAGE
+        )
+        assertNull("Generic rule without domain anchor must not block first-party image", result)
+    }
+
+    @Test
+    fun thirdPartyGenericRuleCanStillBlock() {
+        val ruleSet = AbpRuleEngine.build(sequenceOf("/banner."))
+        val result = ruleSet.shouldBlock(
+            url = "https://cdn.adnetwork.com/img/banner.png",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.IMAGE
+        )
+        assertNotNull("Generic rule must still block third-party ad resource", result)
+        assertFalse(result!!.isAllow)
+    }
+
+    @Test
+    fun thirdPartyOptionRuleDoesNotBlockFirstParty() {
+        val ruleSet = AbpRuleEngine.build(sequenceOf("/banner.\$third-party"))
+        val firstPartyResult = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/img/banner.png",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.IMAGE
+        )
+        assertNull("Rule with \$third-party must not block first-party resource", firstPartyResult)
+
+        val thirdPartyResult = ruleSet.shouldBlock(
+            url = "https://cdn.adnetwork.com/img/banner.png",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.IMAGE
+        )
+        assertNotNull("Rule with \$third-party must block third-party resource", thirdPartyResult)
+    }
+
+    @Test
+    fun domainAnchoredRuleStillWorksOnFirstParty() {
+        val ruleSet = AbpRuleEngine.build(
+            sequenceOf(
+                "||situs-saya.com/ads/banner.js",
+                "|https://situs-saya.com/ads/popup.js",
+                "/promo-track.js\$domain=situs-saya.com",
+                "/self-ad.js\$~third-party"
+            )
+        )
+
+        val anchoredResult = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/ads/banner.js",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNotNull("Domain-anchored rule ||domain/path must still block on first-party", anchoredResult)
+
+        val schemeAnchoredResult = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/ads/popup.js",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNotNull("Start-anchored scheme+host rule |https://domain/path must still block on first-party", schemeAnchoredResult)
+
+        val domainOptionResult = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/js/promo-track.js",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNotNull("Rule with explicit \$domain=situs-saya.com must still block on first-party", domainOptionResult)
+
+        val explicitFirstPartyResult = ruleSet.shouldBlock(
+            url = "https://situs-saya.com/js/self-ad.js",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNotNull("Rule with explicit \$~third-party must still block on first-party", explicitFirstPartyResult)
+    }
+
+    @Test
+    fun exceptionRuleOverridesBlockingRule() {
+        val ruleSet = AbpRuleEngine.build(
+            sequenceOf(
+                "||adnetwork.com/banner.png",
+                "@@||adnetwork.com/banner.png"
+            )
+        )
+        val result = ruleSet.shouldBlock(
+            url = "https://adnetwork.com/banner.png",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.IMAGE
+        )
+        assertNull("Exception rule @@ must override blocking rule", result)
+    }
+
+    @Test
+    fun nonMatchingUrlIsNotBlocked() {
+        val ruleSet = AbpRuleEngine.build(sequenceOf("/banner."))
+        val result = ruleSet.shouldBlock(
+            url = "https://cdn.adnetwork.com/js/app.js",
+            sourceHost = "situs-saya.com",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNull("Non-matching URL must not be blocked", result)
+    }
+
+    @Test
+    fun cosmeticSelectorRejectsGenericBannerAndModalSubstrings() {
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[class*=\"banner\"]"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("[class*=\"banner\"]"))
+
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[id*=\"modal\"]"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("[id*=\"modal\"]"))
+
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("div[class*=\"popup\"]"))
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("div[id*=\"overlay\"]"))
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[class*=\"dialog\"]"))
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[class*=\"carousel\"]"))
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[class*=\"player\"]"))
+    }
+
+    @Test
+    fun cosmeticSelectorRejectsBareTagsUniversalAndEmptyAttribute() {
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("div"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("div"))
+
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("body"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("body"))
+
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("*"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("*"))
+
+        assertFalse(CosmeticFilterInjector.isSafeCssSelector("[class*=\"\"]"))
+        assertFalse(AbpRuleEngine.isSafeCosmeticSelector("[class*=\"\"]"))
+    }
+
+    @Test
+    fun cosmeticSelectorAllowsSpecificAdSelectors() {
+        assertTrue(CosmeticFilterInjector.isSafeCssSelector(".adsbox"))
+        assertTrue(AbpRuleEngine.isSafeCosmeticSelector(".adsbox"))
+
+        assertTrue(CosmeticFilterInjector.isSafeCssSelector("#ad-slot-1"))
+        assertTrue(AbpRuleEngine.isSafeCosmeticSelector("#ad-slot-1"))
+
+        assertTrue(CosmeticFilterInjector.isSafeCssSelector("[class*=\"ads-widget\"]"))
+        assertTrue(AbpRuleEngine.isSafeCosmeticSelector("[class*=\"ads-widget\"]"))
+
+        assertTrue(CosmeticFilterInjector.isSafeCssSelector("div[id^=\"google_ads_\"]"))
+        assertTrue(AbpRuleEngine.isSafeCosmeticSelector("div[id^=\"google_ads_\"]"))
+    }
+
+    @Test
+    fun cosmeticRuleSetFiltersUnsafeSelectorsBeforeQuota() {
+        val rules = sequenceOf(
+            "##[class*=\"banner\"]",
+            "##[id*=\"modal\"]",
+            "##div",
+            "##body",
+            "##*",
+            "##[class*=\"\"]",
+            "##.adsbox",
+            "###ad-slot-1",
+            "##[class*=\"ads-widget\"]",
+            "##div[id^=\"google_ads_\"]"
+        )
+        val ruleSet = AbpRuleEngine.build(rules)
+        val selectors = ruleSet.cosmetic.selectorsFor("example.com")
+
+        assertFalse(selectors.contains("[class*=\"banner\"]"))
+        assertFalse(selectors.contains("[id*=\"modal\"]"))
+        assertFalse(selectors.contains("div"))
+        assertFalse(selectors.contains("body"))
+        assertFalse(selectors.contains("*"))
+        assertFalse(selectors.contains("[class*=\"\"]"))
+
+        assertTrue(selectors.contains(".adsbox"))
+        assertTrue(selectors.contains("#ad-slot-1"))
+        assertTrue(selectors.contains("[class*=\"ads-widget\"]"))
+        assertTrue(selectors.contains("div[id^=\"google_ads_\"]"))
     }
 }

@@ -684,19 +684,23 @@ class AppDownloadManager(
                 "DOWNLOADING" -> {
                     val progress = if (download.totalBytes > 0) (download.downloadedBytes * 100 / download.totalBytes).toInt() else 0
                     builder.setProgress(100, progress, download.totalBytes <= 0)
-                    builder.setContentText("Downloading... ${progress}% (${formatSize(download.speedBps)}/s)")
+                    val dlLabel = context.getString(com.example.R.string.menu_downloads)
+                    builder.setContentText("$dlLabel... ${progress}% (${formatSize(download.speedBps)}/s)")
                 }
                 "PAUSED" -> {
-                    builder.setContentText("Paused")
+                    val pausedText = "Paused"
+                    builder.setContentText(pausedText)
                     builder.setSmallIcon(android.R.drawable.ic_media_pause)
                 }
                 "COMPLETED" -> {
-                    builder.setContentText("Download completed")
+                    val completedText = "Download completed"
+                    builder.setContentText(completedText)
                     builder.setProgress(0, 0, false)
                     builder.setSmallIcon(android.R.drawable.stat_sys_download_done)
                 }
                 "FAILED" -> {
-                    builder.setContentText("Download failed")
+                    val failedText = "Download failed"
+                    builder.setContentText(failedText)
                     builder.setProgress(0, 0, false)
                     builder.setSmallIcon(android.R.drawable.stat_notify_error)
                 }

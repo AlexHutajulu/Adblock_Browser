@@ -17,6 +17,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -457,7 +458,7 @@ fun BrowserScreen(
                         }
                     }
                 ) {
-                    Text("Allow")
+                    Text(stringResource(R.string.action_allow))
                 }
             },
             dismissButton = {
@@ -470,7 +471,7 @@ fun BrowserScreen(
                         viewModel.clearPendingPermissionRequest()
                     }
                 ) {
-                    Text("Block")
+                    Text(stringResource(R.string.action_block))
                 }
             }
         )
@@ -481,8 +482,8 @@ fun BrowserScreen(
         val url = intentToOpen!!
         AlertDialog(
             onDismissRequest = { viewModel.clearIntentToOpen() },
-            title = { Text("Buka Aplikasi Eksternal?", fontWeight = FontWeight.SemiBold) },
-            text = { Text("Situs ini ingin membuka aplikasi di luar AlexBrowser:\n${url.take(180)}") },
+            title = { Text(stringResource(R.string.dialog_external_app_title), fontWeight = FontWeight.SemiBold) },
+            text = { Text(stringResource(R.string.dialog_external_app_message, url.take(180))) },
             confirmButton = {
                 Button(onClick = {
                     val safeIntent = com.example.manager.SecurityGuardEngine.buildSafeExternalIntent(context, url)
@@ -504,12 +505,12 @@ fun BrowserScreen(
                     }
                     viewModel.clearIntentToOpen()
                 }) {
-                    Text("Buka")
+                    Text(stringResource(R.string.action_open))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.clearIntentToOpen() }) {
-                    Text("Batal")
+                    Text(stringResource(R.string.action_cancel))
                 }
             }
         )
@@ -860,35 +861,35 @@ fun BrowserScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
-                    }
-                }
 
-                // Liquid Glass Floating Bottom Taskbar Overlay (bening iOS 28 style)
-                if (!isTablet && !isImmersivePageFullscreen) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                    ) {
-                        ChromeMobileBottomBar(
-                            viewModel = viewModel,
-                            activeTab = activeTab,
-                            activeWebView = webViewPool[activeTab.id],
-                            tabsCount = tabs.size,
-                            isIncognito = isIncognito,
-                            pageBlockedCount = pageBlockedCount,
-                            shortcutBarVisible = shortcutBarVisible,
-                            shortcutBarPosition = shortcutBarPosition,
-                            onBack = { viewModel.goBack() },
-                            onForward = { viewModel.goForward() },
-                            onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
-                            onHome = { viewModel.goHome() },
-                            onOpenTabs = { viewModel.setTabsDialogVisible(true) },
-                            onOpenShield = { showShieldDialog = true },
-                            onOpenFindInPage = { showFindInPage = true },
-                            onOpenSecurityShield = { showSecurityDashboard = true },
-                            adBlockEnabled = adBlockEnabled
-                        )
+                        // DockContainer in layout flow (not floating overlay) so WebView height adjusts cleanly
+                        if (!isTablet && !isImmersivePageFullscreen) {
+                            DockContainer(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .windowInsetsPadding(WindowInsets.navigationBars)
+                            ) {
+                                ChromeMobileBottomBar(
+                                    viewModel = viewModel,
+                                    activeTab = activeTab,
+                                    activeWebView = webViewPool[activeTab.id],
+                                    tabsCount = tabs.size,
+                                    isIncognito = isIncognito,
+                                    pageBlockedCount = pageBlockedCount,
+                                    shortcutBarVisible = shortcutBarVisible,
+                                    shortcutBarPosition = shortcutBarPosition,
+                                    onBack = { viewModel.goBack() },
+                                    onForward = { viewModel.goForward() },
+                                    onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
+                                    onHome = { viewModel.goHome() },
+                                    onOpenTabs = { viewModel.setTabsDialogVisible(true) },
+                                    onOpenShield = { showShieldDialog = true },
+                                    onOpenFindInPage = { showFindInPage = true },
+                                    onOpenSecurityShield = { showSecurityDashboard = true },
+                                    adBlockEnabled = adBlockEnabled
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1244,47 +1245,43 @@ private fun ChromeMobileBottomBar(
     }
 
     val dockShape = RoundedCornerShape(26.dp)
+    val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 14.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        Surface(
+        LiquidGlassSurface(
             modifier = Modifier
                 .widthIn(max = 560.dp)
-                .fillMaxWidth()
-                .border(
-                    width = 1.dp,
-                    brush = glassBorderBrush,
-                    shape = dockShape
-                ),
+                .fillMaxWidth(),
             shape = dockShape,
-            color = Color.Transparent,
-            shadowElevation = 0.dp
+            enabled = liquidGlassEnabled && !isIncognito
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(glassBrush)
+                    .then(if (liquidGlassEnabled && !isIncognito) Modifier.background(glassBrush) else Modifier)
             ) {
-                // Top Specular Gleam Arc (delicate crystal reflection)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    Color.Transparent,
-                                    Color.White.copy(alpha = if (isDark || isIncognito) 0.40f else 0.70f),
-                                    Color.Transparent
+                if (liquidGlassEnabled && !isIncognito) {
+                    // Top Specular Gleam Arc (delicate crystal reflection)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = if (isDark || isIncognito) 0.40f else 0.70f),
+                                        Color.Transparent
+                                    )
                                 )
                             )
-                        )
-                )
+                    )
+                }
 
                 Column(modifier = Modifier.fillMaxWidth()) {
                     // Collapsible Shortcut Bar with matching Liquid Glass integration
@@ -1457,6 +1454,14 @@ private fun ChromeMobileBottomBar(
 }
 
 @Composable
+fun DockContainer(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(modifier = modifier, content = content)
+}
+
+@Composable
 fun ChromeTabCountButton(
     count: Int,
     isIncognito: Boolean = false,
@@ -1559,12 +1564,16 @@ fun TabletHorizontalTabBar(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(
-                                imageVector = if (tab.isPrivate) Icons.Default.VisibilityOff else Icons.Default.Public,
-                                contentDescription = null,
-                                tint = if (tab.isPrivate) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(14.dp)
-                            )
+                            if (tab.isPrivate) {
+                                Icon(
+                                    imageVector = Icons.Default.VisibilityOff,
+                                    contentDescription = null,
+                                    tint = ChromeIncognitoAccent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
+                            }
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = tab.title.ifBlank { "New Tab" },
@@ -2249,18 +2258,19 @@ fun TabletOrMobileToolbar(
                             AssistChip(
                                 onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("URL", activeTab.url))
+                                    val clipLabel = "URL"
+                                    clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, activeTab.url))
                                     Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
                                     focusManager.clearFocus()
                                 },
-                                label = { Text("Copy link", fontSize = 12.sp) },
+                                label = { Text(stringResource(R.string.omnibox_copy_link), fontSize = 12.sp) },
                                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, null, modifier = Modifier.size(15.dp)) }
                             )
                             AssistChip(
                                 onClick = {
                                     onAddressValueChange(activeTab.url)
                                 },
-                                label = { Text("Edit URL", fontSize = 12.sp) },
+                                label = { Text(stringResource(R.string.omnibox_edit_url), fontSize = 12.sp) },
                                 leadingIcon = { Icon(Icons.Outlined.Edit, null, modifier = Modifier.size(15.dp)) }
                             )
                         }
@@ -2276,7 +2286,7 @@ fun TabletOrMobileToolbar(
                                     Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            label = { Text("Paste & Go", fontSize = 12.sp) },
+                            label = { Text(stringResource(R.string.omnibox_paste_go), fontSize = 12.sp) },
                             leadingIcon = { Icon(Icons.Outlined.ContentPaste, null, modifier = Modifier.size(15.dp)) }
                         )
                     }
@@ -2395,7 +2405,7 @@ fun SidebarTabsPanel(
             ) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("New tab", fontSize = 12.sp)
+                Text(stringResource(R.string.menu_new_tab), fontSize = 12.sp)
             }
             OutlinedButton(
                 onClick = { viewModel.addNewTab(isPrivate = true) },
@@ -2404,7 +2414,7 @@ fun SidebarTabsPanel(
             ) {
                 Icon(Icons.Outlined.VisibilityOff, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Incognito", fontSize = 12.sp)
+                Text(stringResource(R.string.menu_new_incognito_tab), fontSize = 12.sp)
             }
         }
 
@@ -2432,12 +2442,16 @@ fun SidebarTabsPanel(
                             .padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = if (tab.isPrivate) Icons.Default.VisibilityOff else Icons.Default.Public,
-                            contentDescription = null,
-                            tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        if (tab.isPrivate) {
+                            Icon(
+                                imageVector = Icons.Default.VisibilityOff,
+                                contentDescription = null,
+                                tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        } else {
+                            com.example.manager.SiteIcon(host = tab.url, sizeDp = 18)
+                        }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -2550,12 +2564,7 @@ fun SidebarBookmarksPanel(
                                 .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Bookmark,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            com.example.manager.SiteIcon(host = bookmark.url, sizeDp = 18)
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -2855,7 +2864,7 @@ fun MobileTabsDialog(
                                 onDismissRequest = { showTabSwitcherMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("New tab") },
+                                    text = { Text(stringResource(R.string.menu_new_tab)) },
                                     leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
                                     onClick = {
                                         showTabSwitcherMenu = false
@@ -2864,7 +2873,7 @@ fun MobileTabsDialog(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("New Incognito tab") },
+                                    text = { Text(stringResource(R.string.menu_new_incognito_tab)) },
                                     leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
                                     onClick = {
                                         showTabSwitcherMenu = false
@@ -2873,7 +2882,7 @@ fun MobileTabsDialog(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Reopen closed tab") },
+                                    text = { Text(stringResource(R.string.menu_recent_tabs)) },
                                     leadingIcon = { Icon(Icons.Outlined.Restore, null) },
                                     onClick = {
                                         showTabSwitcherMenu = false
@@ -2882,7 +2891,7 @@ fun MobileTabsDialog(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Hibernasi tab lain (Hemat RAM)") },
+                                    text = { Text(stringResource(R.string.tab_hibernate_ram)) },
                                     leadingIcon = { Icon(Icons.Outlined.Memory, null) },
                                     onClick = {
                                         showTabSwitcherMenu = false
@@ -2890,7 +2899,7 @@ fun MobileTabsDialog(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Close all tabs", color = MaterialTheme.colorScheme.error) },
+                                    text = { Text(stringResource(R.string.tab_close_all), color = MaterialTheme.colorScheme.error) },
                                     leadingIcon = { Icon(Icons.Outlined.Close, null, tint = MaterialTheme.colorScheme.error) },
                                     onClick = {
                                         showTabSwitcherMenu = false
@@ -3008,12 +3017,16 @@ fun MobileTabsDialog(
                                                 ),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = if (tab.isPrivate) Icons.Default.VisibilityOff else Icons.Default.Public,
-                                                contentDescription = null,
-                                                tint = if (tab.isPrivate) ChromeIncognitoAccent else MaterialTheme.colorScheme.onPrimaryContainer,
-                                                modifier = Modifier.size(12.dp)
-                                            )
+                                            if (tab.isPrivate) {
+                                                Icon(
+                                                    imageVector = Icons.Default.VisibilityOff,
+                                                    contentDescription = null,
+                                                    tint = ChromeIncognitoAccent,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            } else {
+                                                com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
+                                            }
                                         }
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
@@ -3066,11 +3079,15 @@ fun MobileTabsDialog(
                                                     ),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Text(
-                                                    text = domainHost.firstOrNull()?.uppercase() ?: "G",
-                                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                                    color = if (showIncognitoTabs) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
-                                                )
+                                                if (tab.isPrivate) {
+                                                    Text(
+                                                        text = domainHost.firstOrNull()?.uppercase() ?: "G",
+                                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                                        color = ChromeIncognitoAccent
+                                                    )
+                                                } else {
+                                                    com.example.manager.SiteIcon(host = tab.url, sizeDp = 24)
+                                                }
                                             }
                                             Spacer(modifier = Modifier.height(8.dp))
                                             Text(
@@ -3141,7 +3158,7 @@ fun MobileBookmarksDialog(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Bookmarks", fontWeight = FontWeight.SemiBold) },
+                    title = { Text(stringResource(R.string.menu_bookmarks), fontWeight = FontWeight.SemiBold) },
                     navigationIcon = {
                         IconButton(onClick = { viewModel.setBookmarksVisible(false) }) {
                             Icon(Icons.Default.Close, contentDescription = "Close")
@@ -3155,7 +3172,7 @@ fun MobileBookmarksDialog(
                                     Toast.makeText(context, "Bookmarks cleared", Toast.LENGTH_SHORT).show()
                                 }
                             ) {
-                                Text("Clear all", color = MaterialTheme.colorScheme.error)
+                                Text(stringResource(R.string.settings_clear_all), color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -3171,7 +3188,7 @@ fun MobileBookmarksDialog(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search your bookmarks") },
+                        placeholder = { Text(stringResource(R.string.bookmarks_search_hint)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
@@ -3236,12 +3253,7 @@ fun MobileBookmarksDialog(
                                         .padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Bookmark,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                    com.example.manager.SiteIcon(host = bookmark.url, sizeDp = 20)
                                     Spacer(modifier = Modifier.width(14.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
@@ -3298,7 +3310,7 @@ fun MobileHistoryDialog(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("History", fontWeight = FontWeight.SemiBold) },
+                    title = { Text(stringResource(R.string.menu_history), fontWeight = FontWeight.SemiBold) },
                     navigationIcon = {
                         IconButton(onClick = { viewModel.setHistoryVisible(false) }) {
                             Icon(Icons.Default.Close, contentDescription = "Close")
@@ -3312,7 +3324,7 @@ fun MobileHistoryDialog(
                                     Toast.makeText(context, "Browsing history cleared", Toast.LENGTH_SHORT).show()
                                 }
                             ) {
-                                Text("Clear browsing data", color = MaterialTheme.colorScheme.error)
+                                Text(stringResource(R.string.menu_clear_browsing_data), color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -3328,7 +3340,7 @@ fun MobileHistoryDialog(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search history") },
+                        placeholder = { Text(stringResource(R.string.history_search_hint)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
@@ -3481,10 +3493,10 @@ fun WebErrorPlaceholderPage(
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = { viewModel.reload() }) {
-                Text("Reload")
+                Text(stringResource(R.string.action_reload))
             }
             OutlinedButton(onClick = { viewModel.goHome() }) {
-                Text("Home")
+                Text(stringResource(R.string.action_home))
             }
         }
     }
@@ -3922,21 +3934,21 @@ private fun DesktopSidebarSwitcherHeader(
             FilterChip(
                 selected = showTabs,
                 onClick = onSelectTabs,
-                label = { Text("Tab", fontSize = 11.sp) },
+                label = { Text(stringResource(R.string.sidebar_tab_label), fontSize = 11.sp) },
                 leadingIcon = { Icon(Icons.Outlined.Tab, null, modifier = Modifier.size(14.dp)) },
                 modifier = Modifier.weight(1f)
             )
             FilterChip(
                 selected = showBookmarks,
                 onClick = onSelectBookmarks,
-                label = { Text("Bookmark", fontSize = 11.sp) },
+                label = { Text(stringResource(R.string.menu_bookmarks), fontSize = 11.sp) },
                 leadingIcon = { Icon(Icons.Outlined.Bookmarks, null, modifier = Modifier.size(14.dp)) },
                 modifier = Modifier.weight(1f)
             )
             FilterChip(
                 selected = showHistory,
                 onClick = onSelectHistory,
-                label = { Text("Riwayat", fontSize = 11.sp) },
+                label = { Text(stringResource(R.string.menu_history), fontSize = 11.sp) },
                 leadingIcon = { Icon(Icons.Outlined.History, null, modifier = Modifier.size(14.dp)) },
                 modifier = Modifier.weight(1f)
             )
@@ -4077,12 +4089,7 @@ fun DesktopTabBar(
                                             modifier = Modifier.size(11.dp)
                                         )
                                     } else {
-                                        Text(
-                                            text = domainInitial,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isActive) accentColor else textColor
-                                        )
+                                        com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
                                     }
                                 }
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -4569,7 +4576,7 @@ fun DesktopToolbar(
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                                 DropdownMenuItem(
-                                    text = { Text("Tab baru") },
+                                    text = { Text(stringResource(R.string.menu_new_tab)) },
                                     leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4577,7 +4584,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Tab Samaran (Incognito)") },
+                                    text = { Text(stringResource(R.string.menu_new_incognito_tab)) },
                                     leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4585,7 +4592,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(if (isImmersiveFsDesktop) "Keluar Layar Penuh (Full Screen)" else "Layar Penuh Imersif (Full Screen)") },
+                                    text = { Text(if (isImmersiveFsDesktop) stringResource(R.string.menu_fullscreen_exit) else stringResource(R.string.menu_fullscreen_enter)) },
                                     leadingIcon = { Icon(if (isImmersiveFsDesktop) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4593,7 +4600,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Kembali ke Mode Mobile") },
+                                    text = { Text(stringResource(R.string.menu_desktop_site)) },
                                     leadingIcon = { Icon(Icons.Outlined.PhoneAndroid, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4606,9 +4613,9 @@ fun DesktopToolbar(
                                 DropdownMenuItem(
                                     text = {
                                         Column {
-                                            Text("Ekstensi Browser (WebExtensions)")
+                                            Text(stringResource(R.string.menu_extensions))
                                             Text(
-                                                text = "$enabledExtCount aktif • Impor file / URL luar",
+                                                text = stringResource(R.string.menu_extensions_sub, enabledExtCount),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.primary
                                             )
@@ -4621,7 +4628,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Studio Pintasan & Custom JS") },
+                                    text = { Text(stringResource(R.string.menu_custom_js_studio)) },
                                     leadingIcon = { Icon(Icons.Outlined.Terminal, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4632,7 +4639,7 @@ fun DesktopToolbar(
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                                 DropdownMenuItem(
-                                    text = { Text("Panel Samping: Daftar Tab (${activeTab.title.take(12)})") },
+                                    text = { Text(text = "${stringResource(R.string.sidebar_tab_label)} (${activeTab.title.take(12)})") },
                                     leadingIcon = { Icon(Icons.AutoMirrored.Outlined.ViewSidebar, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4640,7 +4647,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Panel Samping: Bookmark") },
+                                    text = { Text(stringResource(R.string.menu_bookmarks)) },
                                     leadingIcon = { Icon(Icons.Outlined.Bookmarks, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4648,7 +4655,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Panel Samping: Riwayat (History)") },
+                                    text = { Text(stringResource(R.string.menu_history)) },
                                     leadingIcon = { Icon(Icons.Outlined.History, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4656,7 +4663,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Unduhan (Downloads)") },
+                                    text = { Text(stringResource(R.string.menu_downloads)) },
                                     leadingIcon = { Icon(Icons.Outlined.Download, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4664,7 +4671,7 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Cari di halaman") },
+                                    text = { Text(stringResource(R.string.menu_find_in_page)) },
                                     leadingIcon = { Icon(Icons.Outlined.FindInPage, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4673,7 +4680,7 @@ fun DesktopToolbar(
                                 )
                                 if (inspectToolsEnabled) {
                                     DropdownMenuItem(
-                                        text = { Text("Developer Tools (Inspect)") },
+                                        text = { Text(stringResource(R.string.menu_developer_tools)) },
                                         leadingIcon = { Icon(Icons.Outlined.Code, null) },
                                         onClick = {
                                             showDesktopOverflowMenu = false
@@ -4683,7 +4690,7 @@ fun DesktopToolbar(
                                 }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 DropdownMenuItem(
-                                    text = { Text("Setelan (Settings)") },
+                                    text = { Text(stringResource(R.string.menu_settings)) },
                                     leadingIcon = { Icon(Icons.Outlined.Settings, null) },
                                     onClick = {
                                         showDesktopOverflowMenu = false
@@ -4700,6 +4707,7 @@ fun DesktopToolbar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DesktopBookmarkBar(
     viewModel: BrowserViewModel,
@@ -4708,13 +4716,14 @@ fun DesktopBookmarkBar(
     isSidebarOpen: Boolean = false,
     onToggleSidebar: () -> Unit = {}
 ) {
-    val quickLinks = listOf(
-        Pair("Google", "https://www.google.com"),
-        Pair("YouTube", "https://www.youtube.com"),
-        Pair("Wikipedia", "https://www.wikipedia.org"),
-        Pair("GitHub", "https://github.com")
-    )
+    val context = LocalContext.current
+    val quickLinks by viewModel.quickLinks.collectAsState()
+    val enabledQuickLinks = remember(quickLinks) {
+        quickLinks.filter { it.enabled }.sortedBy { it.position }
+    }
     val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
+    var editingLink by remember { mutableStateOf<com.example.manager.QuickLink?>(null) }
+    var showAddDialog by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -4772,7 +4781,7 @@ fun DesktopBookmarkBar(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Ekstensi",
+                    text = stringResource(R.string.menu_extensions),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     fontWeight = FontWeight.SemiBold
@@ -4827,29 +4836,45 @@ fun DesktopBookmarkBar(
 
             VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            // Zone 2: Quick Sites & User Bookmarks
-            quickLinks.forEach { (name, url) ->
+            // Zone 2: Customizable Quick Links (tap to open, long-press to edit/disable/delete)
+            enabledQuickLinks.forEach { link ->
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { viewModel.navigateTo(url) }
+                        .combinedClickable(
+                            onClick = { viewModel.navigateTo(link.url) },
+                            onLongClick = { editingLink = link }
+                        )
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Public,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(13.dp)
-                    )
+                    com.example.manager.SiteIcon(host = link.url, sizeDp = 14)
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = name,
+                        text = link.title,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Medium
                     )
                 }
+            }
+
+            // "+" button to add a new Quick Link
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .clickable { showAddDialog = true }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .testTag("desktop_add_quick_link_button"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = stringResource(R.string.quick_link_add),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp)
+                )
             }
 
             if (bookmarks.isNotEmpty()) {
@@ -4862,12 +4887,7 @@ fun DesktopBookmarkBar(
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Bookmark,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(13.dp)
-                        )
+                        com.example.manager.SiteIcon(host = bmark.url, sizeDp = 14)
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = bmark.title,
@@ -4880,6 +4900,147 @@ fun DesktopBookmarkBar(
                 }
             }
         }
+    }
+
+    if (showAddDialog) {
+        var titleInput by remember { mutableStateOf("") }
+        var urlInput by remember { mutableStateOf("") }
+        var urlError by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text(stringResource(R.string.quick_link_add)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = titleInput,
+                        onValueChange = { titleInput = it },
+                        label = { Text(stringResource(R.string.quick_link_title_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = {
+                            urlInput = it
+                            urlError = false
+                        },
+                        label = { Text(stringResource(R.string.quick_link_url_label)) },
+                        isError = urlError,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (urlError) {
+                        Text(
+                            text = stringResource(R.string.quick_link_invalid_url),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (viewModel.addQuickLink(titleInput, urlInput)) {
+                            showAddDialog = false
+                        } else {
+                            urlError = true
+                        }
+                    }
+                ) {
+                    Text(stringResource(R.string.action_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
+    editingLink?.let { target ->
+        var titleInput by remember(target.id) { mutableStateOf(target.title) }
+        var urlInput by remember(target.id) { mutableStateOf(target.url) }
+        var enabledState by remember(target.id) { mutableStateOf(target.enabled) }
+        var urlError by remember(target.id) { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { editingLink = null },
+            title = { Text(stringResource(R.string.quick_link_edit)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = titleInput,
+                        onValueChange = { titleInput = it },
+                        label = { Text(stringResource(R.string.quick_link_title_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = {
+                            urlInput = it
+                            urlError = false
+                        },
+                        label = { Text(stringResource(R.string.quick_link_url_label)) },
+                        isError = urlError,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (urlError) {
+                        Text(
+                            text = stringResource(R.string.quick_link_invalid_url),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(stringResource(R.string.quick_link_show_in_bar))
+                        Switch(
+                            checked = enabledState,
+                            onCheckedChange = { enabledState = it }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            viewModel.deleteQuickLink(target.id)
+                            editingLink = null
+                        }
+                    ) {
+                        Text(
+                            text = stringResource(R.string.action_delete),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            if (viewModel.updateQuickLink(target.id, titleInput, urlInput, enabledState)) {
+                                editingLink = null
+                            } else {
+                                urlError = true
+                            }
+                        }
+                    ) {
+                        Text(stringResource(R.string.action_save))
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingLink = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
     }
 }
 
@@ -5077,7 +5238,7 @@ fun WebGuardShieldDialog(
                             ) {
                                 Icon(Icons.Outlined.TouchApp, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Hapus Elemen", maxLines = 1)
+                                Text(stringResource(R.string.zapper_remove_element), maxLines = 1)
                             }
                             OutlinedButton(
                                 onClick = {
@@ -5091,7 +5252,7 @@ fun WebGuardShieldDialog(
                             ) {
                                 Icon(Icons.Outlined.Memory, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Hemat RAM", maxLines = 1)
+                                Text(stringResource(R.string.zapper_ram_saver), maxLines = 1)
                             }
                         }
 
@@ -5106,7 +5267,7 @@ fun WebGuardShieldDialog(
                             ) {
                                 Icon(Icons.Outlined.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Reset $customZapperCount Elemen Terhapus di $host")
+                                Text(stringResource(R.string.zapper_reset_host, customZapperCount, host))
                             }
                         }
                     }
@@ -5163,7 +5324,7 @@ fun WebGuardShieldDialog(
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Fix CAPTCHA / Verification Loop")
+                            Text(stringResource(R.string.shield_fix_captcha))
                         }
                     }
                 }
@@ -5248,7 +5409,7 @@ private fun ElementZapperFloatingBar(
                 ) {
                     Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Hapus Elemen")
+                    Text(stringResource(R.string.zapper_remove_element))
                 }
                 OutlinedButton(
                     onClick = onUndo,
@@ -5256,7 +5417,7 @@ private fun ElementZapperFloatingBar(
                 ) {
                     Icon(Icons.Outlined.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Undo")
+                    Text(stringResource(R.string.action_undo))
                 }
             }
         }
@@ -5455,8 +5616,8 @@ fun SecurityDashboardDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Paksa HTTPS-Only", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-                                        Text("Tingkatkan HTTP ke HTTPS & beri peringatan", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(stringResource(R.string.security_https_only_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                                        Text(stringResource(R.string.security_https_only_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Switch(checked = httpsOnly, onCheckedChange = { viewModel.setHttpsOnlyMode(it) })
                                 }
@@ -5466,8 +5627,8 @@ fun SecurityDashboardDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Deteksi Situs Phishing & Malware", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-                                        Text("Blokir domain tiruan, scam & IDN homograph", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(stringResource(R.string.security_phishing_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                                        Text(stringResource(R.string.security_phishing_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Switch(checked = phishingGuard, onCheckedChange = { viewModel.setPhishingProtectionEnabled(it) })
                                 }
@@ -5477,8 +5638,8 @@ fun SecurityDashboardDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Blokir Kamera & Mikrofon", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-                                        Text("Tolak otomatis akses webcam & suara", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(stringResource(R.string.security_cam_mic_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                                        Text(stringResource(R.string.security_cam_mic_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Switch(checked = blockCamMic, onCheckedChange = { viewModel.setBlockCameraMicStrict(it) })
                                 }
@@ -5488,8 +5649,8 @@ fun SecurityDashboardDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Proteksi Clipboard & Pop-up", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-                                        Text("Cegah pencurian clipboard & redirect iklan", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(stringResource(R.string.security_clipboard_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                                        Text(stringResource(R.string.security_clipboard_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Switch(
                                         checked = blockClipboard && blockPopups,
@@ -5517,7 +5678,7 @@ fun SecurityDashboardDialog(
                     ) {
                         Icon(Icons.Outlined.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Clear Browsing Data & Reset")
+                        Text(stringResource(R.string.menu_clear_browsing_data))
                     }
                 }
             }

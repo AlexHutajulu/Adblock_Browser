@@ -37,6 +37,23 @@ object CosmeticFilterInjector {
         "a[class*='floating-ad-banner']"
     )
 
+    private val BARE_HTML_TAGS = setOf(
+        "*", "html", "body", "main", "header", "footer", "nav", "section",
+        "article", "aside", "div", "span", "p", "a", "img", "video",
+        "canvas", "form", "input", "button", "iframe"
+    )
+
+    private val EXACT_GENERIC_UI_SELECTORS = setOf(
+        ".banner", "#banner", ".header", "#header", ".footer", "#footer",
+        ".hero", "#hero", ".slider", "#slider", ".carousel", "#carousel",
+        ".cookie", "#cookie", ".auth", "#auth", ".login", "#login",
+        ".player", "#player", ".card", "#card", ".panel", "#panel",
+        ".modal", "#modal", ".dialog", "#dialog", ".popup", "#popup",
+        ".overlay", "#overlay", ".drawer", "#drawer", ".sidebar", "#sidebar",
+        ".navbar", "#navbar", ".menu", "#menu", ".wrapper", "#wrapper",
+        ".container", "#container", ".content", "#content"
+    )
+
     // Forbidden substrings in EasyList cosmetic selectors that could hide legitimate UI elements or inject rules
     private val DANGEROUS_SELECTOR_TOKENS = listOf(
         "body", "html", "main", "header", "footer", "nav", "article", "section",
@@ -45,30 +62,91 @@ object CosmeticFilterInjector {
         ".menu", ".btn", ".button", ".floating-btn", "video", "canvas", "form", "input",
         ":-abp-", ":has(", ":has-text", ":xpath", ":matches-css", ":upward", ":remove",
         "+js(", "{", "}", "@media", "@import", "url(", "expression(", "javascript:",
-        "/*", "*/", "\\", ";", "<"
+        "/*", "*/", "\\", ";", "<", ">"
+    )
+
+    private val ATTR_BLOCK_RE = Regex("""\[([^\]]*)\]""")
+    private val ATTR_OPERATOR_RE =
+        Regex("""^\s*([a-zA-Z0-9_-]+)\s*(\*=|\^=|\$=|~=|!=|\|=|=)\s*(.*?)\s*$""")
+
+    private val WEAK_SUBSTRING_WORDS = listOf(
+        "head", "load", "down", "up", "shad", "grad", "read", "lead", "road", "thread"
+    )
+
+    private val GENERIC_UI_ATTRIBUTE_WORDS = listOf(
+        "modal", "popup", "overlay", "dialog", "header", "footer", "content",
+        "nav", "hero", "slider", "carousel", "cookie", "auth", "login",
+        "player", "video", "card", "panel", "drawer", "sidebar", "menu",
+        "wrapper", "container"
+    )
+
+    private val EXPLICIT_AD_BANNER_TOKENS = listOf(
+        "ad-banner", "ads-banner", "ad_banner", "ads_banner",
+        "jackpot-banner", "casino-banner", "slot-banner", "judi-banner"
     )
 
     internal fun isSafeCssSelector(selector: String): Boolean {
         val s = selector.trim()
         if (s.length < 3 || s.length > 120) return false
         if (s == "*" || s.startsWith("*") || s.endsWith("*")) return false
-        // Reject unbalanced quotes or brackets that could corrupt grouped CSS selector blocks
         if (s.count { it == '\'' } % 2 != 0 || s.count { it == '"' } % 2 != 0) return false
         if (s.count { it == '[' } != s.count { it == ']' }) return false
+        if (s.count { it == '(' } != s.count { it == ')' }) return false
         val lower = s.lowercase()
+        if (lower in BARE_HTML_TAGS || lower in EXACT_GENERIC_UI_SELECTORS) return false
         if (DANGEROUS_SELECTOR_TOKENS.any { lower.contains(it) }) return false
-        // Must start with class (.), id (#), tag+attr (div[ / ins[ / iframe[ / a[), or attribute ([data-ad)
-        return s.startsWith(".") ||
-            s.startsWith("#") ||
-            s.startsWith("ins.") ||
-            s.startsWith("div[") ||
-            s.startsWith("iframe[") ||
-            s.startsWith("a[") ||
-            s.startsWith("[data-ad") ||
-            s.startsWith("[data-google")
+        val prefixOk = s.startsWith(".") || s.startsWith("#") || s.startsWith("ins.") ||
+            s.startsWith("div[") || s.startsWith("iframe[") || s.startsWith("a[") ||
+            s.startsWith("aside[") || s.startsWith("span[") || s.startsWith("ins[") ||
+            s.startsWith("[")
+        if (!prefixOk) return false
+        return !hasWeakAttributeSubstring(s)
+    }
+
+    // Pola atribut hanya boleh jika nilainya tidak kosong, cukup spesifik, dan
+    // tidak mengandung kata komponen UI sah (banner, modal, popup, overlay, dll.).
+    private fun hasWeakAttributeSubstring(s: String): Boolean {
+        if (s.contains("[]")) return true
+        for (blockMatch in ATTR_BLOCK_RE.findAll(s)) {
+            val content = blockMatch.groupValues[1].trim()
+            if (content.isEmpty()) return true
+            if (!content.contains("=")) {
+                val attrLower = content.lowercase()
+                if (!attrLower.startsWith("data-ad") && !attrLower.startsWith("data-google")) {
+                    return true
+                }
+                continue
+            }
+            val opMatch = ATTR_OPERATOR_RE.matchEntire(content) ?: return true
+            val attrName = opMatch.groupValues[1].lowercase()
+            var rawVal = opMatch.groupValues[3].trim()
+            if ((rawVal.endsWith(" i") || rawVal.endsWith(" s")) && rawVal.length > 2) {
+                rawVal = rawVal.dropLast(2).trim()
+            }
+            if ((rawVal.startsWith("\"") && rawVal.endsWith("\"")) ||
+                (rawVal.startsWith("'") && rawVal.endsWith("'"))
+            ) {
+                rawVal = rawVal.substring(1, rawVal.length - 1)
+            }
+            val v = rawVal.trim().lowercase()
+            if (v.isEmpty()) return true
+            if (attrName.startsWith("data-ad") || attrName.startsWith("data-google")) {
+                continue
+            }
+            if (v.length < 6) return true
+            if (WEAK_SUBSTRING_WORDS.any { v.contains(it) }) return true
+            if (GENERIC_UI_ATTRIBUTE_WORDS.any { v.contains(it) }) return true
+            if (v.contains("banner") && EXPLICIT_AD_BANNER_TOKENS.none { v.contains(it) }) {
+                return true
+            }
+        }
+        return false
     }
 
     fun inject(webView: WebView, customSelectors: List<String> = emptyList(), pageUrl: String? = null) {
+        if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT) && customSelectors.isEmpty()) {
+            return
+        }
         val host = if (!pageUrl.isNullOrBlank()) {
             try {
                 android.net.Uri.parse(pageUrl).host?.lowercase()?.removePrefix("www.") ?: ""
@@ -84,17 +162,20 @@ object CosmeticFilterInjector {
 
         val rules = FilterListManager.getCachedRules()
         val safeSelectors = LinkedHashSet<String>()
-        safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS)
+        safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS.filter { isSafeCssSelector(it) })
 
         customSelectors.forEach { sel ->
-            if (isSafeCssSelector(sel)) safeSelectors.add(sel.trim())
+            if (AbpRuleEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
+                safeSelectors.add(sel.trim())
+            }
         }
 
-        // Per-domain cosmetic selectors from ABP rule engine (capped at 1500)
+        // Per-domain cosmetic selectors from ABP rule engine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
         rules?.ruleSet?.cosmetic?.selectorsFor(host)
             ?.asSequence()
+            ?.filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
             ?.filter { isSafeCssSelector(it) }
-            ?.take(1500)
+            ?.take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
             ?.forEach { safeSelectors.add(it.trim()) }
 
         if (safeSelectors.isEmpty()) return

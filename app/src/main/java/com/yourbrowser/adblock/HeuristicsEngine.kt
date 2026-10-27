@@ -299,7 +299,6 @@ object HeuristicsEngine {
         "/doubleclick/",
         "/popunder",
         "/popads",
-        "/advertisement",
         "/adserver",
         "-adx.js",
         "/vl-top-adx",
@@ -307,12 +306,10 @@ object HeuristicsEngine {
         "/vl-underplayer-adx",
         "/vl-native-adx",
         "/static/js/ads-",
-        "/no-adblock-access/",
         "/videoSliderAlt.js",
         "/inpagepush.js",
         "/aclib.js",
         "/suv5.js",
-        "/js/cla/",
         "/jquery.openxtag.js",
         "/static/doubleclick/instream"
     )
@@ -320,16 +317,37 @@ object HeuristicsEngine {
     private val AD_PATH_PATTERNS_LOWER: List<String> =
         AD_PATH_PATTERNS.map { it.lowercase(Locale.US) }
 
-    /** Cocokkan kata kunci judi hanya pada label host utuh untuk kata pendek; substring hanya untuk kata panjang. */
-    private fun isGamblingHost(host: String): Boolean {
-        val labels = host.split('.')
-        return GAMBLING_KEYWORDS.any { k ->
-            val key = k.trimEnd('.')
-            if (key.length < 6) labels.any { it == key } else host.contains(key)
+    internal fun matchesDomainKeyword(host: String, keyword: String): Boolean {
+        val normalizedHost = host.lowercase(Locale.US).trim().trim('.')
+        val normalizedKeyword = keyword.lowercase(Locale.US).trim().trim('.')
+        if (normalizedHost.isEmpty() || normalizedKeyword.isEmpty()) return false
+
+        val labels = normalizedHost.split('.')
+        return labels.any { label ->
+            label == normalizedKeyword ||
+                label.startsWith("$normalizedKeyword-") ||
+                label.endsWith("-$normalizedKeyword")
         }
     }
 
-    fun heuristicReason(host: String, lowerUrl: String, isFirstParty: Boolean): String? {
+    /** Cocokkan kata kunci judi hanya pada label host utuh/batas tanda hubung untuk kata pendek; substring hanya untuk kata panjang. */
+    private fun isGamblingHost(host: String): Boolean {
+        return GAMBLING_KEYWORDS.any { k ->
+            val key = k.trimEnd('.').lowercase(Locale.US)
+            if (key.length < 6) {
+                matchesDomainKeyword(host, key)
+            } else {
+                matchesDomainKeyword(host, key) || host.contains(key)
+            }
+        }
+    }
+
+    fun heuristicReason(
+        host: String,
+        lowerUrl: String,
+        isFirstParty: Boolean,
+        resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.SCRIPT
+    ): String? {
         val cleanHost = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
         if (cleanHost.isEmpty()) return null
         // 1. Suffix match domain, dengan pencocokan suffix domain
@@ -342,9 +360,15 @@ object HeuristicsEngine {
         if (isFirstParty) return null
         // 2. Kata kunci gambling di host
         if (isGamblingHost(cleanHost)) return "heuristic-gambling"
-        // 3. Pola path iklan di URL lengkap
+        // 3. Pola path iklan di URL lengkap (hanya SCRIPT dan SUBDOCUMENT)
+        if (resType != com.example.manager.AbpRuleEngine.ResourceType.SCRIPT &&
+            resType != com.example.manager.AbpRuleEngine.ResourceType.SUBDOCUMENT
+        ) {
+            return null
+        }
+        val normalizedUrl = lowerUrl.lowercase(Locale.US)
         for (pattern in AD_PATH_PATTERNS_LOWER) {
-            if (lowerUrl.contains(pattern)) return "heuristic-path"
+            if (normalizedUrl.contains(pattern)) return "heuristic-path"
         }
         return null
     }

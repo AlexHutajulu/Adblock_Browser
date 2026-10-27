@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import com.example.R
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -549,7 +550,7 @@ fun HomeScreen(
                                 onClick = { viewModel.setBookmarksVisible(true) },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Text("More", style = MaterialTheme.typography.labelMedium)
+                                Text(stringResource(R.string.menu_bookmarks), style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -631,7 +632,7 @@ fun HomeScreen(
                                 onClick = { viewModel.setHistoryVisible(true) },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Text("History", style = MaterialTheme.typography.labelMedium)
+                                Text(stringResource(R.string.menu_history), style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -937,7 +938,7 @@ private fun ChromeIncognitoNewTabPage(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Switch to Regular Tab", color = ChromeIncognitoAccent)
+                    Text(stringResource(R.string.menu_new_tab), color = ChromeIncognitoAccent)
                 }
             }
 
