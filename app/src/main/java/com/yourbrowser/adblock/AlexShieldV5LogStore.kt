@@ -1,116 +1,164 @@
 package com.yourbrowser.adblock
 
+import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
 
 data class AlexShieldBlockedLog(
     val tabId: String,
+    val pageUrl: String,
     val pageHost: String,
     val blockedUrl: String,
+    val blockedHost: String,
     val reason: String,
+    val category: String,
     val timestamp: Long = System.currentTimeMillis()
 )
 
 object AlexShieldV5LogStore {
-    private const val MAX_LOGS = 500
+    private const val MAX_LOGS = 200
+    private val logQueue = ConcurrentLinkedDeque<String>()
+    private val sizeCounter = AtomicInteger(0)
+
+    private val structuredQueue = ConcurrentLinkedDeque<AlexShieldBlockedLog>()
+    private val structuredSizeCounter = AtomicInteger(0)
 
     private val _logs = MutableStateFlow<List<AlexShieldBlockedLog>>(emptyList())
-    val logs: StateFlow<List<AlexShieldBlockedLog>> = _logs
+    val logs: StateFlow<List<AlexShieldBlockedLog>> = _logs.asStateFlow()
 
-    fun normalizeHost(urlOrHost: String?): String {
-        val raw = urlOrHost?.trim().orEmpty()
-        if (raw.isEmpty()) return ""
-        val candidate = if (raw.contains("://")) {
-            try {
-                android.net.Uri.parse(raw).host.orEmpty()
-            } catch (_: Exception) {
-                ""
-            }
-        } else {
-            raw.substringBefore("/").substringBefore(":")
-        }
-        return candidate.lowercase(java.util.Locale.US).removePrefix("www.")
-    }
+    fun add(reason: String, url: String, isPrivate: Boolean) {
+        if (isPrivate) return // Patuhi aturan T2: Jangan pernah log tab private!
 
-    fun classifyReason(blockedUrl: String, reason: String): String {
-        val lowerUrl = blockedUrl.lowercase(java.util.Locale.US)
-        val isPopup = reason.contains("popup", ignoreCase = true) ||
-            reason.contains("redirect", ignoreCase = true)
-        val isTracker = reason.contains("tracker", ignoreCase = true) ||
-            reason.contains("beacon", ignoreCase = true) ||
-            lowerUrl.contains("analytics") ||
-            lowerUrl.contains("tracker") ||
-            lowerUrl.contains("pixel") ||
-            lowerUrl.contains("beacon") ||
-            lowerUrl.contains("telemetry") ||
-            lowerUrl.contains("collect")
-        return when {
-            isPopup -> "Popup"
-            isTracker -> "Tracker"
-            else -> "Ad"
+        val sanitizedUrl = url.substringBefore('?').take(120) // Potong URL panjang agar hemat RAM
+        val entry = "[$reason] $sanitizedUrl"
+
+        logQueue.addFirst(entry)
+        if (sizeCounter.incrementAndGet() > MAX_LOGS) {
+            logQueue.pollLast()
+            sizeCounter.decrementAndGet()
         }
     }
 
-    fun addLogEntry(url: String, isPrivateTab: Boolean) {
-        if (isPrivateTab) return // JANGAN PERNAH simpan log dari tab private (Solusi T2)
-        add(tabId = "default", pageUrl = "", blockedUrl = url, reason = "Ad", isPrivateTab = false)
+    fun getLogsSnapshot(): List<String> {
+        return logQueue.toList()
+    }
+
+    fun clear() {
+        logQueue.clear()
+        sizeCounter.set(0)
+        structuredQueue.clear()
+        structuredSizeCounter.set(0)
     }
 
     fun add(
         tabId: String,
-        pageUrl: String?,
+        pageUrl: String,
         blockedUrl: String,
         reason: String,
         isPrivateTab: Boolean = false
     ) {
-        if (isPrivateTab) return // JANGAN PERNAH simpan log dari tab private (Solusi T2)
-        val host = normalizeHost(pageUrl)
-        _logs.update { old ->
-            (old + AlexShieldBlockedLog(tabId, host, blockedUrl, reason)).takeLast(MAX_LOGS)
+        // Solusi T2: JANGAN PERNAH menyimpan riwayat URL yang diblokir dari tab Private/Incognito
+        if (isPrivateTab) return
+        if (blockedUrl.isBlank()) return
+
+        // Simpan ke queue string ringan tanpa alokasi list baru
+        add(reason = reason, url = blockedUrl, isPrivate = false)
+
+        val sanitizedBlockedUrl = blockedUrl.substringBefore('?').take(120)
+        val sanitizedPageUrl = pageUrl.substringBefore('?').take(120)
+        val pHost = extractCleanHost(sanitizedPageUrl)
+        val bHost = extractCleanHost(sanitizedBlockedUrl).ifEmpty { sanitizedBlockedUrl.take(80) }
+        val cat = if (
+            reason.contains("tracker", ignoreCase = true) ||
+            reason.contains("beacon", ignoreCase = true) ||
+            sanitizedBlockedUrl.contains("analytics", ignoreCase = true) ||
+            sanitizedBlockedUrl.contains("pixel", ignoreCase = true)
+        ) {
+            "Tracker"
+        } else {
+            "Ad"
         }
+
+        val entry = AlexShieldBlockedLog(
+            tabId = tabId,
+            pageUrl = sanitizedPageUrl,
+            pageHost = pHost,
+            blockedUrl = sanitizedBlockedUrl,
+            blockedHost = bHost,
+            reason = reason,
+            category = cat
+        )
+
+        structuredQueue.addFirst(entry)
+        if (structuredSizeCounter.incrementAndGet() > MAX_LOGS) {
+            structuredQueue.pollLast()
+            structuredSizeCounter.decrementAndGet()
+        }
+    }
+
+    fun addLogEntry(pageUrl: String, blockedHost: String, type: String, isPrivateTab: Boolean = false) {
+        if (isPrivateTab) return
+        if (pageUrl.isBlank() || blockedHost.isBlank()) return
+        val reason = if (type.equals("Tracker", ignoreCase = true)) "tracker-domain" else "ad-domain"
+        add(
+            tabId = "legacy",
+            pageUrl = pageUrl,
+            blockedUrl = "https://$blockedHost",
+            reason = reason,
+            isPrivateTab = false
+        )
     }
 
     fun forTab(tabId: String): List<AlexShieldBlockedLog> {
-        return _logs.value.filter { it.tabId == tabId }
+        return structuredQueue.filter { it.tabId == tabId }
     }
 
-    fun forPageHost(pageUrlOrHost: String?): List<AlexShieldBlockedLog> {
-        val targetHost = normalizeHost(pageUrlOrHost)
+    fun getForTab(tabId: String): List<AlexShieldBlockedLog> = forTab(tabId)
+
+    fun getBlockedLogsForPage(pageUrl: String): List<BlockedRequest> {
+        val targetHost = extractCleanHost(pageUrl)
         if (targetHost.isEmpty()) return emptyList()
-        return _logs.value.filter { log ->
-            log.pageHost.isNotEmpty() && (
-                log.pageHost == targetHost ||
-                    log.pageHost.endsWith(".$targetHost") ||
-                    targetHost.endsWith(".${log.pageHost}")
-                )
-        }
-    }
-
-    fun getBlockedLogsForPage(mainPageUrl: String?): List<BlockedRequest> {
-        if (mainPageUrl.isNullOrBlank()) return emptyList()
-        return forPageHost(mainPageUrl).map { log ->
-            val blockedHost = try {
-                android.net.Uri.parse(log.blockedUrl).host?.lowercase(java.util.Locale.US).orEmpty()
-            } catch (_: Exception) {
-                ""
+        return structuredQueue
+            .filter { entry ->
+                entry.pageHost.isNotEmpty() && (
+                    entry.pageHost == targetHost ||
+                        entry.pageHost.endsWith(".$targetHost") ||
+                        targetHost.endsWith(".${entry.pageHost}")
+                    )
             }
-            val category = classifyReason(log.blockedUrl, log.reason)
-            BlockedRequest(
-                url = log.blockedUrl,
-                host = blockedHost,
-                type = category,
-                mainPageUrl = mainPageUrl,
-                timestamp = log.timestamp
-            )
-        }.distinctBy { "${it.url}|${it.timestamp}" }.takeLast(100)
+            .map { entry ->
+                BlockedRequest(
+                    url = entry.blockedUrl,
+                    host = entry.blockedHost,
+                    type = entry.category,
+                    mainPageUrl = entry.pageUrl,
+                    timestamp = entry.timestamp
+                )
+            }
     }
 
     fun clearTab(tabId: String) {
-        _logs.update { old -> old.filterNot { it.tabId == tabId } }
+        val iterator = structuredQueue.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next().tabId == tabId) {
+                iterator.remove()
+                structuredSizeCounter.updateAndGet { current -> if (current > 0) current - 1 else 0 }
+            }
+        }
     }
 
     fun clearAll() {
-        _logs.value = emptyList()
+        clear()
+    }
+
+    private fun extractCleanHost(url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        return runCatching {
+            Uri.parse(url).host?.lowercase(Locale.US)?.removePrefix("www.").orEmpty()
+        }.getOrDefault("")
     }
 }

@@ -41,5 +41,6 @@ object AdguardDnsClient {
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
+        AdguardDnsResolver.init(context)
     }
 }

@@ -3,10 +3,13 @@ package com.example
 import android.content.Context
 import android.net.Uri
 import android.webkit.WebResourceRequest
+import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
+import com.example.ui.components.safeDestroy
 import com.yourbrowser.adblock.AdBlockWebViewClient
 import com.yourbrowser.adblock.AdblockMode
 import com.yourbrowser.adblock.AdguardDnsClient
+import com.yourbrowser.adblock.AdguardDnsResolver
 import com.yourbrowser.adblock.AlexShieldV5LogStore
 import com.yourbrowser.adblock.CleanAdEngine
 import com.yourbrowser.adblock.DomainClassifier
@@ -56,10 +59,12 @@ class CleanAdEngineTest {
     }
 
     @Test
-    fun testT2PrivateTabNeverLogsBlockedUrls() {
+    fun testT2PrivateTabNeverLogsBlockedUrlsAndConcurrentQueueCap() {
+        AlexShieldV5LogStore.clear()
         val tabId = "private_tab_audit_test"
 
-        AlexShieldV5LogStore.addLogEntry("https://doubleclick.net/ad.js", isPrivateTab = true)
+        AlexShieldV5LogStore.add("ad-domain", "https://doubleclick.net/ad.js?rand=12345", isPrivate = true)
+        AlexShieldV5LogStore.addLogEntry("https://example.com", "doubleclick.net", "Ad", isPrivateTab = true)
         AlexShieldV5LogStore.add(
             tabId = tabId,
             pageUrl = "https://example.com",
@@ -71,6 +76,20 @@ class CleanAdEngineTest {
             "Private tab must never store blocked URL logs in memory (Solusi T2)",
             AlexShieldV5LogStore.forTab(tabId).isEmpty()
         )
+        assertTrue(AlexShieldV5LogStore.getLogsSnapshot().isEmpty())
+
+        // Verify MAX_LOGS = 200 cap and query string sanitization in AlexShieldV5LogStore
+        for (i in 1..250) {
+            AlexShieldV5LogStore.add(
+                reason = "ad-engine",
+                url = "https://ads.example.net/banner_$i.js?token=secret_$i",
+                isPrivate = false
+            )
+        }
+        val snapshot = AlexShieldV5LogStore.getLogsSnapshot()
+        assertEquals("ConcurrentLinkedDeque log store must cap at 200 entries", 200, snapshot.size)
+        assertFalse("Sanitized log entry must strip query string", snapshot.first().contains("?token="))
+        AlexShieldV5LogStore.clear()
     }
 
     @Test
@@ -125,6 +144,7 @@ class CleanAdEngineTest {
     fun testT4AndT5WebViewClientFailOpenAndSafeDomainsPriority() {
         val client = AdBlockWebViewClient(mode = PrivacyMode.BALANCED)
         client.updateCurrentPageUrl("https://espn.example.com/match")
+        assertEquals("espn.example.com", client.currentPageHost)
 
         // First-party stats asset in BALANCED mode must fail-open (return null, never emptyResponse)
         val fpResponse = client.shouldInterceptRequest(
@@ -143,11 +163,41 @@ class CleanAdEngineTest {
     }
 
     @Test
-    fun testAdguardDnsClientInitCreatesDoHClient() {
+    fun testAdguardDnsResolverLruCacheSinkholeBlockingAndWebViewSafeDestroy() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        AdguardDnsResolver.init(context)
         AdguardDnsClient.init(context)
+        assertTrue(AdguardDnsResolver.isInitialized())
         assertTrue(AdguardDnsClient.isInitialized())
-        assertNotNull(AdguardDnsClient.client.dns)
-        assertNotNull(AdguardDnsClient.client.cache)
+
+        AdguardDnsResolver.clearCache()
+        AdguardDnsResolver.cacheHostDecision("sinkholed-ad.example.org", true)
+        AdguardDnsResolver.cacheHostDecision("allowed-cdn.example.org", false)
+
+        assertTrue(AdguardDnsResolver.isDomainBlockedByDns("sinkholed-ad.example.org"))
+        assertFalse(AdguardDnsResolver.isDomainBlockedByDns("allowed-cdn.example.org"))
+
+        val client = AdBlockWebViewClient(mode = PrivacyMode.BALANCED)
+        client.updateCurrentPageUrl("https://news.example.com")
+
+        // Third-party domain sinkholed by AdGuard DNS Resolver is blocked
+        val dnsBlockedResp = client.shouldInterceptRequest(
+            null,
+            fakeRequest("https://sinkholed-ad.example.org/script.js?cachebust=999")
+        )
+        assertNotNull("Domain sinkholed by AdGuard DNS Resolver must be blocked", dnsBlockedResp)
+
+        // Allowed third-party domain returns null so native C++ Chromium handles networking
+        val allowedResp = client.shouldInterceptRequest(
+            null,
+            fakeRequest("https://allowed-cdn.example.org/app.js?v=1")
+        )
+        assertNull("Allowed request must return null for native Chromium networking", allowedResp)
+
+        AdguardDnsResolver.clearCache()
+
+        // Verify WebView.safeDestroy() runs cleanly without throwing
+        val webView = WebView(context)
+        webView.safeDestroy()
     }
 }

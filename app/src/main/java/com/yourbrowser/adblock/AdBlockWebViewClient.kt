@@ -8,7 +8,6 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -48,8 +47,13 @@ class AdBlockWebViewClient(
     private val surrogateCount         = AtomicInteger(0)
     private val defusedTrapsCount      = AtomicInteger(0)
 
-    // Decision cache — key = "mode|tracker|stream|pageHost|requestHost|url", value = "" (allowed) or non-empty block reason
-    private val cache = android.util.LruCache<String, String>(6_000)
+    // Simpan host halaman utama secara thread-safe (diupdate di onPageStarted / updateCurrentPageUrl)
+    @Volatile
+    var currentPageHost: String = ""
+
+    // LruCache untuk menyimpan keputusan blokir URL (kunci dipotong dari query string agar hemat RAM)
+    private val decisionCache = android.util.LruCache<String, Boolean>(4096)
+    private val reasonCache = android.util.LruCache<String, String>(4096)
 
     init {
         syncCleanAdEngineMode(mode)
@@ -63,12 +67,17 @@ class AdBlockWebViewClient(
         }
     }
 
+    private fun evictCaches() {
+        decisionCache.evictAll()
+        reasonCache.evictAll()
+    }
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun setMode(m: PrivacyMode) {
         syncCleanAdEngineMode(m)
         if (currentMode.getAndSet(m) != m) {
-            cache.evictAll()
+            evictCaches()
         }
     }
 
@@ -76,7 +85,7 @@ class AdBlockWebViewClient(
         val prevEnabled = trackerBlockingEnabled.getAndSet(enabled)
         val prevActiveOff = trackerActiveWhenOff.getAndSet(activeWhenAdBlockOff)
         if (prevEnabled != enabled || prevActiveOff != activeWhenAdBlockOff) {
-            cache.evictAll()
+            evictCaches()
         }
     }
 
@@ -84,20 +93,26 @@ class AdBlockWebViewClient(
 
     fun setStreamingBoostEnabled(enabled: Boolean) {
         if (streamingBoostEnabled.getAndSet(enabled) != enabled) {
-            cache.evictAll()
+            evictCaches()
         }
     }
 
     fun isStreamingBoostEnabled(): Boolean = streamingBoostEnabled.get()
 
-    fun updateCurrentPageUrl(url: String?) { if (!url.isNullOrBlank()) pageUrl.set(url) }
-    fun whitelistHost(host: String) { whitelisted.add(normalizeHost(host)); cache.evictAll() }
-    fun clearWhitelist() { whitelisted.clear(); cache.evictAll() }
+    fun updateCurrentPageUrl(url: String?) {
+        if (!url.isNullOrBlank()) {
+            pageUrl.set(url)
+            currentPageHost = safeHost(url)
+        }
+    }
+
+    fun whitelistHost(host: String) { whitelisted.add(normalizeHost(host)); evictCaches() }
+    fun clearWhitelist() { whitelisted.clear(); evictCaches() }
     fun setWhitelist(hosts: Set<String>) {
         val normalized = hosts.mapNotNull { h -> normalizeHost(h).takeIf { it.isNotEmpty() } }.toSet()
         whitelisted.clear()
         whitelisted.addAll(normalized)
-        cache.evictAll()
+        evictCaches()
     }
 
     fun setCustomZapperSelectors(host: String, selectors: Set<String>) {
@@ -180,30 +195,95 @@ class AdBlockWebViewClient(
         if (url.isNullOrBlank() || mode == PrivacyMode.OFF) return
         val host = safeHost(url)
         if (isWhitelistedHost(host) || isCriticalBypassDomain(host)) return
-        // Solusi T3 & T5: Kosmetik generik/hardcode HANYA dieksekusi di mode AGGRESSIVE
-        applyCosmeticFiltering(view, isAggressive = (mode == PrivacyMode.AGGRESSIVE))
-        val zapperCss = buildCustomZapperCSS(host)
-        if (zapperCss.isNotBlank()) injectZapperCSS(view, zapperCss)
-        view.evaluateJavascript(buildPageScript(host), null)
+        // Solusi T3, T5 & Optimasi Injeksi: Gabungkan seluruh CSS kosmetik & script proteksi DOM dalam 1 evaluasi JS
+        injectUnifiedPageProtection(view, isAggressive = (mode == PrivacyMode.AGGRESSIVE))
     }
 
-    // ── Solusi T3 & T5: Perbaikan Injeksi Kosmetik ─────────────────────────────
+    // ── Solusi T3 & T5 & Optimasi Injeksi Terpadu ──────────────────────────────
 
     fun applyCosmeticFiltering(view: WebView, isAggressive: Boolean) {
         if (!isAggressive) return // JANGAN injeksi kosmetik generik di mode Balanced!
 
-        val host = safeHost(pageUrl.get())
+        val host = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
         val cssToHide = "div[class*='slot-banner'], div[id*='adblock-warning'] { display: none !important; }"
         val domainCss = buildCosmeticCSS(host)
         val combinedCss = if (domainCss.isNotBlank()) "$cssToHide\n$domainCss" else cssToHide
         injectCSS(view, combinedCss)
     }
 
+    fun injectUnifiedPageProtection(view: WebView, isAggressive: Boolean) {
+        val host = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
+        val zapperCss = buildCustomZapperCSS(host)
+        val pageScript = buildPageScript(host)
+
+        val cosmeticJsBlock = if (isAggressive) {
+            hiddenCount.incrementAndGet()
+            val baseAggressiveCss = """
+                div[class*="slot-banner"], div[id*="adblock-warning"],
+                iframe[src*="doubleclick.net"], iframe[src*="googlesyndication.com"] {
+                    display: none !important;
+                }
+            """.trimIndent()
+            val domainCss = buildCosmeticCSS(host)
+            val fullCss = if (domainCss.isNotBlank()) "$baseAggressiveCss\n$domainCss" else baseAggressiveCss
+            val escapedCss = fullCss.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
+            """
+            var s = window.__asStyleRef;
+            if (!s || !s.isConnected) {
+                s = document.createElement('style');
+                (document.head || document.documentElement).appendChild(s);
+                try { Object.defineProperty(window, '__asStyleRef', { value: s, enumerable: false, configurable: true }); } catch(e) {}
+            }
+            s.textContent = `$escapedCss`;
+            """.trimIndent()
+        } else {
+            "// Mode Balanced: Kosmetik generik dimatikan demi menjaga keutuhan layout"
+        }
+
+        val zapperJsBlock = if (zapperCss.isNotBlank()) {
+            val escapedZapper = zapperCss.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
+            """
+            var z = window.__asZapperRef;
+            if (!z || !z.isConnected) {
+                z = document.createElement('style');
+                (document.head || document.documentElement).appendChild(z);
+                try { Object.defineProperty(window, '__asZapperRef', { value: z, enumerable: false, configurable: true }); } catch(e) {}
+            }
+            z.textContent = `$escapedZapper`;
+            """.trimIndent()
+        } else {
+            ""
+        }
+
+        val unifiedJs = """
+            (function() {
+                if (window.__alexShieldInjected) return;
+                window.__alexShieldInjected = true;
+                $cosmeticJsBlock
+                $zapperJsBlock
+                $pageScript
+            })();
+        """.trimIndent()
+
+        view.evaluateJavascript(unifiedJs, null)
+    }
+
     fun onReceivedError(view: WebView, request: WebResourceRequest?, error: WebResourceError?) {
         // passthrough — tidak ada action khusus
     }
 
-    // ── Main intercept (Solusi T1, T2, T4 & T5) ───────────────────────────────
+    // ── Main intercept (Zero Allocation, Fast Fail, Native C++ Chromium Networking) ──
+
+    fun createEmptyResponse(mimeType: String = "text/plain"): WebResourceResponse {
+        return WebResourceResponse(
+            mimeType,
+            "UTF-8",
+            200,
+            "OK",
+            emptyMap(),
+            ByteArrayInputStream(EMPTY_BYTES)
+        )
+    }
 
     fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
         val mode = currentMode.get()
@@ -213,55 +293,57 @@ class AdBlockWebViewClient(
         if (mode == PrivacyMode.OFF && !trackerOnlyActive) return null
         if (request.isForMainFrame) return null
 
-        val uri     = request.url ?: return null
-        val url     = uri.toString()
+        val uri = request.url ?: return null
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
+        if (scheme != "http" && scheme != "https") return null // Abaikan blob:, data:, chrome:, dll
+
         val reqHost = uri.host?.lowercase(Locale.US) ?: return null
-        val pgHost  = safeHost(pageUrl.get())
-        val accept  = request.requestHeaders?.entries
+        val pgHost = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
+        val rawUrl = uri.toString()
+        val accept = request.requestHeaders?.entries
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value?.lowercase(Locale.US)
 
-        // 1. CEK SAFE DOMAINS PERTAMA KALI (Solusi T5)
+        // 1. PRIORITAS 1: Cek SAFE_DOMAINS & Whitelist Paling Awal (O(1) Fast Return)
         if (isSafeDomain(reqHost) || (pgHost.isNotEmpty() && isSafeDomain(pgHost))) {
-            return fetchWithAdGuardDns(request)
+            return null // Serahkan langsung ke native WebView!
         }
-
-        // 2. CEK USER WHITELIST
         if (isWhitelistedHost(pgHost) || isWhitelistedHost(reqHost)) {
-            return fetchWithAdGuardDns(request)
+            return null
         }
 
-        // 3. KLASIFIKASI DOMAIN (Solusi T1)
+        // 2. PRIORITAS 2: Klasifikasi First-Party vs Third-Party (Solusi T1)
         val isThirdParty = if (pgHost.isNotEmpty()) {
             DomainClassifier.isThirdParty(pgHost, reqHost)
         } else {
             true
         }
 
-        // Solusi T4: Di mode BALANCED, jangan pernah blokir aset First-Party (Fail-open -> return null)
+        // Fail-Open Policy untuk First-Party di Mode Balanced (Solusi T4)
         if (!isThirdParty && mode == PrivacyMode.BALANCED) {
-            return fetchWithAdGuardDns(request)
+            return null
         }
 
-        // 4. Cache check (Thread-safe LRU Cache)
+        // 3. PRIORITAS 3: Cek Cache Keputusan (O(1), kunci tanpa query string acak)
         val streamBoost = streamingBoostEnabled.get()
-        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$reqHost|$url"
-        cache.get(cacheKey)?.let { cachedReason ->
-            if (cachedReason.isNotEmpty()) {
-                // Solusi T4 Fail-open guard
+        val cleanUrl = rawUrl.substringBefore('?')
+        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$reqHost|$cleanUrl"
+        decisionCache.get(cacheKey)?.let { isBlocked ->
+            if (isBlocked) {
                 if (!isThirdParty && mode == PrivacyMode.BALANCED) return null
+                val cachedReason = reasonCache.get(cacheKey) ?: "cached-block"
                 blockedCount.incrementAndGet()
-                AdblockLogger.d("AdBlock", "Blocked: $url")
-                onBlocked?.invoke(url, cachedReason)
+                AdblockLogger.d("AdBlock", "Blocked (Cache): $cleanUrl")
+                onBlocked?.invoke(rawUrl, cachedReason)
                 return emptyResponse(uri, accept)
             }
-            return fetchWithAdGuardDns(request)
+            return null
         }
 
-        // 5. EVALUASI PEMBLOKIRAN (CleanAdEngine + aturan lengkap)
-        val lower = url.lowercase(Locale.US)
-        val resType = CleanAdEngine.inferType(url, accept)
-        val blockReason = checkRules(
+        // 4. PRIORITAS 4: Evaluasi Local Engine & AdGuard DNS (DoH Resolver)
+        val lower = rawUrl.lowercase(Locale.US)
+        val resType = CleanAdEngine.inferType(rawUrl, accept)
+        var blockReason = checkRules(
             reqHost = reqHost,
             pgHost = pgHost,
             lowerUrl = lower,
@@ -272,57 +354,35 @@ class AdBlockWebViewClient(
             isThirdParty = isThirdParty
         )
 
-        // Solusi T4: Jika aset First-Party terindikasi false-positive di mode Balanced,
-        // JANGAN kembalikan emptyResponse. Kembalikan null agar web tidak rusak (Fail-open).
+        // Jika lolos dari engine lokal dan ini adalah Third-Party, cek AdGuard DNS Resolver
+        if (blockReason == null && isThirdParty && mode != PrivacyMode.OFF) {
+            if (AdguardDnsResolver.isDomainBlockedByDns(reqHost)) {
+                blockReason = "adguard-dns"
+            }
+        }
+
+        // Fail-Open Policy untuk First-Party di Mode Balanced (Solusi T4)
         if (blockReason != null && !isThirdParty && mode == PrivacyMode.BALANCED) {
-            return null
+            blockReason = null
         }
 
+        // 5. Simpan ke Cache & Kembalikan Hasil
+        val isBlocked = blockReason != null
         val isFiltersLoaded = com.example.manager.FilterListManager.isLoaded()
-        if (blockReason != null || isFiltersLoaded) {
-            cache.put(cacheKey, blockReason ?: "")
+        if (isBlocked || isFiltersLoaded) {
+            decisionCache.put(cacheKey, isBlocked)
+            if (blockReason != null) {
+                reasonCache.put(cacheKey, blockReason)
+            }
         }
 
-        if (blockReason != null) {
+        return if (isBlocked) {
             blockedCount.incrementAndGet()
-            AdblockLogger.d("AdBlock", "Blocked: $url")
-            onBlocked?.invoke(url, blockReason)
-            return emptyResponse(uri, accept)
-        }
-
-        // 6. JIKA LOLOS SEMUA, LANJUTKAN REQUEST DENGAN ADGUARD DNS (DoH)
-        return fetchWithAdGuardDns(request)
-    }
-
-    private fun fetchWithAdGuardDns(webRequest: WebResourceRequest): WebResourceResponse? {
-        if (!enableDirectDohFetch || !AdguardDnsClient.isInitialized()) return null
-        // Hanya intercept GET request untuk aset/dokumen agar tidak merusak POST/Form data
-        if (!webRequest.method.equals("GET", ignoreCase = true)) return null
-
-        return try {
-            val okHttpRequestBuilder = Request.Builder().url(webRequest.url.toString())
-            webRequest.requestHeaders?.forEach { (key, value) ->
-                okHttpRequestBuilder.addHeader(key, value)
-            }
-
-            val response = AdguardDnsClient.client.newCall(okHttpRequestBuilder.build()).execute()
-            val contentType = response.header("Content-Type", "text/plain")
-            val mimeType = contentType?.substringBefore(";")?.trim() ?: "text/plain"
-            val charset = contentType?.substringAfter("charset=", "utf-8")?.trim() ?: "utf-8"
-
-            WebResourceResponse(
-                mimeType,
-                charset,
-                response.body?.byteStream()
-            )
-        } catch (e: Exception) {
-            // Jika gagal di resolusi DNS AdGuard (berarti domain iklan diblokir oleh AdGuard DNS!)
-            AdblockLogger.d("AdGuardDNS", "Blocked by DNS or Network Error: ${webRequest.url}")
-            if (DomainClassifier.isThirdParty(safeHost(pageUrl.get()), webRequest.url.host ?: "")) {
-                emptyResponse(webRequest.url, webRequest.requestHeaders?.get("Accept"))
-            } else {
-                null // Biarkan WebView menangani secara native jika first-party gagal (Fail-open T4)
-            }
+            AdblockLogger.d("AdBlock", "Blocked: $cleanUrl")
+            onBlocked?.invoke(rawUrl, blockReason ?: "adblock")
+            emptyResponse(uri, accept)
+        } else {
+            null // PENTING: Return null agar Chromium menangani jaringan secara native!
         }
     }
 
@@ -645,7 +705,7 @@ class AdBlockWebViewClient(
             }
             else -> {
                 mime = "text/plain"
-                body = ByteArray(0)
+                body = EMPTY_BYTES
             }
         }
 
@@ -692,8 +752,8 @@ class AdBlockWebViewClient(
     // ─── Rule sets & Stealth Surrogates ────────────────────────────────────────
 
     companion object {
-        @Volatile
-        var enableDirectDohFetch: Boolean = false
+        // Singleton array byte kosong untuk menghindari alokasi objek berulang di shouldInterceptRequest
+        private val EMPTY_BYTES = ByteArray(0)
 
         // 43-byte valid 1x1 transparent GIF (prevents <img onerror="adblockDetected()">)
         val TRANSPARENT_1X1_GIF: ByteArray = java.util.Base64.getDecoder().decode(
@@ -1338,8 +1398,12 @@ class AdBlockWebViewClient(
   sweepAntiAdblockModals();
   var timer=null;
   new MutationObserver(function(){
-    if(timer) return;
-    timer=setTimeout(function(){timer=null;sweepAntiAdblockModals();},350);
+    if(timer||document.hidden) return;
+    timer=setTimeout(function(){
+      timer=null;
+      var raf=window.requestAnimationFrame||function(cb){cb();};
+      raf(sweepAntiAdblockModals);
+    },500);
   }).observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()
@@ -1492,8 +1556,15 @@ class AdBlockWebViewClient(
     }catch(e){}
   }
   clean(document);
-  new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType===1)clean(n);});});})
-    .observe(document.documentElement,{childList:true,subtree:true});
+  var cleanTimer=null;
+  new MutationObserver(function(){
+    if(cleanTimer||document.hidden) return;
+    cleanTimer=setTimeout(function(){
+      cleanTimer=null;
+      var raf=window.requestAnimationFrame||function(cb){cb();};
+      raf(function(){clean(document);});
+    },500);
+  }).observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()
 

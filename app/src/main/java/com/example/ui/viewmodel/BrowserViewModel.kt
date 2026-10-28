@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlinx.coroutines.flow.update
 import com.example.devtools.*
+import com.example.ui.components.safeDestroy
 
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
@@ -97,15 +98,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun destroyAndRemoveWebView(tabId: String) {
         val wv = sharedWebViewPool.remove(tabId) ?: return
-        try {
-            (wv.parent as? android.view.ViewGroup)?.removeView(wv)
-            wv.stopLoading()
-            wv.onPause()
-            wv.loadUrl("about:blank")
-            wv.clearHistory()
-            wv.removeAllViews()
-            wv.destroy()
-        } catch (_: Throwable) {}
+        wv.safeDestroy()
     }
 
     data class PendingPermissionRequest(

@@ -1964,4 +1964,21 @@ private tailrec fun android.content.Context.findHostActivity(): android.app.Acti
     else -> null
 }
 
-
+fun WebView.safeDestroy() {
+    try {
+        stopLoading()
+        onPause()
+        clearHistory()
+        removeJavascriptInterface("AlexBrowserNative")
+        removeJavascriptInterface("AdBlockDevTools")
+        webChromeClient = null
+        loadUrl("about:blank")
+        removeAllViews()
+        (parent as? android.view.ViewGroup)?.removeView(this)
+        destroy()
+    } catch (e: Exception) {
+        // Abaikan jika sudah dihancurkan
+    } catch (_: Throwable) {
+        // Abaikan jika sudah dihancurkan
+    }
+}

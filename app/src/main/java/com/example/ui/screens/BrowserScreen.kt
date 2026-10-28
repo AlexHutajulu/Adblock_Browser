@@ -144,9 +144,8 @@ fun BrowserScreen(
         }
     }
 
-    // Live blocked count for current page badge
-    val liveShieldLogs by com.yourbrowser.adblock.AlexShieldV5LogStore.logs.collectAsState()
-    val pageBlockedCount = remember(activeTab.url, liveShieldLogs) {
+    // Blocked count for current page badge (evaluated without per-request StateFlow allocation)
+    val pageBlockedCount = remember(activeTab.url, activeTab.isLoading, showShieldDialog) {
         if (activeTab.url.isBlank() || activeTab.url == "about:blank") 0
         else viewModel.getBlockedLogsForPage(activeTab.url).size
     }
@@ -1086,21 +1085,7 @@ fun ChromeFindInPageBar(
 }
 
 private fun safeDestroyWebView(webView: android.webkit.WebView) {
-    try {
-        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
-        webView.stopLoading()
-        webView.onPause()
-        webView.removeJavascriptInterface("AlexBrowserNative")
-        webView.removeJavascriptInterface("AdBlockDevTools")
-        webView.webChromeClient = null
-        webView.clearFormData()
-        webView.clearSslPreferences()
-        webView.clearCache(false)
-        webView.loadUrl("about:blank")
-        webView.clearHistory()
-        webView.removeAllViews()
-        webView.destroy()
-    } catch (_: Throwable) {}
+    webView.safeDestroy()
 }
 
 @Composable

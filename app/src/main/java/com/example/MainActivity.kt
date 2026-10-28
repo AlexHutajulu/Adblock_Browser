@@ -24,6 +24,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import com.example.manager.AppTheme
+import com.example.ui.components.safeDestroy
 import com.example.ui.screens.BrowserScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SplashScreen
@@ -117,7 +118,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
-        runCatching { com.yourbrowser.adblock.AdguardDnsClient.init(applicationContext) }
+        runCatching {
+            com.yourbrowser.adblock.AdguardDnsResolver.init(applicationContext)
+            com.yourbrowser.adblock.AdguardDnsClient.init(applicationContext)
+        }
         enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
@@ -412,6 +416,16 @@ class MainActivity : AppCompatActivity() {
         // Clear cookies only when the Activity is genuinely finishing (not on rotation / config change)
         try {
             if (isFinishing && !isChangingConfigurations) {
+                if (::viewModel.isInitialized) {
+                    val pooled = synchronized(viewModel.webViewPool) {
+                        val copy = viewModel.webViewPool.values.toList()
+                        viewModel.webViewPool.clear()
+                        copy
+                    }
+                    pooled.forEach { wv ->
+                        wv.safeDestroy()
+                    }
+                }
                 val settingsManager = com.example.manager.SettingsManager(this)
                 if (settingsManager.clearCookiesOnExit) {
                     android.webkit.CookieManager.getInstance().removeAllCookies { success ->
