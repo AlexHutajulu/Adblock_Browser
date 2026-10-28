@@ -1,7 +1,7 @@
 package com.example
 
 import com.example.manager.ScriptletEngine
-import com.yourbrowser.adblock.CleanAdEngine
+import com.example.manager.AbpRuleEngine
 import com.yourbrowser.adblock.HeuristicsEngine
 import org.junit.Assert.*
 import org.junit.Test
@@ -15,7 +15,7 @@ class EngineTest {
             "example.com##+js(abort-on-property-read, adBlockDetected)",
             "other.com##+js(set-constant, foo, 123)"
         )
-        val ruleSet = CleanAdEngine.build(rules.asSequence())
+        val ruleSet = AbpRuleEngine.build(rules.asSequence())
         val forExample = ruleSet.scriptlets.scriptletsFor("www.example.com")
         assertEquals(2, forExample.size)
         assertTrue(forExample.any { it.name == "set-constant" && it.args == listOf("adsbygoogle", "true") })
@@ -30,7 +30,7 @@ class EngineTest {
             "example.com##+js(set-constant, foo, true)",
             "example.com#@#+js(set-constant, foo, true)"
         )
-        val ruleSet = CleanAdEngine.build(rules.asSequence())
+        val ruleSet = AbpRuleEngine.build(rules.asSequence())
         assertTrue(ruleSet.scriptlets.scriptletsFor("example.com").isEmpty())
     }
 
@@ -39,7 +39,7 @@ class EngineTest {
         val rules = listOf(
             "example.com##+js(some-unknown-scriptlet, foo)"
         )
-        val ruleSet = CleanAdEngine.build(rules.asSequence())
+        val ruleSet = AbpRuleEngine.build(rules.asSequence())
         // Diparsing (tersimpan), tapi scriptletsFor() menyaringnya karena
         // tidak ada di ScriptletEngine.SUPPORTED_SCRIPTLETS.
         assertTrue(ruleSet.scriptlets.scriptletsFor("example.com").isEmpty())
@@ -106,7 +106,10 @@ class EngineTest {
         assertEquals(
             "heuristic-path",
             HeuristicsEngine.heuristicReason(
-                "cdn.example.com", "https://cdn.example.com/popunder.js", false
+                "cdn.example.com",
+                "https://cdn.example.com/popunder.js",
+                false,
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
     }
@@ -117,12 +120,12 @@ class EngineTest {
             "@@||doubleclick.net^",
             "||doubleclick.net^"
         )
-        val ruleSet = CleanAdEngine.build(rules.asSequence())
+        val ruleSet = AbpRuleEngine.build(rules.asSequence())
         assertNull(ruleSet.shouldBlock("https://doubleclick.net/ad.js", "news.com"))
         assertTrue(ruleSet.matchesAllowRule("https://doubleclick.net/ad.js", "news.com"))
         // Tanpa exception, matchesAllowRule harus false.
         val rules2 = listOf("||doubleclick.net^")
-        val ruleSet2 = CleanAdEngine.build(rules2.asSequence())
+        val ruleSet2 = AbpRuleEngine.build(rules2.asSequence())
         assertFalse(ruleSet2.matchesAllowRule("https://doubleclick.net/ad.js", "news.com"))
     }
 
@@ -134,7 +137,7 @@ class EngineTest {
                 host = "cdn.123bank.co.id",
                 lowerUrl = "https://cdn.123bank.co.id/app.js",
                 isFirstParty = true,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
         assertNull(
@@ -142,7 +145,7 @@ class EngineTest {
                 host = "cdn.123bank.co.id",
                 lowerUrl = "https://cdn.123bank.co.id/app.js",
                 isFirstParty = false,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
         assertFalse(HeuristicsEngine.matchesDomainKeyword("cdn.123bank.co.id", "123b"))
@@ -155,7 +158,7 @@ class EngineTest {
                 host = "cdn.jsdelivr.net",
                 lowerUrl = "https://cdn.jsdelivr.net/npm/tag.min.js",
                 isFirstParty = false,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
 
@@ -165,7 +168,7 @@ class EngineTest {
                 host = "situs-saya.com",
                 lowerUrl = "https://situs-saya.com/js/bn.js",
                 isFirstParty = true,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
         assertNull(
@@ -173,7 +176,7 @@ class EngineTest {
                 host = "cdn.situs-lain.com",
                 lowerUrl = "https://cdn.situs-lain.com/js/bn.js",
                 isFirstParty = false,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
 
@@ -183,7 +186,7 @@ class EngineTest {
                 host = "situs-saya.com",
                 lowerUrl = "https://situs-saya.com/static/pop.js",
                 isFirstParty = true,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
         assertNull(
@@ -191,7 +194,7 @@ class EngineTest {
                 host = "cdn.situs-lain.com",
                 lowerUrl = "https://cdn.situs-lain.com/static/pop.js",
                 isFirstParty = false,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
 
@@ -202,7 +205,7 @@ class EngineTest {
                 host = "ads.doubleclick.net",
                 lowerUrl = "https://ads.doubleclick.net/pagead/ads.js",
                 isFirstParty = false,
-                resType = CleanAdEngine.ResourceType.SCRIPT
+                resType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
     }

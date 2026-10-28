@@ -7,7 +7,7 @@ browser WebView:
    exception `@@`, opsi `$third-party`, `$domain`, dan tipe resource
    (script, image, stylesheet, XHR, subdocument, media, font, ping,
    websocket). Kapasitas 150.000 aturan jaringan dan 80.000 kosmetik.
-   Daftar: EasyList, EasyPrivacy, PeterLowe, dan empat daftar uBlock
+   Daftar eksternal diunduh saat runtime; lihat bagian ATRIBUSI
    (filters, badware, privacy, unbreak), dengan cache 24 jam dan
    fallback bundel offline.
 2. **Mesin scriptlet** — aturan `##+js(...)`, `#@#+js(...)` (exception),
@@ -20,7 +20,7 @@ browser WebView:
    data (json-prune, `lactMilliseconds`, stub ad_break), mengunci
    `google_ad_status` ke 1, dan menonaktifkan ServiceWorker khusus
    YouTube. Hanya untuk youtube.com dan music.youtube.com.
-4. **Lapisan heuristik** — 262 domain iklan, 30 kata kunci, dan 35 pola
+4. **Lapisan heuristik** — domain iklan yang dikenal (daftar sendiri), 30 kata kunci, dan 35 pola
    path sebagai lapisan terakhir, setelah mesin aturan jaringan dan
    setelah exception ABP. Kata kunci dan pola path hanya berlaku
    third-party. Pola `/tr/` dan `/ad_status` tidak digunakan karena
@@ -42,7 +42,7 @@ dependensi iklan.
 - `app/src/main/java/com/example/manager/ScriptletEngine.kt`
 - `app/src/main/java/com/yourbrowser/adblock/HeuristicsEngine.kt`
 - `app/src/main/assets/adblock/scriptlet_library.js`
-- `app/src/main/assets/adblock/youtube_processor.js`
+- `app/src/main/assets/adblock/youtube_guard.js`
 - `app/src/test/java/com/example/EngineTest.kt` (8 pengujian)
 
 ## Verifikasi sebelum rilis

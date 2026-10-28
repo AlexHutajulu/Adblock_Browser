@@ -41,7 +41,7 @@ object FilterListManager {
     )
 
     data class ParsedRules(
-        val ruleSet: com.yourbrowser.adblock.CleanAdEngine.RuleSet
+        val ruleSet: AbpRuleEngine.RuleSet
     )
 
     @Volatile
@@ -308,7 +308,7 @@ object FilterListManager {
     }
 
     internal fun parseRules(raw: String): ParsedRules {
-        val ruleSet = com.yourbrowser.adblock.CleanAdEngine.build(raw.lineSequence())
+        val ruleSet = AbpRuleEngine.build(raw.lineSequence())
 
         com.yourbrowser.adblock.AdblockLogger.d(
             TAG,

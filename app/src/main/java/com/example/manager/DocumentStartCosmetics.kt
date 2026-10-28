@@ -56,9 +56,9 @@ object DocumentStartCosmetics {
         // Filter DULU, baru batasi jumlah: selektor tidak aman tidak boleh memakan kuota.
         val selectors = rules.ruleSet.cosmetic.selectorsFor(clean)
             .asSequence()
-            .filter { com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(it) }
+            .filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
             .filter { CosmeticFilterInjector.isSafeCssSelector(it) }
-            .take(com.yourbrowser.adblock.CleanAdEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+            .take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
             .toList()
 
         if (selectors.isEmpty()) return ""

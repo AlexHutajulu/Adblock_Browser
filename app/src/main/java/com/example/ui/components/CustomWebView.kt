@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.BuildConfig
 import com.example.manager.DisplayMode
 import com.example.ui.theme.interactiveLiquidGlass
 import com.example.ui.viewmodel.BrowserTab
@@ -406,7 +407,9 @@ fun CustomWebView(
                     val alexShieldV5Client = com.yourbrowser.adblock.AdBlockWebViewClient(
                         mode = com.yourbrowser.adblock.PrivacyMode.BALANCED,
                         onBlocked = { blockedUrl, reason ->
-                            com.yourbrowser.adblock.AdblockLogger.d(TAG, "AlexShield v5 blocked: $reason | $blockedUrl")
+                            if (BuildConfig.DEBUG) {
+                                Log.d(TAG, "AlexShield v5 blocked: $reason | $blockedUrl")
+                            }
                             if (reason.contains("tracker", ignoreCase = true) ||
                                 reason.contains("beacon", ignoreCase = true) ||
                                 blockedUrl.contains("analytics", ignoreCase = true) ||
@@ -417,15 +420,14 @@ fun CustomWebView(
                             if (tab.isPrivate || viewModel.privacyShieldMode.value == com.example.manager.PrivacyShieldMode.STRICT) {
                                 viewModel.incrementThirdPartyCookiesBlocked()
                             }
-                            val safePageUrl = currentPageUrlRef.get()
-                            // Solusi T2: JANGAN PERNAH simpan log dari tab private
-                            com.yourbrowser.adblock.AlexShieldV5LogStore.add(
-                                tabId = tab.id,
-                                pageUrl = safePageUrl,
-                                blockedUrl = blockedUrl,
-                                reason = reason,
-                                isPrivateTab = tab.isPrivate
-                            )
+                            if (!tab.isPrivate) {
+                                com.yourbrowser.adblock.AlexShieldV5LogStore.add(
+                                    tabId = tab.id,
+                                    pageUrl = currentPageUrlRef.get(),
+                                    blockedUrl = blockedUrl,
+                                    reason = reason
+                                )
+                            }
                         }
                     )
 

@@ -196,4 +196,8 @@
     <string name="console_rate_limit_exceeded">Console messages rate limit exceeded (60 msgs/sec). Inspect tools throttling active.</string>
     <string name="zapper_root_element_blocked">Root/body/html element cannot be hidden</string>
     <string name="zapper_invalid_selector">Invalid element selector</string>
+    <string name="pref_adguard_dns_title">AdGuard DNS Layer (DoH)</string>
+    <string name="pref_adguard_dns_summary">Check third-party domains against dns.adguard-dns.com to block ad domains at the DNS level (hostnames are sent to AdGuard DNS).</string>
+    <string name="pref_private_dns_title">Use System Private DNS</string>
+    <string name="pref_private_dns_summary">Open Android network settings to set Private DNS to dns.adguard-dns.com at the system level.</string>
 </resources>

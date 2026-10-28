@@ -79,6 +79,7 @@ object AdguardDnsResolver {
         val normalizedHost = host.lowercase(Locale.US)
         if (normalizedHost.isNotEmpty()) {
             dnsBlockCache.put(normalizedHost, blocked)
+            AdGuardDnsFilter.putCachedForTest(normalizedHost, blocked)
         }
     }
 
@@ -89,5 +90,6 @@ object AdguardDnsResolver {
 
     fun clearCache() {
         dnsBlockCache.evictAll()
+        AdGuardDnsFilter.clearCache()
     }
 }

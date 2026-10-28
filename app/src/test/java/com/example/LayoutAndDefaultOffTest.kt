@@ -2,7 +2,7 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.yourbrowser.adblock.CleanAdEngine
+import com.example.manager.AbpRuleEngine
 import com.example.manager.BrowserExtension
 import com.example.manager.BrowserExtensionManager
 import com.example.manager.CosmeticFilterInjector
@@ -64,7 +64,7 @@ class LayoutAndDefaultOffTest {
     fun testGlobalCosmeticException() {
         // Rule "#@#.x" must make ".x" not appear in selectorsFor("contoh.com")
         val rules = sequenceOf("##.x", "#@#.x")
-        val parsed = CleanAdEngine.build(rules)
+        val parsed = AbpRuleEngine.build(rules)
         val selectors = parsed.cosmetic.selectorsFor("contoh.com")
         assertFalse(
             "Selector .x should be exempted globally by #@#.x",
@@ -193,14 +193,14 @@ class LayoutAndDefaultOffTest {
     @Test
     fun testB2AbpRuleEngineFirstPartyUnanchoredRuleDoesNotBlockCdn() {
         val rules = sequenceOf("/ads/banner.js", "||doubleclick.net^")
-        val parsed = CleanAdEngine.build(rules)
+        val parsed = AbpRuleEngine.build(rules)
         // First-party request to unanchored rule should NOT be blocked (returns null)
         assertNull(
             "1st-party request should not be blocked by unanchored substring rule",
             parsed.shouldBlock(
                 url = "https://cdn.toko.id/ads/banner.js",
                 sourceHost = "www.toko.id",
-                resourceType = CleanAdEngine.ResourceType.SCRIPT
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
             )
         )
         // 3rd-party request to anchored rule should still be blocked (returns non-null MatchResult)
@@ -209,7 +209,7 @@ class LayoutAndDefaultOffTest {
             parsed.shouldBlock(
                 url = "https://ad.doubleclick.net/ads/banner.js",
                 sourceHost = "www.toko.id",
-                resourceType = CleanAdEngine.ResourceType.SCRIPT
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
             ) != null
         )
     }

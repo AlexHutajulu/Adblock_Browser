@@ -51,9 +51,7 @@ class AdBlockWebViewClient(
     @Volatile
     var currentPageHost: String = ""
 
-    // LruCache untuk menyimpan keputusan blokir URL (kunci dipotong dari query string agar hemat RAM)
-    private val decisionCache = android.util.LruCache<String, Boolean>(4096)
-    private val reasonCache = android.util.LruCache<String, String>(4096)
+    private val cache = android.util.LruCache<String, String>(6_000)
 
     init {
         syncCleanAdEngineMode(mode)
@@ -68,8 +66,7 @@ class AdBlockWebViewClient(
     }
 
     private fun evictCaches() {
-        decisionCache.evictAll()
-        reasonCache.evictAll()
+        cache.evictAll()
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -167,19 +164,21 @@ class AdBlockWebViewClient(
                     if (invocation.isNotBlank()) view.evaluateJavascript(invocation, null)
                 }
             }
-            if (host.contains("youtube.com") || host.contains("music.youtube.com")) {
-                if (youtubeProcessorJs == null) {
-                    youtubeProcessorJs = loadAssetJs(view, "adblock/youtube_processor.js")
+            if (currentMode.get() == PrivacyMode.AGGRESSIVE &&
+                (host.contains("youtube.com") || host.contains("music.youtube.com"))
+            ) {
+                if (youtubeGuardJs == null) {
+                    youtubeGuardJs = loadAssetJs(view, "adblock/youtube_guard.js")
                 }
-                val processor = youtubeProcessorJs.orEmpty()
-                if (processor.isNotBlank()) view.evaluateJavascript(processor, null)
+                val guard = youtubeGuardJs.orEmpty()
+                if (guard.isNotBlank()) view.evaluateJavascript(guard, null)
             }
         }
     }
 
     // Cache aset JS lapisan (dimuat sekali dari assets, lalu dipakai ulang).
     @Volatile private var scriptletLibraryJs: String? = null
-    @Volatile private var youtubeProcessorJs: String? = null
+    @Volatile private var youtubeGuardJs: String? = null
 
     private fun loadAssetJs(view: WebView, assetPath: String): String {
         return try {
@@ -202,31 +201,23 @@ class AdBlockWebViewClient(
     // ── Solusi T3 & T5 & Optimasi Injeksi Terpadu ──────────────────────────────
 
     fun applyCosmeticFiltering(view: WebView, isAggressive: Boolean) {
-        if (!isAggressive) return // JANGAN injeksi kosmetik generik di mode Balanced!
-
+        if (!isAggressive) return
         val host = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
-        val cssToHide = "div[class*='slot-banner'], div[id*='adblock-warning'] { display: none !important; }"
         val domainCss = buildCosmeticCSS(host)
-        val combinedCss = if (domainCss.isNotBlank()) "$cssToHide\n$domainCss" else cssToHide
-        injectCSS(view, combinedCss)
+        if (domainCss.isNotBlank()) {
+            injectCSS(view, domainCss)
+        }
     }
 
     fun injectUnifiedPageProtection(view: WebView, isAggressive: Boolean) {
         val host = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
         val zapperCss = buildCustomZapperCSS(host)
         val pageScript = buildPageScript(host)
+        val domainCss = buildCosmeticCSS(host)
 
-        val cosmeticJsBlock = if (isAggressive) {
+        val cosmeticJsBlock = if (domainCss.isNotBlank()) {
             hiddenCount.incrementAndGet()
-            val baseAggressiveCss = """
-                div[class*="slot-banner"], div[id*="adblock-warning"],
-                iframe[src*="doubleclick.net"], iframe[src*="googlesyndication.com"] {
-                    display: none !important;
-                }
-            """.trimIndent()
-            val domainCss = buildCosmeticCSS(host)
-            val fullCss = if (domainCss.isNotBlank()) "$baseAggressiveCss\n$domainCss" else baseAggressiveCss
-            val escapedCss = fullCss.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
+            val escapedCss = domainCss.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
             """
             var s = window.__asStyleRef;
             if (!s || !s.isConnected) {
@@ -237,7 +228,7 @@ class AdBlockWebViewClient(
             s.textContent = `$escapedCss`;
             """.trimIndent()
         } else {
-            "// Mode Balanced: Kosmetik generik dimatikan demi menjaga keutuhan layout"
+            ""
         }
 
         val zapperJsBlock = if (zapperCss.isNotBlank()) {
@@ -293,97 +284,66 @@ class AdBlockWebViewClient(
         if (mode == PrivacyMode.OFF && !trackerOnlyActive) return null
         if (request.isForMainFrame) return null
 
-        val uri = request.url ?: return null
-        val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
-        if (scheme != "http" && scheme != "https") return null // Abaikan blob:, data:, chrome:, dll
-
-        val reqHost = uri.host?.lowercase(Locale.US) ?: return null
-        val pgHost = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
+        val uri    = request.url ?: return null
         val rawUrl = uri.toString()
+        val lower  = rawUrl.lowercase(Locale.US)
+        val reqHost = uri.host?.lowercase(Locale.US) ?: return null
+        val pgHost  = safeHost(pageUrl.get())
         val accept = request.requestHeaders?.entries
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value?.lowercase(Locale.US)
 
-        // 1. PRIORITAS 1: Cek SAFE_DOMAINS & Whitelist Paling Awal (O(1) Fast Return)
-        if (isSafeDomain(reqHost) || (pgHost.isNotEmpty() && isSafeDomain(pgHost))) {
-            return null // Serahkan langsung ke native WebView!
-        }
-        if (isWhitelistedHost(pgHost) || isWhitelistedHost(reqHost)) {
-            return null
-        }
+        // Never block safe domains (CDN, auth, Google core, streaming infra, payment, captcha)
+        if (isSafeDomain(reqHost)) return null
+        if (pgHost.isNotEmpty() && isWhitelistedHost(pgHost)) return null
+        if (isWhitelistedHost(reqHost)) return null
+        if (isCriticalBypassDomain(reqHost) || (pgHost.isNotEmpty() && isCriticalBypassDomain(pgHost))) return null
 
-        // 2. PRIORITAS 2: Klasifikasi First-Party vs Third-Party (Solusi T1)
-        val isThirdParty = if (pgHost.isNotEmpty()) {
-            DomainClassifier.isThirdParty(pgHost, reqHost)
-        } else {
-            true
-        }
+        val isFirstParty = pgHost.isNotEmpty() &&
+            com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost)
 
-        // Fail-Open Policy untuk First-Party di Mode Balanced (Solusi T4)
-        if (!isThirdParty && mode == PrivacyMode.BALANCED) {
-            return null
-        }
-
-        // 3. PRIORITAS 3: Cek Cache Keputusan (O(1), kunci tanpa query string acak)
         val streamBoost = streamingBoostEnabled.get()
-        val cleanUrl = rawUrl.substringBefore('?')
-        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$reqHost|$cleanUrl"
-        decisionCache.get(cacheKey)?.let { isBlocked ->
-            if (isBlocked) {
-                if (!isThirdParty && mode == PrivacyMode.BALANCED) return null
-                val cachedReason = reasonCache.get(cacheKey) ?: "cached-block"
+        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$rawUrl"
+        cache.get(cacheKey)?.let { cachedReason ->
+            return if (cachedReason == "ALLOW") {
+                null
+            } else if (isFirstParty && cachedReason in FIRST_PARTY_EXEMPT_REASONS) {
+                null
+            } else {
                 blockedCount.incrementAndGet()
-                AdblockLogger.d("AdBlock", "Blocked (Cache): $cleanUrl")
                 onBlocked?.invoke(rawUrl, cachedReason)
-                return emptyResponse(uri, accept)
-            }
-            return null
-        }
-
-        // 4. PRIORITAS 4: Evaluasi Local Engine & AdGuard DNS (DoH Resolver)
-        val lower = rawUrl.lowercase(Locale.US)
-        val resType = CleanAdEngine.inferType(rawUrl, accept)
-        var blockReason = checkRules(
-            reqHost = reqHost,
-            pgHost = pgHost,
-            lowerUrl = lower,
-            mode = mode,
-            trackerEnabled = trackerEnabled,
-            streamBoost = streamBoost,
-            resType = resType,
-            isThirdParty = isThirdParty
-        )
-
-        // Jika lolos dari engine lokal dan ini adalah Third-Party, cek AdGuard DNS Resolver
-        if (blockReason == null && isThirdParty && mode != PrivacyMode.OFF) {
-            if (AdguardDnsResolver.isDomainBlockedByDns(reqHost)) {
-                blockReason = "adguard-dns"
+                emptyResponse(uri, accept)
             }
         }
 
-        // Fail-Open Policy untuk First-Party di Mode Balanced (Solusi T4)
-        if (blockReason != null && !isThirdParty && mode == PrivacyMode.BALANCED) {
-            blockReason = null
+        val resType = com.example.manager.AbpRuleEngine.inferType(rawUrl, accept)
+        var reason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost, resType, isFirstParty)
+
+        // Lapisan DNS AdGuard (hanya untuk third-party dan bila belum terblokir aturan lokal).
+        // Non-blocking: bila belum ada di cache, prefetch berjalan di background.
+        if (reason == null && !isFirstParty && mode != PrivacyMode.OFF) {
+            if (AdGuardDnsFilter.isBlockedCached(reqHost)) {
+                reason = "adguard-dns"
+            }
         }
 
-        // 5. Simpan ke Cache & Kembalikan Hasil
-        val isBlocked = blockReason != null
+        // First-party yang terkena aturan umum / heuristik: JANGAN kembalikan 200 kosong,
+        // biarkan lewat (return null) agar bundle JS/CSS situs utama tidak rusak.
+        if (reason != null && isFirstParty && reason in FIRST_PARTY_EXEMPT_REASONS) {
+            reason = null
+        }
+
+        val isBlocked = reason != null
         val isFiltersLoaded = com.example.manager.FilterListManager.isLoaded()
         if (isBlocked || isFiltersLoaded) {
-            decisionCache.put(cacheKey, isBlocked)
-            if (blockReason != null) {
-                reasonCache.put(cacheKey, blockReason)
-            }
+            cache.put(cacheKey, reason ?: "ALLOW")
         }
 
         return if (isBlocked) {
             blockedCount.incrementAndGet()
-            AdblockLogger.d("AdBlock", "Blocked: $cleanUrl")
-            onBlocked?.invoke(rawUrl, blockReason ?: "adblock")
+            onBlocked?.invoke(rawUrl, reason ?: "adblock")
             emptyResponse(uri, accept)
-        } else {
-            null // PENTING: Return null agar Chromium menangani jaringan secara native!
-        }
+        } else null
     }
 
     // ── Navigation redirect check ─────────────────────────────────────────────
@@ -425,17 +385,9 @@ class AdBlockWebViewClient(
         mode: PrivacyMode,
         trackerEnabled: Boolean,
         streamBoost: Boolean,
-        resType: CleanAdEngine.ResourceType = CleanAdEngine.ResourceType.OTHER,
-        isThirdParty: Boolean = if (pgHost.isNotEmpty()) DomainClassifier.isThirdParty(pgHost, reqHost) else true
+        resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.OTHER,
+        isFirstParty: Boolean = (pgHost.isNotEmpty() && com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost))
     ): String? {
-        val isFirstParty = pgHost.isNotEmpty() && !isThirdParty
-
-        // Solusi T4: Di mode BALANCED, jangan pernah blokir first-party
-        if (isFirstParty && mode == PrivacyMode.BALANCED) {
-            return null
-        }
-
-        // Protect video/streaming segments (.m3u8, .ts, .mp4, .m4s, .mpd, .dash) from false-positive blocking
         val isStreamingSegment = lowerUrl.contains(".m3u8") || lowerUrl.contains(".m4s") ||
             lowerUrl.contains(".mpd") || lowerUrl.contains(".dash") ||
             lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".ts") || lowerUrl.endsWith(".webm")
@@ -446,23 +398,23 @@ class AdBlockWebViewClient(
         }
 
         val adBlockActive = (mode != PrivacyMode.OFF)
+        val isAggressive = (mode == PrivacyMode.AGGRESSIVE)
 
-        // 1. Hardcoded explicit ad & tracker domains (always third-party networks)
+        // 1. Domain iklan & pelacak eksplisit (hanya third-party)
         if (!isFirstParty) {
             if (adBlockActive && AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
                 return "ad-domain"
             }
-            if (trackerEnabled && TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+            if (trackerEnabled && com.example.manager.TrackerClassifier.isTrackerDomain(reqHost)) {
                 return "tracker-domain"
             }
         }
 
-        // Protect first-party authentication / checkout / verification flows from path keyword false positives
         val isFirstPartyCriticalFlow = isFirstParty && isCriticalAuthOrPaymentContext(lowerUrl)
 
-        // 2. Explicit ad/tracker path keywords
-        if (!isFirstPartyCriticalFlow) {
-            if (trackerEnabled && TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+        // 2. Kata kunci path iklan/pelacak eksplisit (di Balance hanya berlaku third-party)
+        if (!isFirstParty && !isFirstPartyCriticalFlow) {
+            if (trackerEnabled && com.example.manager.TrackerClassifier.isTrackerPath(lowerUrl)) {
                 return "tracker-keyword"
             }
             if (adBlockActive && AD_ONLY_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
@@ -474,32 +426,25 @@ class AdBlockWebViewClient(
             return null
         }
 
-        // CleanAdEngine evaluation (Bebas Lisensi - Solusi T4)
-        val isFirstPartyCritical = isFirstParty && isCriticalAuthOrPaymentContext(lowerUrl)
-        if (!isFirstPartyCritical && CleanAdEngine.shouldBlock(lowerUrl, pgHost, isThirdParty)) {
-            return "clean-ad-engine"
-        }
-
-        // 3. Aggressive mode extras (only on third-party or non-critical explicit ad paths)
-        if (mode == PrivacyMode.AGGRESSIVE) {
+        // 3. Tambahan khusus mode Aggressive
+        if (isAggressive) {
             if (!isFirstParty && AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
                 return "aggressive-ad"
             }
-            if (!isFirstPartyCriticalFlow && AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+            if (!isFirstParty && !isFirstPartyCriticalFlow && AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
                 return "aggressive-keyword"
             }
         }
 
-        // 4. AbpRuleEngine evaluation — berlaku juga untuk first-party (gaya Brave)
+        // 4. Evaluasi AbpRuleEngine
         val cachedRules = com.example.manager.FilterListManager.getCachedRules()
         if (cachedRules != null) {
             val match = cachedRules.ruleSet.shouldBlock(lowerUrl, pgHost, resType)
             if (match != null) {
-                val isTrackerLike = TRACKER_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") } ||
+                val isTrackerLike = com.example.manager.TrackerClassifier.isTrackerRequest(reqHost, lowerUrl) ||
                     lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
                     lowerUrl.contains("pixel") || lowerUrl.contains("telemetry") ||
-                    lowerUrl.contains("beacon") ||
-                    TRACKER_PATH_KEYWORDS.any { lowerUrl.contains(it) }
+                    lowerUrl.contains("beacon")
                 if (isTrackerLike) {
                     if (trackerEnabled) return "filter-tracker"
                 } else {
@@ -508,18 +453,17 @@ class AdBlockWebViewClient(
             }
         }
 
-        // 5. Lapisan heuristik  (lapisan) — SETELAH ABP, dan hanya
-        //    kalau adBlock aktif. SAFE/whitelist/critical sudah disaring di
-        //    shouldInterceptRequest sebelum checkRules dipanggil, dan segmen
-        //    streaming sudah dikembalikan di awal fungsi ini. Kata kunci
-        //    gambling & pola path di HeuristicsEngine hanya berlaku
-        //    third-party, jadi first-party yang sah tidak ikut terblok.
+        // 5. Lapisan heuristik (setelah exception ABP)
         if (adBlockActive) {
-            // Exception ABP menang atas heuristik: kalau URL ini eksplisit
-            // diizinkan @@, heuristik tidak boleh memblokirnya.
             val explicitlyAllowed = cachedRules?.ruleSet?.matchesAllowRule(lowerUrl, pgHost, resType) == true
             if (!explicitlyAllowed) {
-                val heuristic = HeuristicsEngine.heuristicReason(reqHost, lowerUrl, isFirstParty, resType)
+                val heuristic = HeuristicsEngine.heuristicReason(
+                    host = reqHost,
+                    lowerUrl = lowerUrl,
+                    isFirstParty = isFirstParty,
+                    resType = resType,
+                    aggressive = isAggressive
+                )
                 if (heuristic != null) return heuristic
             }
         }
@@ -618,18 +562,31 @@ class AdBlockWebViewClient(
     // ─── Cosmetic CSS (Stealth offscreen & zero-opacity rather than detectable display:none) ───
 
     private fun buildCosmeticCSS(hostname: String): String {
-        val sel = LinkedHashSet<String>(GLOBAL_COSMETIC)
-        if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
-            sel.addAll(YT_COSMETIC)
+        val mode = currentMode.get()
+        val selectors = LinkedHashSet<String>()
+
+        if (mode == PrivacyMode.AGGRESSIVE) {
+            selectors.addAll(GLOBAL_COSMETIC)
+            if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
+                selectors.addAll(YT_COSMETIC)
+            }
+            DOMAIN_COSMETIC.forEach { (domain, rules) ->
+                if (hostname == domain || hostname.endsWith(".$domain")) selectors.addAll(rules)
+            }
+        } else {
+            // Mode Balance: hanya selektor ad-network eksplisit (tidak menyentuh class generik halaman).
+            selectors.addAll(EXPLICIT_AD_SELECTORS)
+            if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
+                selectors.addAll(YT_COSMETIC)
+            }
         }
-        DOMAIN_COSMETIC.forEach { (domain, rules) ->
-            if (hostname == domain || hostname.endsWith(".$domain")) sel.addAll(rules)
-        }
-        if (sel.isEmpty()) return ""
-        // Gunakan offscreen + clip-path + opacity:0 agar offsetHeight tidak 0 jika belum ter-proxy,
-        // namun tetap benar-benar hilang secara visual dan tidak memakan ruang tata letak
-        return sel.joinToString(",\n") +
-            " { opacity:0 !important; pointer-events:none !important; max-height:1px !important; max-width:1px !important; overflow:hidden !important; position:absolute !important; left:-9999px !important; top:-9999px !important; z-index:-9999 !important; }"
+
+        val validated = selectors.filter { com.example.manager.CosmeticFilterInjector.isSafeCssSelector(it) }
+        if (validated.isEmpty()) return ""
+
+        val ruleBody = "{ opacity:0 !important; pointer-events:none !important; max-height:1px !important; max-width:1px !important; overflow:hidden !important; position:absolute !important; left:-9999px !important; top:-9999px !important; z-index:-9999 !important; }"
+        // Satu aturan per baris agar 1 selektor tidak didukung tidak membatalkan selektor lain.
+        return validated.joinToString("\n") { sel -> "$sel $ruleBody" }
     }
 
     fun buildCustomZapperCSS(hostname: String): String {
@@ -755,6 +712,35 @@ class AdBlockWebViewClient(
         // Singleton array byte kosong untuk menghindari alokasi objek berulang di shouldInterceptRequest
         private val EMPTY_BYTES = ByteArray(0)
 
+        private val FIRST_PARTY_EXEMPT_REASONS: Set<String> = setOf(
+            "filter-rule",
+            "filter-tracker",
+            "heuristic-domain",
+            "heuristic-gambling",
+            "heuristic-path",
+            "ad-keyword",
+            "tracker-keyword",
+            "aggressive-keyword",
+            "adguard-dns"
+        )
+
+        private val EXPLICIT_AD_SELECTORS: Set<String> = setOf(
+            "ins.adsbygoogle",
+            "[data-ad-unit]",
+            "[data-google-query-id]",
+            "[data-adsbygoogle-status]",
+            "iframe[src*='doubleclick.net']",
+            "iframe[src*='googlesyndication.com']",
+            "iframe[src*='adnxs.com']",
+            "iframe[src*='amazon-adsystem.com']",
+            "iframe[src*='taboola.com']",
+            "iframe[src*='outbrain.com']",
+            "div[id^='google_ads_']",
+            "div[id^='taboola-']",
+            ".OUTBRAIN",
+            "div[id^='ob_holder']"
+        )
+
         // 43-byte valid 1x1 transparent GIF (prevents <img onerror="adblockDetected()">)
         val TRANSPARENT_1X1_GIF: ByteArray = java.util.Base64.getDecoder().decode(
             "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
@@ -836,14 +822,16 @@ class AdBlockWebViewClient(
 
         private val SURROGATE_INPLAYER_ADX_JS = """
 (function(){
-  window.show_adx = 0;
-  window.COUNT_VAST = 0;
-  window.vastAdx = [];
-  window.bannerAdx = [];
-  window.funcGetvastAdx = function() { return []; };
-  window.funcJWonReadyVAST = function() {};
-  window.bannerAdxAllowed = function() { return false; };
-  window.hideInplayerBanner = function() {};
+  var emptyList = function() { return []; };
+  var ignore = function() {};
+  var refuse = function() { return false; };
+  try {
+    window.show_adx = 0;
+    window.COUNT_VAST = 0;
+    window.vastAdx = [];
+    window.bannerAdx = [];
+  } catch (_) {}
+  void emptyList; void ignore; void refuse;
 })();
         """.trimIndent().toByteArray(Charsets.UTF_8)
 
@@ -957,14 +945,6 @@ class AdBlockWebViewClient(
             "ads-twitter.com"
         )
 
-        private val TRACKER_PATH_KEYWORDS = listOf(
-            "/ptracking",
-            "/youtubei/v1/log_event",
-            "google-analytics.com/collect",
-            "google-analytics.com/j/collect",
-            "google-analytics.com/g/collect"
-        )
-
         private val AD_ONLY_PATH_KEYWORDS = listOf(
             "/api/stats/ads",
             "/pagead/",
@@ -1023,7 +1003,7 @@ class AdBlockWebViewClient(
             "div[id^='taboola-']", "div[class*='taboola-']",
             ".OUTBRAIN", "div[id^='ob_holder']",
             "div[class*='jackpot-banner']", "div[class*='casino-banner']",
-            "div[class*='slot-banner']", "div[class*='judi-banner']",
+            "div[class*='judi-banner']",
             "a[class*='floating-ad-banner']"
         )
 
@@ -1041,8 +1021,6 @@ class AdBlockWebViewClient(
 
         private val DOMAIN_COSMETIC = mapOf(
             "reddit.com"    to listOf(".promotedlink", "[data-testid='promoted-post']", "shreddit-ad-post"),
-            "x.com"         to listOf("[data-testid='placementTracking']"),
-            "twitter.com"   to listOf("[data-testid='placementTracking']"),
             "facebook.com"  to listOf("[aria-label='Sponsored']", "[data-pagelet*='sponsored']"),
             "instagram.com" to listOf("[aria-label='Sponsored']")
         )

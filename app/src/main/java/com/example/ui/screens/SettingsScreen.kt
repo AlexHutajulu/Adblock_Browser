@@ -68,6 +68,7 @@ fun SettingsScreen(
     val currentEngine by viewModel.selectedSearchEngine.collectAsState()
     val adBlockMode by viewModel.adBlockMode.collectAsState()
     val isTrackerEnabled by viewModel.trackerBlockEnabled.collectAsState()
+    val isAdguardDnsLayerEnabled by viewModel.adguardDnsLayerEnabled.collectAsState()
     val currentTheme by viewModel.appTheme.collectAsState()
     val currentMode by viewModel.displayMode.collectAsState()
     val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
@@ -486,6 +487,34 @@ fun SettingsScreen(
                 icon = Icons.AutoMirrored.Outlined.OpenInNew,
                 checked = openPopupsInNewTab,
                 onCheckedChange = { viewModel.setOpenPopupsInNewTab(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_adguard_dns_title),
+                subtitle = stringResource(R.string.pref_adguard_dns_summary),
+                icon = Icons.Outlined.Dns,
+                checked = isAdguardDnsLayerEnabled,
+                onCheckedChange = { viewModel.setAdguardDnsLayerEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_private_dns_title),
+                subtitle = stringResource(R.string.pref_private_dns_summary),
+                icon = Icons.Outlined.SettingsEthernet,
+                onClick = {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { context.startActivity(intent) }.onFailure {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                            )
+                        }
+                    }
+                }
             )
         }
     }

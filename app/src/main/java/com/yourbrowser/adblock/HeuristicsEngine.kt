@@ -1,385 +1,172 @@
 package com.yourbrowser.adblock
 
+import com.example.manager.AbpRuleEngine
 import java.util.Locale
 
+/**
+ * Lapisan heuristik mandiri (tanpa ketergantungan pada daftar domain proyek lain).
+ *
+ * Aturan operasi:
+ *  - Domain iklan pada [KNOWN_AD_ROOT_DOMAINS] hanya berisi domain induk jaringan iklan
+ *    umum yang terdokumentasi publik (IAB/dokumentasi vendor).
+ *  - Di mode Balance ([aggressive] = false), pola path hanya berlaku untuk
+ *    request third-party bertipe SCRIPT atau SUBDOCUMENT.
+ *  - Di mode Aggressive ([aggressive] = true), pola path juga berlaku untuk
+ *    XMLHTTPREQUEST dan IMAGE third-party.
+ */
 object HeuristicsEngine {
 
-    private val HEURISTIC_AD_DOMAINS = setOf(
-        "484r.com",
-        "92mim.com",
-        "a-ads.com",
-        "a-zzz.com",
-        "acceptable.a-ads.com",
-        "acscdn.com",
-        "ad-maven.com",
-        "ad.doubleclick.net",
-        "adc3-launch.adcolony.com",
-        "adcash.com",
-        "adcenter.cx",
-        "adfox.yandex.ru",
-        "adfstat.yandex.ru",
-        "adm.hotjar.com",
-        "admicro.vn",
-        "admob.com",
-        "adnxs.com",
-        "adroll.com",
-        "ads-api.tiktok.com",
-        "ads-api.twitter.com",
-        "ads-sg.tiktok.com",
-        "ads.linkedin.com",
-        "ads.pinterest.com",
-        "ads.tiktok.com",
-        "ads.yahoo.com",
-        "ads.youtube.com",
-        "ads30.adcolony.com",
-        "adsboosters.xyz",
-        "adserver.unityads.unity3d.com",
-        "adservetx.media.net",
+    private val KNOWN_AD_ROOT_DOMAINS: Set<String> = setOf(
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googleadservices.com",
         "adservice.google.com",
-        "adsfs.oppomobile.com",
-        "adsterra.com",
-        "adtago.s3.amazonaws.com",
-        "adtech.yahooinc.com",
-        "adtima.vn",
-        "advertising.com",
-        "advice-ads.s3.amazonaws.com",
-        "adx.ads.oppomobile.com",
-        "adxcontent.com",
-        "adxmedia.com",
-        "afs.googlesyndication.com",
-        "aichouphaugn.com",
-        "akseslink.win",
-        "an.facebook.com",
-        "analytics-api.samsunghealthcn.com",
-        "analytics-sg.tiktok.com",
-        "analytics.google.com",
-        "analytics.pointdrive.linkedin.com",
-        "analytics.query.yahoo.com",
-        "analytics.s3.amazonaws.com",
-        "analytics.tiktok.com",
-        "analytics.yahoo.com",
-        "analyticsengine.s3.amazonaws.com",
-        "api-adservices.apple.com",
-        "api.ad.xiaomi.com",
-        "api.bugsnag.com",
-        "api.luckyorange.com",
-        "api.mouseflow.com",
-        "apitiny.net",
-        "app.bugsnag.com",
-        "app.getsentry.com",
-        "appmetrica.yandex.ru",
-        "apps2app.com",
-        "aratireposed.qpon",
-        "auction.unityads.unity3d.com",
-        "ay267.com",
-        "bdapi-ads.realmemobile.com",
-        "bdapi-in-ads.realmemobile.com",
-        "becorsolaom.com",
-        "beholdjarhypnotize.com",
-        "bidvertiser.com",
-        "bionomysolera.com",
-        "books-analytics-events.apple.com",
-        "browser.sentry-cdn.com",
-        "bumibola.xyz",
-        "bundlemoviepumice.com",
-        "business-api.tiktok.com",
-        "bytedapm.com",
-        "campfirecroutondecorator.com",
-        "careers.hotjar.com",
+        "moatads.com",
+        "adsafeprotected.com",
+        "adnxs.com",
+        "rubiconproject.com",
+        "pubmatic.com",
+        "openx.net",
         "casalemedia.com",
-        "cathaytrash.com",
-        "cdn-test.mouseflow.com",
-        "cdn.luckyorange.com",
-        "cdn.mouseflow.com",
-        "chatmate.tv",
-        "ck.ads.oppomobile.com",
-        "claritybt.freshmarketer.com",
-        "clarium.io",
-        "clever-core.com",
-        "cleverwebserver.com",
-        "click.googleanalytics.com",
-        "click.oneplus.cn",
-        "clickadu.com",
-        "clumsy-whereas.com",
-        "config.unityads.unity3d.com",
         "criteo.com",
         "criteo.net",
-        "cs.luckyorange.net",
-        "daleelerah.info",
-        "data.ads.oppomobile.com",
-        "data.mistat.india.xiaomi.com",
-        "data.mistat.rus.xiaomi.com",
-        "data.mistat.xiaomi.com",
-        "dd133.com",
-        "doubleclick.net",
-        "dwagg.me",
-        "dwinnow.com",
-        "eclick.vn",
-        "enaightdecipie.com",
-        "ero-advertising.com",
-        "events.hotjar.io",
-        "events.reddit.com",
-        "events.redditmedia.com",
-        "events3alt.adcolony.com",
-        "excidekombu.com",
+        "taboola.com",
+        "outbrain.com",
+        "mgid.com",
+        "revcontent.com",
+        "adform.net",
+        "smartadserver.com",
+        "teads.tv",
+        "sharethrough.com",
+        "indexexchange.com",
+        "33across.com",
+        "bidswitch.net",
+        "media.net",
+        "adroll.com",
+        "propellerads.com",
+        "adsterra.com",
         "exoclick.com",
         "exosrv.com",
-        "extmaps-api.yandex.net",
-        "ezoic.com",
-        "ezoic.net",
-        "ezoicanalytics.com",
-        "ezojs.com",
-        "fagoklaer.ru",
-        "fantastindents.com",
-        "fls-eu.amazon.com",
-        "fls-na.amazon.com",
-        "freshmarketer.com",
-        "fwtracks.freshmarketer.com",
-        "gahakoleir.ru",
-        "gatekeeperconsent.com",
-        "gemini.yahoo.com",
-        "geo.yahoo.com",
-        "geodistpterian.shop",
-        "gigglegrowlworrisome.com",
-        "glandunmoist.qpon",
-        "google-analytics.com",
-        "googleadservices.com",
-        "googlesyndication.com",
-        "grs.hicloud.com",
-        "gtm.mouseflow.com",
-        "highperformanceformat.com",
-        "hilltopads.com",
-        "hilltopads.net",
-        "iadsdk.apple.com",
-        "identify.hotjar.com",
-        "impactradius-go.com",
-        "insights.hotjar.com",
-        "invl.me",
-        "involve.asia",
-        "iot-eu-logser.realme.com",
-        "iot-logser.realme.com",
-        "jnbhi.com",
-        "jomtingi.net",
-        "juicyads.com",
-        "llvpn.com",
-        "log.byteoversea.com",
-        "log.fc.yahoo.com",
-        "log.pinterest.com",
-        "logbak.hicloud.com",
-        "logservice.hicloud.com",
-        "logservice1.hicloud.com",
-        "luckyorange.com",
-        "m.doubleclick.net",
-        "masuksini.monster",
-        "mc.yandex.ru",
-        "media.net",
-        "mediavisor.doubleclick.net",
-        "metrics.data.hicloud.com",
-        "metrics.icloud.com",
-        "metrics.mzstatic.com",
-        "metrics2.data.hicloud.com",
-        "metrika.yandex.ru",
-        "mgid.com",
-        "militarfagot.com",
-        "moatads.com",
-        "monetag.com",
-        "mouseflow.com",
-        "nmetrics.samsung.com",
-        "notes-analytics-events.apple.com",
-        "notify.bugsnag.com",
-        "novanet.vn",
-        "o2.mouseflow.com",
-        "offerflowtogo.com",
-        "offerwall.yandex.net",
-        "onezapp.com",
-        "open.oneplus.net",
-        "openx.net",
-        "orbitsummit.info",
-        "outbrain.com",
-        "outsayremixed.shop",
-        "pagead2.googleadservices.com",
-        "pagead2.googlesyndication.com",
-        "partnerads.ysm.yahoo.com",
-        "pinusrimbase.cfd",
-        "pixel.facebook.com",
-        "playstake.casino",
         "popads.net",
         "popcash.net",
-        "portalfluently.com",
-        "potterynaggingformerly.com",
-        "propellerads.com",
-        "propellerclick.com",
-        "pubmatic.com",
-        "push-sdk.com",
-        "quantserve.com",
-        "rancemalars.com",
-        "realsrv.com",
-        "realtime.luckyorange.com",
-        "revenuehits.com",
-        "richads.com",
-        "richpush.co",
-        "roastoup.com",
-        "rubiconproject.com",
-        "samsung-com.112.2o7.net",
-        "samsungads.com",
-        "sandburstf2b9n.buzz",
-        "scorecardresearch.com",
-        "script.hotjar.com",
-        "sdkconfig.ad.intl.xiaomi.com",
-        "sdkconfig.ad.xiaomi.com",
-        "serving-sys.com",
-        "sessions.bugsnag.com",
-        "settings.luckyorange.net",
-        "smartadserver.com",
-        "smetrics.samsung.com",
-        "ssl.google-analytics.com",
-        "static.ads-twitter.com",
-        "static.doubleclick.net",
-        "static.media.net",
-        "stats.g.doubleclick.net",
-        "stats.wp.com",
-        "surveys.hotjar.com",
-        "taboola.com",
-        "thedirecthor.com",
-        "tinig22.com",
-        "tools.mouseflow.com",
-        "tracking.rus.miui.com",
+        "adcash.com",
+        "hilltopads.net",
+        "hilltopads.com",
+        "clickadu.com",
         "trafficjunky.com",
         "trafficstars.com",
-        "trk.pinterest.com",
-        "tsyndicate.com",
-        "tsyndication.com",
-        "ttwstatic.com",
-        "tzegilo.com",
-        "udcm.yahoo.com",
-        "ukankingwithea.com",
-        "unlockr.app",
-        "upload.luckyorange.net",
-        "vcmedia.vn",
-        "vcommission.com",
-        "vivodemisrentas.net",
-        "vlit.site",
-        "vlit.xyz",
-        "vr-gc.com",
-        "w1.luckyorange.com",
-        "wd.adcolony.com",
-        "weather-analytics-events.apple.com",
-        "webview.unityads.unity3d.com",
-        "yepads.com",
-        "zedo.com"
+        "juicyads.com",
+        "ero-advertising.com",
+        "a-ads.com",
+        "adcolony.com",
+        "unityads.unity3d.com",
+        "applovin.com",
+        "chartboost.com",
+        "vungle.com",
+        "inmobi.com"
     )
 
-    private val GAMBLING_KEYWORDS = listOf(
-        "hbet",
-        "man88",
-        "x1bet",
-        "bet88",
-        "kubet",
-        "shbet",
-        "789bet",
-        "okvip",
-        "jun88",
-        "f8bet",
-        "fun88",
-        "rikvip",
-        "bom88",
-        "vsbet",
-        "78win",
-        "gem88",
-        "win79",
-        "tokyo77",
-        "tokyo88"
+    private val GAMBLING_HOST_TOKENS: List<String> = listOf(
+        "slot88", "hoki88", "gacor88", "maxwin88", "jp88",
+        "bet88", "judislot", "daftar-slot", "link-gacor", "rtp-slot",
+        "kubet", "shbet", "jun88", "f8bet", "fun88",
+        "789bet", "okvip", "rikvip", "78win", "gem88"
     )
 
-    private val AD_PATH_PATTERNS = listOf(
-        "/pagead",
+    private val AD_SCRIPT_PATH_PATTERNS: List<String> = listOf(
+        "/pagead/",
         "/pagead.js",
-        "/ads.js",
-        "/widget/ads.js",
-        "/doubleclick/",
+        "/adsbygoogle.js",
+        "/gpt.js",
+        "/prebid",
         "/popunder",
         "/popads",
-        "/adserver",
-        "-adx.js",
-        "/vl-top-adx",
-        "/vl-main-adx",
-        "/vl-underplayer-adx",
-        "/vl-native-adx",
-        "/static/js/ads-",
-        "/videoSliderAlt.js",
-        "/inpagepush.js",
-        "/aclib.js",
-        "/suv5.js",
-        "/jquery.openxtag.js",
-        "/static/doubleclick/instream"
+        "/adserver/",
+        "/vast.xml",
+        "/vpaid.js",
+        "/inpagepush",
+        "/doubleclick/"
     )
 
-    private val AD_PATH_PATTERNS_LOWER: List<String> =
-        AD_PATH_PATTERNS.map { it.lowercase(Locale.US) }
-
-    internal fun matchesDomainKeyword(host: String, keyword: String): Boolean {
-        val normalizedHost = host.lowercase(Locale.US).trim().trim('.')
-        val normalizedKeyword = keyword.lowercase(Locale.US).trim().trim('.')
-        if (normalizedHost.isEmpty() || normalizedKeyword.isEmpty()) return false
-
-        val labels = normalizedHost.split('.')
-        return labels.any { label ->
-            label == normalizedKeyword ||
-                label.startsWith("$normalizedKeyword-") ||
-                label.endsWith("-$normalizedKeyword")
-        }
-    }
-
-    /** Cocokkan kata kunci judi hanya pada label host utuh/batas tanda hubung untuk kata pendek; substring hanya untuk kata panjang. */
-    private fun isGamblingHost(host: String): Boolean {
-        return GAMBLING_KEYWORDS.any { k ->
-            val key = k.trimEnd('.').lowercase(Locale.US)
-            if (key.length < 6) {
-                matchesDomainKeyword(host, key)
-            } else {
-                matchesDomainKeyword(host, key) || host.contains(key)
+    internal fun matchesHostToken(host: String, token: String): Boolean {
+        val h = host.lowercase(Locale.US).trim().trim('.')
+        val t = token.lowercase(Locale.US).trim().trim('.')
+        if (h.isEmpty() || t.isEmpty()) return false
+        val labels = h.split('.')
+        for (label in labels) {
+            if (label == t || label.startsWith("$t-") || label.endsWith("-$t")) {
+                return true
+            }
+            if (t.length >= 6 && label.contains(t)) {
+                return true
             }
         }
+        return false
+    }
+
+    // Backwards-compatible alias for unit tests if any call matchesDomainKeyword
+    internal fun matchesDomainKeyword(host: String, keyword: String): Boolean =
+        matchesHostToken(host, keyword)
+
+    private fun isGamblingHost(cleanHost: String): Boolean {
+        for (token in GAMBLING_HOST_TOKENS) {
+            if (matchesHostToken(cleanHost, token)) return true
+        }
+        return false
+    }
+
+    fun isHeuristicAdDomain(host: String): Boolean {
+        var cursor: String? = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
+        while (!cursor.isNullOrEmpty()) {
+            if (KNOWN_AD_ROOT_DOMAINS.contains(cursor)) return true
+            val dot = cursor.indexOf('.')
+            cursor = if (dot != -1) cursor.substring(dot + 1) else null
+        }
+        return false
     }
 
     fun heuristicReason(
         host: String,
         lowerUrl: String,
         isFirstParty: Boolean,
-        resType: CleanAdEngine.ResourceType = CleanAdEngine.ResourceType.SCRIPT
+        resType: AbpRuleEngine.ResourceType = AbpRuleEngine.ResourceType.OTHER,
+        aggressive: Boolean = false
     ): String? {
         val cleanHost = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
         if (cleanHost.isEmpty()) return null
-        // 1. Suffix match domain, dengan pencocokan suffix domain
-        var check: String? = cleanHost
-        while (check != null) {
-            if (HEURISTIC_AD_DOMAINS.contains(check)) return "heuristic-domain"
-            val dot = check.indexOf('.')
-            check = if (dot != -1) check.substring(dot + 1) else null
+
+        if (isHeuristicAdDomain(cleanHost)) {
+            return "heuristic-domain"
         }
+
         if (isFirstParty) return null
-        // 2. Kata kunci gambling di host
-        if (isGamblingHost(cleanHost)) return "heuristic-gambling"
-        // 3. Pola path iklan di URL lengkap (hanya SCRIPT dan SUBDOCUMENT)
-        if (resType != CleanAdEngine.ResourceType.SCRIPT &&
-            resType != CleanAdEngine.ResourceType.SUBDOCUMENT
-        ) {
-            return null
+
+        if (isGamblingHost(cleanHost)) {
+            return "heuristic-gambling"
         }
-        val normalizedUrl = lowerUrl.lowercase(Locale.US)
-        for (pattern in AD_PATH_PATTERNS_LOWER) {
-            if (normalizedUrl.contains(pattern)) return "heuristic-path"
+
+        val typeAllowedForPathCheck = when (resType) {
+            AbpRuleEngine.ResourceType.SCRIPT,
+            AbpRuleEngine.ResourceType.SUBDOCUMENT -> true
+            AbpRuleEngine.ResourceType.XMLHTTPREQUEST,
+            AbpRuleEngine.ResourceType.IMAGE -> aggressive
+            else -> false
+        }
+        if (!typeAllowedForPathCheck) return null
+
+        val pathPart = extractPathAndQuery(lowerUrl)
+        for (pattern in AD_SCRIPT_PATH_PATTERNS) {
+            if (pathPart.contains(pattern)) {
+                return "heuristic-path"
+            }
         }
         return null
     }
 
-    fun isHeuristicAdDomain(host: String): Boolean {
-        var check: String? = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
-        while (check != null) {
-            if (HEURISTIC_AD_DOMAINS.contains(check)) return true
-            val dot = check.indexOf('.')
-            check = if (dot != -1) check.substring(dot + 1) else null
-        }
-        return false
+    private fun extractPathAndQuery(lowerUrl: String): String {
+        val schemeIdx = lowerUrl.indexOf("://")
+        val startHost = if (schemeIdx != -1) schemeIdx + 3 else 0
+        val slashIdx = lowerUrl.indexOf('/', startHost)
+        return if (slashIdx != -1) lowerUrl.substring(slashIdx) else ""
     }
 }

@@ -32,7 +32,6 @@ object CosmeticFilterInjector {
         // Gambling / Judol explicit ad banners
         "div[class*='jackpot-banner']",
         "div[class*='casino-banner']",
-        "div[class*='slot-banner']",
         "div[class*='judi-banner']",
         "a[class*='floating-ad-banner']"
     )
@@ -173,18 +172,18 @@ object CosmeticFilterInjector {
         }
 
         customSelectors.forEach { sel ->
-            if (com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
+            if (AbpRuleEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
                 safeSelectors.add(sel.trim())
             }
         }
 
         if (isAggressive) {
-            // Per-domain cosmetic selectors from CleanAdEngine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
+            // Per-domain cosmetic selectors from AbpRuleEngine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
             rules?.ruleSet?.cosmetic?.selectorsFor(host)
                 ?.asSequence()
-                ?.filter { com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(it) }
+                ?.filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
                 ?.filter { isSafeCssSelector(it) }
-                ?.take(com.yourbrowser.adblock.CleanAdEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+                ?.take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
                 ?.forEach { safeSelectors.add(it.trim()) }
         }
 

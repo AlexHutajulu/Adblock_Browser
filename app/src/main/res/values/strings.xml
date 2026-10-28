@@ -196,4 +196,8 @@
     <string name="console_rate_limit_exceeded">Batas pesan konsol terlampaui (60 pesan/detik). Pembatasan alat inspeksi aktif.</string>
     <string name="zapper_root_element_blocked">Elemen root/body/html tidak dapat disembunyikan</string>
     <string name="zapper_invalid_selector">Selector elemen tidak valid</string>
+    <string name="pref_adguard_dns_title">Lapisan DNS AdGuard (DoH)</string>
+    <string name="pref_adguard_dns_summary">Periksa domain pihak ketiga terhadap dns.adguard-dns.com untuk memblokir domain iklan di tingkat DNS (nama host dikirim ke AdGuard DNS).</string>
+    <string name="pref_private_dns_title">Gunakan Private DNS Sistem</string>
+    <string name="pref_private_dns_summary">Buka pengaturan jaringan Android untuk mengatur Private DNS ke dns.adguard-dns.com di tingkat sistem.</string>
 </resources>

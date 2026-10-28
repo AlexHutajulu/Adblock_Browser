@@ -28,6 +28,7 @@ class SettingsManager(private val context: Context) {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AD_BLOCK = "ad_block_enabled"
         private const val KEY_TRACKER_BLOCK = "tracker_block_enabled"
+        private const val KEY_ADGUARD_DNS = "adguard_dns_layer_enabled"
         private const val KEY_THEME = "app_theme"
         private const val KEY_DISPLAY_MODE = "display_mode"
         private const val KEY_STREAMING_BOOST = "streaming_boost_enabled"
@@ -166,6 +167,13 @@ class SettingsManager(private val context: Context) {
     var isTrackerBlockEnabled: Boolean
         get() = prefs.getBoolean(KEY_TRACKER_BLOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_TRACKER_BLOCK, value).apply()
+
+    var adguardDnsLayerEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ADGUARD_DNS, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_ADGUARD_DNS, value).apply()
+            com.yourbrowser.adblock.AdGuardDnsFilter.setEnabled(value)
+        }
         
     var openPopupsInNewTab: Boolean
         get() = prefs.getBoolean("open_popups_new_tab_v2", false)

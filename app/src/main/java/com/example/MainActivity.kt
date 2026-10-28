@@ -142,6 +142,9 @@ class MainActivity : AppCompatActivity() {
 
         // Install AdBlock ServiceWorker interceptor before WebView content starts
         com.example.manager.AdBlockServiceWorker.install()
+        com.yourbrowser.adblock.AdGuardDnsFilter.setEnabled(
+            com.example.manager.SettingsManager(this).adguardDnsLayerEnabled
+        )
 
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]

@@ -280,6 +280,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _trackerBlockEnabled = MutableStateFlow(settings.isTrackerBlockEnabled)
     val trackerBlockEnabled = _trackerBlockEnabled.asStateFlow()
 
+    private val _adguardDnsLayerEnabled = MutableStateFlow(settings.adguardDnsLayerEnabled)
+    val adguardDnsLayerEnabled = _adguardDnsLayerEnabled.asStateFlow()
+
     private val _privacyShieldMode = MutableStateFlow(settings.privacyShieldMode)
     val privacyShieldMode = _privacyShieldMode.asStateFlow()
 
@@ -1331,6 +1334,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setTrackerBlockEnabled(enabled: Boolean) {
         settings.isTrackerBlockEnabled = enabled
         _trackerBlockEnabled.value = enabled
+    }
+
+    fun setAdguardDnsLayerEnabled(enabled: Boolean) {
+        settings.adguardDnsLayerEnabled = enabled
+        _adguardDnsLayerEnabled.value = enabled
+        com.yourbrowser.adblock.AdGuardDnsFilter.setEnabled(enabled)
     }
 
     fun setPrivacyShieldMode(mode: com.example.manager.PrivacyShieldMode) {
