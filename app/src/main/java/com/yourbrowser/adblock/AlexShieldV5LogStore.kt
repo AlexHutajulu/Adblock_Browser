@@ -52,7 +52,19 @@ object AlexShieldV5LogStore {
         }
     }
 
-    fun add(tabId: String, pageUrl: String?, blockedUrl: String, reason: String) {
+    fun addLogEntry(url: String, isPrivateTab: Boolean) {
+        if (isPrivateTab) return // JANGAN PERNAH simpan log dari tab private (Solusi T2)
+        add(tabId = "default", pageUrl = "", blockedUrl = url, reason = "Ad", isPrivateTab = false)
+    }
+
+    fun add(
+        tabId: String,
+        pageUrl: String?,
+        blockedUrl: String,
+        reason: String,
+        isPrivateTab: Boolean = false
+    ) {
+        if (isPrivateTab) return // JANGAN PERNAH simpan log dari tab private (Solusi T2)
         val host = normalizeHost(pageUrl)
         _logs.update { old ->
             (old + AlexShieldBlockedLog(tabId, host, blockedUrl, reason)).takeLast(MAX_LOGS)

@@ -8,6 +8,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -50,9 +51,22 @@ class AdBlockWebViewClient(
     // Decision cache — key = "mode|tracker|stream|pageHost|requestHost|url", value = "" (allowed) or non-empty block reason
     private val cache = android.util.LruCache<String, String>(6_000)
 
+    init {
+        syncCleanAdEngineMode(mode)
+    }
+
+    private fun syncCleanAdEngineMode(m: PrivacyMode) {
+        CleanAdEngine.currentMode = if (m == PrivacyMode.AGGRESSIVE) {
+            AdblockMode.AGGRESSIVE
+        } else {
+            AdblockMode.BALANCED
+        }
+    }
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun setMode(m: PrivacyMode) {
+        syncCleanAdEngineMode(m)
         if (currentMode.getAndSet(m) != m) {
             cache.evictAll()
         }
@@ -162,69 +176,154 @@ class AdBlockWebViewClient(
 
     fun onPageFinished(view: WebView, url: String?) {
         updateCurrentPageUrl(url)
-        if (url.isNullOrBlank() || currentMode.get() == PrivacyMode.OFF) return
+        val mode = currentMode.get()
+        if (url.isNullOrBlank() || mode == PrivacyMode.OFF) return
         val host = safeHost(url)
         if (isWhitelistedHost(host) || isCriticalBypassDomain(host)) return
-        val css = buildCosmeticCSS(host)
-        if (css.isNotBlank()) injectCSS(view, css)
+        // Solusi T3 & T5: Kosmetik generik/hardcode HANYA dieksekusi di mode AGGRESSIVE
+        applyCosmeticFiltering(view, isAggressive = (mode == PrivacyMode.AGGRESSIVE))
         val zapperCss = buildCustomZapperCSS(host)
         if (zapperCss.isNotBlank()) injectZapperCSS(view, zapperCss)
         view.evaluateJavascript(buildPageScript(host), null)
+    }
+
+    // ── Solusi T3 & T5: Perbaikan Injeksi Kosmetik ─────────────────────────────
+
+    fun applyCosmeticFiltering(view: WebView, isAggressive: Boolean) {
+        if (!isAggressive) return // JANGAN injeksi kosmetik generik di mode Balanced!
+
+        val host = safeHost(pageUrl.get())
+        val cssToHide = "div[class*='slot-banner'], div[id*='adblock-warning'] { display: none !important; }"
+        val domainCss = buildCosmeticCSS(host)
+        val combinedCss = if (domainCss.isNotBlank()) "$cssToHide\n$domainCss" else cssToHide
+        injectCSS(view, combinedCss)
     }
 
     fun onReceivedError(view: WebView, request: WebResourceRequest?, error: WebResourceError?) {
         // passthrough — tidak ada action khusus
     }
 
-    // ── Main intercept ────────────────────────────────────────────────────────
+    // ── Main intercept (Solusi T1, T2, T4 & T5) ───────────────────────────────
 
     fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
         val mode = currentMode.get()
+        syncCleanAdEngineMode(mode)
         val trackerEnabled = trackerBlockingEnabled.get()
         val trackerOnlyActive = (mode == PrivacyMode.OFF && trackerEnabled && trackerActiveWhenOff.get())
         if (mode == PrivacyMode.OFF && !trackerOnlyActive) return null
         if (request.isForMainFrame) return null
 
-        val url     = request.url?.toString() ?: return null
-        val reqHost = request.url?.host?.lowercase(Locale.US) ?: return null
+        val uri     = request.url ?: return null
+        val url     = uri.toString()
+        val reqHost = uri.host?.lowercase(Locale.US) ?: return null
         val pgHost  = safeHost(pageUrl.get())
         val accept  = request.requestHeaders?.entries
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value?.lowercase(Locale.US)
 
-        // 1. Whitelisted page or host
-        if (isWhitelistedHost(pgHost) || isWhitelistedHost(reqHost)) return null
+        // 1. CEK SAFE DOMAINS PERTAMA KALI (Solusi T5)
+        if (isSafeDomain(reqHost) || (pgHost.isNotEmpty() && isSafeDomain(pgHost))) {
+            return fetchWithAdGuardDns(request)
+        }
 
-        // 2. SAFE DOMAINS — harus PERTAMA, tidak boleh dipindah
-        if (isSafeDomain(reqHost)) return null
+        // 2. CEK USER WHITELIST
+        if (isWhitelistedHost(pgHost) || isWhitelistedHost(reqHost)) {
+            return fetchWithAdGuardDns(request)
+        }
 
-        // 3. Cache check (Thread-safe LRU Cache)
+        // 3. KLASIFIKASI DOMAIN (Solusi T1)
+        val isThirdParty = if (pgHost.isNotEmpty()) {
+            DomainClassifier.isThirdParty(pgHost, reqHost)
+        } else {
+            true
+        }
+
+        // Solusi T4: Di mode BALANCED, jangan pernah blokir aset First-Party (Fail-open -> return null)
+        if (!isThirdParty && mode == PrivacyMode.BALANCED) {
+            return fetchWithAdGuardDns(request)
+        }
+
+        // 4. Cache check (Thread-safe LRU Cache)
         val streamBoost = streamingBoostEnabled.get()
         val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$reqHost|$url"
         cache.get(cacheKey)?.let { cachedReason ->
             if (cachedReason.isNotEmpty()) {
+                // Solusi T4 Fail-open guard
+                if (!isThirdParty && mode == PrivacyMode.BALANCED) return null
                 blockedCount.incrementAndGet()
+                AdblockLogger.d("AdBlock", "Blocked: $url")
                 onBlocked?.invoke(url, cachedReason)
-                return emptyResponse(request.url, accept)
+                return emptyResponse(uri, accept)
             }
+            return fetchWithAdGuardDns(request)
+        }
+
+        // 5. EVALUASI PEMBLOKIRAN (CleanAdEngine + aturan lengkap)
+        val lower = url.lowercase(Locale.US)
+        val resType = CleanAdEngine.inferType(url, accept)
+        val blockReason = checkRules(
+            reqHost = reqHost,
+            pgHost = pgHost,
+            lowerUrl = lower,
+            mode = mode,
+            trackerEnabled = trackerEnabled,
+            streamBoost = streamBoost,
+            resType = resType,
+            isThirdParty = isThirdParty
+        )
+
+        // Solusi T4: Jika aset First-Party terindikasi false-positive di mode Balanced,
+        // JANGAN kembalikan emptyResponse. Kembalikan null agar web tidak rusak (Fail-open).
+        if (blockReason != null && !isThirdParty && mode == PrivacyMode.BALANCED) {
             return null
         }
 
-        val lower = url.lowercase(Locale.US)
-        val resType = com.example.manager.AbpRuleEngine.inferType(url, accept)
-        val blockReason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost, resType)
-
         val isFiltersLoaded = com.example.manager.FilterListManager.isLoaded()
-        // Keputusan "diizinkan" TIDAK di-cache sebelum daftar filter siap (isLoaded())
         if (blockReason != null || isFiltersLoaded) {
             cache.put(cacheKey, blockReason ?: "")
         }
 
-        return if (blockReason != null) {
+        if (blockReason != null) {
             blockedCount.incrementAndGet()
+            AdblockLogger.d("AdBlock", "Blocked: $url")
             onBlocked?.invoke(url, blockReason)
-            emptyResponse(request.url, accept)
-        } else null
+            return emptyResponse(uri, accept)
+        }
+
+        // 6. JIKA LOLOS SEMUA, LANJUTKAN REQUEST DENGAN ADGUARD DNS (DoH)
+        return fetchWithAdGuardDns(request)
+    }
+
+    private fun fetchWithAdGuardDns(webRequest: WebResourceRequest): WebResourceResponse? {
+        if (!enableDirectDohFetch || !AdguardDnsClient.isInitialized()) return null
+        // Hanya intercept GET request untuk aset/dokumen agar tidak merusak POST/Form data
+        if (!webRequest.method.equals("GET", ignoreCase = true)) return null
+
+        return try {
+            val okHttpRequestBuilder = Request.Builder().url(webRequest.url.toString())
+            webRequest.requestHeaders?.forEach { (key, value) ->
+                okHttpRequestBuilder.addHeader(key, value)
+            }
+
+            val response = AdguardDnsClient.client.newCall(okHttpRequestBuilder.build()).execute()
+            val contentType = response.header("Content-Type", "text/plain")
+            val mimeType = contentType?.substringBefore(";")?.trim() ?: "text/plain"
+            val charset = contentType?.substringAfter("charset=", "utf-8")?.trim() ?: "utf-8"
+
+            WebResourceResponse(
+                mimeType,
+                charset,
+                response.body?.byteStream()
+            )
+        } catch (e: Exception) {
+            // Jika gagal di resolusi DNS AdGuard (berarti domain iklan diblokir oleh AdGuard DNS!)
+            AdblockLogger.d("AdGuardDNS", "Blocked by DNS or Network Error: ${webRequest.url}")
+            if (DomainClassifier.isThirdParty(safeHost(pageUrl.get()), webRequest.url.host ?: "")) {
+                emptyResponse(webRequest.url, webRequest.requestHeaders?.get("Accept"))
+            } else {
+                null // Biarkan WebView menangani secara native jika first-party gagal (Fail-open T4)
+            }
+        }
     }
 
     // ── Navigation redirect check ─────────────────────────────────────────────
@@ -266,10 +365,15 @@ class AdBlockWebViewClient(
         mode: PrivacyMode,
         trackerEnabled: Boolean,
         streamBoost: Boolean,
-        resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.OTHER
+        resType: CleanAdEngine.ResourceType = CleanAdEngine.ResourceType.OTHER,
+        isThirdParty: Boolean = if (pgHost.isNotEmpty()) DomainClassifier.isThirdParty(pgHost, reqHost) else true
     ): String? {
-        val isFirstParty = pgHost.isNotEmpty() &&
-            (reqHost == pgHost || reqHost.endsWith(".$pgHost") || pgHost.endsWith(".$reqHost"))
+        val isFirstParty = pgHost.isNotEmpty() && !isThirdParty
+
+        // Solusi T4: Di mode BALANCED, jangan pernah blokir first-party
+        if (isFirstParty && mode == PrivacyMode.BALANCED) {
+            return null
+        }
 
         // Protect video/streaming segments (.m3u8, .ts, .mp4, .m4s, .mpd, .dash) from false-positive blocking
         val isStreamingSegment = lowerUrl.contains(".m3u8") || lowerUrl.contains(".m4s") ||
@@ -308,6 +412,12 @@ class AdBlockWebViewClient(
 
         if (!adBlockActive) {
             return null
+        }
+
+        // CleanAdEngine evaluation (Bebas Lisensi - Solusi T4)
+        val isFirstPartyCritical = isFirstParty && isCriticalAuthOrPaymentContext(lowerUrl)
+        if (!isFirstPartyCritical && CleanAdEngine.shouldBlock(lowerUrl, pgHost, isThirdParty)) {
+            return "clean-ad-engine"
         }
 
         // 3. Aggressive mode extras (only on third-party or non-critical explicit ad paths)
@@ -582,6 +692,8 @@ class AdBlockWebViewClient(
     // ─── Rule sets & Stealth Surrogates ────────────────────────────────────────
 
     companion object {
+        @Volatile
+        var enableDirectDohFetch: Boolean = false
 
         // 43-byte valid 1x1 transparent GIF (prevents <img onerror="adblockDetected()">)
         val TRANSPARENT_1X1_GIF: ByteArray = java.util.Base64.getDecoder().decode(
@@ -1271,7 +1383,7 @@ class AdBlockWebViewClient(
             if (rawSrc.isEmpty() || rawSrc.startsWith("about:") || rawSrc.startsWith("javascript:") || rawSrc.startsWith("data:")) {
                 return false
             }
-            val iframeHost = com.example.manager.AbpRuleEngine.extractHost(rawSrc)
+            val iframeHost = CleanAdEngine.extractHost(rawSrc)
                 .lowercase(Locale.US)
                 .removePrefix("www.")
             if (iframeHost.isEmpty()) {
@@ -1279,7 +1391,7 @@ class AdBlockWebViewClient(
                 return false
             }
             val cleanPageHost = pageHost.trim().lowercase(Locale.US).removePrefix("www.")
-            if (cleanPageHost.isNotEmpty() && !com.example.manager.AbpRuleEngine.isThirdParty(iframeHost, cleanPageHost)) {
+            if (cleanPageHost.isNotEmpty() && !DomainClassifier.isThirdParty(cleanPageHost, iframeHost)) {
                 // First-party iframe -> never clean
                 return false
             }

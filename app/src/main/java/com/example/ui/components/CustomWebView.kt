@@ -406,7 +406,7 @@ fun CustomWebView(
                     val alexShieldV5Client = com.yourbrowser.adblock.AdBlockWebViewClient(
                         mode = com.yourbrowser.adblock.PrivacyMode.BALANCED,
                         onBlocked = { blockedUrl, reason ->
-                            Log.d(TAG, "AlexShield v5 blocked: $reason | $blockedUrl")
+                            com.yourbrowser.adblock.AdblockLogger.d(TAG, "AlexShield v5 blocked: $reason | $blockedUrl")
                             if (reason.contains("tracker", ignoreCase = true) ||
                                 reason.contains("beacon", ignoreCase = true) ||
                                 blockedUrl.contains("analytics", ignoreCase = true) ||
@@ -418,11 +418,13 @@ fun CustomWebView(
                                 viewModel.incrementThirdPartyCookiesBlocked()
                             }
                             val safePageUrl = currentPageUrlRef.get()
+                            // Solusi T2: JANGAN PERNAH simpan log dari tab private
                             com.yourbrowser.adblock.AlexShieldV5LogStore.add(
                                 tabId = tab.id,
                                 pageUrl = safePageUrl,
                                 blockedUrl = blockedUrl,
-                                reason = reason
+                                reason = reason,
+                                isPrivateTab = tab.isPrivate
                             )
                         }
                     )
@@ -631,7 +633,8 @@ fun CustomWebView(
 
                         @android.webkit.JavascriptInterface
                         fun getCosmeticCss(host: String): String {
-                            if (viewModel.adBlockMode.value == com.example.manager.AdBlockMode.OFF) return ""
+                            // Solusi T3 & T5: Filter kosmetik generik hanya aktif di AGGRESSIVE mode
+                            if (viewModel.adBlockMode.value != com.example.manager.AdBlockMode.AGGRESSIVE) return ""
                             val cleanHost = host.trim().lowercase().removePrefix("www.")
                             if (cleanHost.isBlank()) return ""
                             val isWhitelisted = viewModel.adBlockDisabledDomains.value.any { d ->
@@ -971,10 +974,12 @@ fun CustomWebView(
                             if (adBlockMode != com.example.manager.AdBlockMode.OFF && !isAdBlockDisabledForSite && view != null) {
                                 // v5 page cleanup: aggressive CSS, anti-popup, anti-beacon, safe YouTube cleanup.
                                 alexShieldV5Client.onPageFinished(view, url)
-                                if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                                if (adBlockMode == com.example.manager.AdBlockMode.AGGRESSIVE &&
+                                    !androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+                                ) {
                                     com.example.manager.CosmeticFilterInjector.inject(view, pageUrl = url)
                                 }
-                                Log.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
+                                com.yourbrowser.adblock.AdblockLogger.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
                             }
 
                             // Re-ensure client security shield, Auto-Run Custom JS Toolbar scripts, Dolby Atmos/Vision & Browser Extensions

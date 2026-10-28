@@ -27,7 +27,7 @@ object ScriptletEngine {
     ) {
         fun matchesHost(host: String): Boolean {
             if (domains.isEmpty()) return true
-            val clean = AbpRuleEngine.cleanHost(host)
+            val clean = com.yourbrowser.adblock.CleanAdEngine.cleanHost(host)
             if (clean.isEmpty()) return false
             for (d in domains) {
                 if (clean == d || clean.endsWith(".$d")) return true
@@ -61,7 +61,7 @@ object ScriptletEngine {
     
     fun parseScriptletRule(line: String): ScriptletRule? {
         val trimmed = line.trim()
-        if (trimmed.isEmpty() || trimmed.length > AbpRuleEngine.MAX_RULE_LINE_LENGTH) return null
+        if (trimmed.isEmpty() || trimmed.length > com.yourbrowser.adblock.CleanAdEngine.MAX_RULE_LINE_LENGTH) return null
 
         // AdGuard: domain#%#//scriptlet('name', 'arg', ...)
         // Exception AdGuard: domain#@$#//scriptlet('name', ...)
@@ -105,11 +105,8 @@ object ScriptletEngine {
     private fun parseDomains(raw: String): Set<String> {
         val out = LinkedHashSet<String>()
         for (part in raw.split(',')) {
-            val clean = AbpRuleEngine.cleanHost(part)
+            val clean = com.yourbrowser.adblock.CleanAdEngine.cleanHost(part)
             if (clean.isNotEmpty() && clean != "~") {
-                // Domain dengan prefix ~ berarti "kecuali domain ini" — untuk
-                // kesederhanaan v1, domain itu diabaikan (aturan
-                // tetap berlaku global/domain lain), bukan dibalik artinya.
                 if (!part.trim().startsWith("~")) out.add(clean)
             }
         }

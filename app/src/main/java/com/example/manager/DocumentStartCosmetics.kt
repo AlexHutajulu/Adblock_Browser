@@ -44,6 +44,10 @@ object DocumentStartCosmetics {
     }
 
     fun buildCosmeticCssForHost(host: String): String {
+        // Solusi T3 & T5: Filter kosmetik generik dimatikan di mode BALANCED agar tidak merusak tampilan web
+        if (com.yourbrowser.adblock.CleanAdEngine.currentMode != com.yourbrowser.adblock.AdblockMode.AGGRESSIVE) {
+            return ""
+        }
         val clean = host.trim().lowercase().removePrefix("www.")
         if (clean.isNotEmpty() && com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { clean == it || clean.endsWith(".$it") }) {
             return ""
@@ -52,9 +56,9 @@ object DocumentStartCosmetics {
         // Filter DULU, baru batasi jumlah: selektor tidak aman tidak boleh memakan kuota.
         val selectors = rules.ruleSet.cosmetic.selectorsFor(clean)
             .asSequence()
-            .filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
+            .filter { com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(it) }
             .filter { CosmeticFilterInjector.isSafeCssSelector(it) }
-            .take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+            .take(com.yourbrowser.adblock.CleanAdEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
             .toList()
 
         if (selectors.isEmpty()) return ""

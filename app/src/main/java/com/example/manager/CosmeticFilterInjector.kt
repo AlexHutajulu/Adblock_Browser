@@ -160,23 +160,33 @@ object CosmeticFilterInjector {
             return
         }
 
+        val isAggressive = com.yourbrowser.adblock.CleanAdEngine.currentMode == com.yourbrowser.adblock.AdblockMode.AGGRESSIVE
+        if (!isAggressive && customSelectors.isEmpty()) {
+            // Solusi T3 & T5: Jangan injeksi filter kosmetik generik di mode BALANCED
+            return
+        }
+
         val rules = FilterListManager.getCachedRules()
         val safeSelectors = LinkedHashSet<String>()
-        safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS.filter { isSafeCssSelector(it) })
+        if (isAggressive) {
+            safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS.filter { isSafeCssSelector(it) })
+        }
 
         customSelectors.forEach { sel ->
-            if (AbpRuleEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
+            if (com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
                 safeSelectors.add(sel.trim())
             }
         }
 
-        // Per-domain cosmetic selectors from ABP rule engine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
-        rules?.ruleSet?.cosmetic?.selectorsFor(host)
-            ?.asSequence()
-            ?.filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
-            ?.filter { isSafeCssSelector(it) }
-            ?.take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
-            ?.forEach { safeSelectors.add(it.trim()) }
+        if (isAggressive) {
+            // Per-domain cosmetic selectors from CleanAdEngine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
+            rules?.ruleSet?.cosmetic?.selectorsFor(host)
+                ?.asSequence()
+                ?.filter { com.yourbrowser.adblock.CleanAdEngine.isSafeCosmeticSelector(it) }
+                ?.filter { isSafeCssSelector(it) }
+                ?.take(com.yourbrowser.adblock.CleanAdEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+                ?.forEach { safeSelectors.add(it.trim()) }
+        }
 
         if (safeSelectors.isEmpty()) return
 

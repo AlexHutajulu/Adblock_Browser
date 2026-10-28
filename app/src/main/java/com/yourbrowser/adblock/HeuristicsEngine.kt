@@ -346,7 +346,7 @@ object HeuristicsEngine {
         host: String,
         lowerUrl: String,
         isFirstParty: Boolean,
-        resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.SCRIPT
+        resType: CleanAdEngine.ResourceType = CleanAdEngine.ResourceType.SCRIPT
     ): String? {
         val cleanHost = host.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
         if (cleanHost.isEmpty()) return null
@@ -361,8 +361,8 @@ object HeuristicsEngine {
         // 2. Kata kunci gambling di host
         if (isGamblingHost(cleanHost)) return "heuristic-gambling"
         // 3. Pola path iklan di URL lengkap (hanya SCRIPT dan SUBDOCUMENT)
-        if (resType != com.example.manager.AbpRuleEngine.ResourceType.SCRIPT &&
-            resType != com.example.manager.AbpRuleEngine.ResourceType.SUBDOCUMENT
+        if (resType != CleanAdEngine.ResourceType.SCRIPT &&
+            resType != CleanAdEngine.ResourceType.SUBDOCUMENT
         ) {
             return null
         }
