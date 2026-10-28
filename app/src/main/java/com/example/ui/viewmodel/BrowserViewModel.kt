@@ -330,15 +330,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _isPipMode = MutableStateFlow(false)
     val isPipMode = _isPipMode.asStateFlow()
 
-    private val _isFullscreen = MutableStateFlow(false)
-    val isFullscreen = _isFullscreen.asStateFlow()
-
-    private val _isImmersivePageFullscreen = MutableStateFlow(false)
-    val isImmersivePageFullscreen = _isImmersivePageFullscreen.asStateFlow()
-
-    private val _fullScreenToolSignal = MutableStateFlow(0L)
-    val fullScreenToolSignal = _fullScreenToolSignal.asStateFlow()
-
     private val _isAppPaused = MutableStateFlow(false)
     val isAppPaused = _isAppPaused.asStateFlow()
 
@@ -348,36 +339,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setPipMode(enabled: Boolean) {
         _isPipMode.value = enabled
-    }
-
-    fun setFullscreen(enabled: Boolean) {
-        _isFullscreen.value = enabled
-    }
-
-    fun setImmersivePageFullscreen(enabled: Boolean) {
-        _isImmersivePageFullscreen.value = enabled
-    }
-
-    fun requestFullScreenToolToggle() {
-        _fullScreenToolSignal.value = System.currentTimeMillis()
-    }
-
-    fun triggerFullScreenTool(
-        webView: android.webkit.WebView?,
-        onFeedback: ((String) -> Unit)? = null
-    ) {
-        if (webView == null) {
-            val next = !_isImmersivePageFullscreen.value
-            _isImmersivePageFullscreen.value = next
-            onFeedback?.invoke(if (next) "Mode Full Screen Aktif" else "Keluar dari Full Screen")
-            return
-        }
-        com.example.manager.CustomJsToolbarManager.executeRawJsInWebView(
-            webView = webView,
-            rawJsCode = com.example.manager.CustomJsToolbarManager.UPGRADED_FULLSCREEN_SCRIPT,
-            scriptLabel = "Full Screen",
-            onResult = onFeedback
-        )
     }
 
     private val _devToolsStates = MutableStateFlow<Map<String, DevToolsState>>(emptyMap())

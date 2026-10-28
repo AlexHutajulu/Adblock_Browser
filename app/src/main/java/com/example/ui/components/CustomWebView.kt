@@ -59,8 +59,6 @@ fun CustomWebView(
     trackerBlockEnabled: Boolean,
     webViewPool: MutableMap<String, WebView>,
     onFileChooser: (ValueCallback<Array<Uri>>?, WebChromeClient.FileChooserParams?) -> Unit,
-    onFullscreenView: ((android.view.View, WebChromeClient.CustomViewCallback) -> Unit)? = null,
-    onHideFullscreenView: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -549,21 +547,6 @@ fun CustomWebView(
                                 viewModel.verifyAndSelectZapperElement(cleanToken, cleanSelector, cleanTag)
                             }
                         }
-
-                        @android.webkit.JavascriptInterface
-                        fun setImmersiveFullscreen(enabled: Boolean) {
-                            // Exiting fullscreen is always permitted; entering immersive fullscreen
-                            // requires an active fullscreen session or recent user Full Screen tool invocation
-                            val now = System.currentTimeMillis()
-                            val recentToolTrigger = (now - viewModel.fullScreenToolSignal.value) < 15_000L
-                            if (enabled && !recentToolTrigger && !viewModel.isImmersivePageFullscreen.value) {
-                                Log.w(TAG, "Blocked unprompted setImmersiveFullscreen(true) from web content")
-                                return
-                            }
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                viewModel.setImmersivePageFullscreen(enabled)
-                            }
-                        }
                         
                         @android.webkit.JavascriptInterface
                         fun onWebRtcBlocked(url: String) {
@@ -837,7 +820,6 @@ fun CustomWebView(
                                                 }
                                             }
                                         });
-                                        var lastTimeSyncMs = 0;
                                         function resolveMediaArtworkUrl(activeMedia) {
                                             try {
                                                 // 1. Standard W3C MediaSession API artwork (YouTube, Spotify, SoundCloud, Apple Music, etc.)
@@ -912,13 +894,7 @@ fun CustomWebView(
                                         document.addEventListener('ended', syncMediaState, true);
                                         document.addEventListener('loadedmetadata', syncMediaState, true);
                                         document.addEventListener('durationchange', syncMediaState, true);
-                                        document.addEventListener('timeupdate', function() {
-                                            var now = Date.now();
-                                            if (now - lastTimeSyncMs > 2500) {
-                                                lastTimeSyncMs = now;
-                                                syncMediaState();
-                                            }
-                                        }, true);
+                                        document.addEventListener('seeked', syncMediaState, true);
                                         window.addEventListener('yt-navigate-finish', function() {
                                             setTimeout(syncMediaState, 600);
                                         });
@@ -1483,17 +1459,11 @@ fun CustomWebView(
                         }
 
                         override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
-                            if (view != null && callback != null) {
-                                viewModel.setFullscreen(true)
-                                onFullscreenView?.invoke(view, callback)
-                            } else {
-                                super.onShowCustomView(view, callback)
-                            }
+                            // Full screen feature disabled: immediately release custom view callback so video continues inline
+                            callback?.onCustomViewHidden()
                         }
 
                         override fun onHideCustomView() {
-                            viewModel.setFullscreen(false)
-                            onHideFullscreenView?.invoke()
                             super.onHideCustomView()
                         }
                     }
@@ -1669,12 +1639,6 @@ fun CustomWebView(
             if (webView.settings.domStorageEnabled != expectedDomStorage) {
                 webView.settings.domStorageEnabled = expectedDomStorage
             }
-
-            val shouldAllowThirdPartyCookies = !tab.isPrivate &&
-                privacyShieldMode != com.example.manager.PrivacyShieldMode.STRICT
-            val cookieManager = CookieManager.getInstance()
-            cookieManager.setAcceptCookie(true)
-            cookieManager.setAcceptThirdPartyCookies(webView, shouldAllowThirdPartyCookies)
 
             val expectedCacheMode = when {
                 tab.isPrivate -> WebSettings.LOAD_NO_CACHE

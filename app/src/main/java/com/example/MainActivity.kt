@@ -14,9 +14,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -198,14 +201,22 @@ class MainActivity : AppCompatActivity() {
                             }
                             NavigationRoute.BROWSER, NavigationRoute.SETTINGS -> {
                                 androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
-                                    BrowserScreen(
-                                        viewModel = viewModel,
-                                        onFileChooser = { filePathCallback, fileChooserParams ->
-                                            handleWebViewFileChooser(filePathCallback, fileChooserParams)
-                                        },
-                                        onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS }
-                                    )
-                                    
+                                    androidx.compose.foundation.layout.Box(
+                                        modifier = if (currentRoute == NavigationRoute.SETTINGS) {
+                                            Modifier.size(1.dp).alpha(0f)
+                                        } else {
+                                            Modifier.fillMaxSize()
+                                        }
+                                    ) {
+                                        BrowserScreen(
+                                            viewModel = viewModel,
+                                            onFileChooser = { filePathCallback, fileChooserParams ->
+                                                handleWebViewFileChooser(filePathCallback, fileChooserParams)
+                                            },
+                                            onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS }
+                                        )
+                                    }
+
                                     if (currentRoute == NavigationRoute.SETTINGS) {
                                         SettingsScreen(
                                             viewModel = viewModel,
@@ -231,16 +242,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (viewModel.isFullscreen.value) {
-            // Optional: check if API >= 26
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                try {
-                    enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to enter PIP onUserLeaveHint: ${e.message}")
-                }
-            }
-        }
     }
 
     override fun onPause() {

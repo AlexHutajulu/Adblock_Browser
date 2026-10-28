@@ -110,9 +110,6 @@ fun BrowserScreen(
     var showFindInPage by remember { mutableStateOf(false) }
     var findInPageQuery by remember { mutableStateOf("") }
 
-    var nativeFullscreenView by remember { mutableStateOf<android.view.View?>(null) }
-    var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
-
     val isPipMode by viewModel.isPipMode.collectAsState()
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
 
@@ -137,40 +134,8 @@ fun BrowserScreen(
     val tabSecurityThreats by viewModel.tabSecurityThreats.collectAsState()
     val activeTabThreat = tabSecurityThreats[activeTab.id]
 
-    // Hardware Accelerometer / Gravity Tilt Sensor Monitor (Real-Time Portrait/Landscape Tilt Detection)
     val deviceTiltState by viewModel.deviceTiltState.collectAsState()
     val smartTiltDismissedQuadrant by viewModel.smartTiltDismissedQuadrant.collectAsState()
-    DisposableEffect(context) {
-        val orientationListener = object : android.view.OrientationEventListener(
-            context,
-            android.hardware.SensorManager.SENSOR_DELAY_NORMAL
-        ) {
-            override fun onOrientationChanged(orientation: Int) {
-                if (orientation == ORIENTATION_UNKNOWN) {
-                    viewModel.updateDeviceTilt(-1, canDetectOrientation())
-                } else {
-                    viewModel.updateDeviceTilt(orientation, true)
-                }
-            }
-        }
-        val canDetect = try {
-            orientationListener.canDetectOrientation()
-        } catch (_: Exception) {
-            false
-        }
-        if (canDetect) {
-            try {
-                orientationListener.enable()
-            } catch (_: Exception) {}
-        } else {
-            viewModel.updateDeviceTilt(-1, false)
-        }
-        onDispose {
-            try {
-                orientationListener.disable()
-            } catch (_: Exception) {}
-        }
-    }
 
     // Screen Orientation follows the user's system device rotation setting directly.
     // If system auto-rotate is OFF, device stays locked; if ON, it rotates naturally.
@@ -192,31 +157,6 @@ fun BrowserScreen(
     val zapperPreviewSelector by viewModel.zapperPreviewSelector.collectAsState()
     val zapperPreviewTag by viewModel.zapperPreviewTag.collectAsState()
     val hibernateSignal by viewModel.hibernateInactiveTabsSignal.collectAsState()
-    val isImmersivePageFullscreen by viewModel.isImmersivePageFullscreen.collectAsState()
-    val fullScreenToolSignal by viewModel.fullScreenToolSignal.collectAsState()
-
-    LaunchedEffect(fullScreenToolSignal) {
-        if (fullScreenToolSignal <= 0L) return@LaunchedEffect
-        val wv = webViewPool[activeTab.id]
-        viewModel.triggerFullScreenTool(wv) { msg ->
-            if (msg.isNotBlank() && msg != "null") {
-                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    // Immersive System Bars Controller for Full Screen Tool & HTML5 Fullscreen
-    LaunchedEffect(isImmersivePageFullscreen, nativeFullscreenView) {
-        val window = hostActivity?.window ?: return@LaunchedEffect
-        val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-        if (isImmersivePageFullscreen || nativeFullscreenView != null) {
-            insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            insetsController.systemBarsBehavior =
-                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        } else {
-            insetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-        }
-    }
 
     val showDolbyDialog by viewModel.showDolbyDialog.collectAsState()
     val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
@@ -234,14 +174,7 @@ fun BrowserScreen(
     androidx.activity.compose.BackHandler(enabled = true) {
         val webView = webViewPool[activeTabId]
 
-        if (nativeFullscreenView != null || isImmersivePageFullscreen) {
-            customViewCallback?.onCustomViewHidden()
-            nativeFullscreenView = null
-            customViewCallback = null
-            viewModel.setFullscreen(false)
-            viewModel.setImmersivePageFullscreen(false)
-            webView?.evaluateJavascript("if(window.__kiwiExitFs) window.__kiwiExitFs();", null)
-        } else if (isElementZapperActive) {
+        if (isElementZapperActive) {
             viewModel.setElementZapperActive(false)
         } else if (showExtensionsHub) {
             viewModel.setExtensionsHubVisible(false)
@@ -629,16 +562,6 @@ fun BrowserScreen(
                     findInPageQuery = ""
                     showFindInPage = false
                 },
-                onFullscreenView = { view, callback ->
-                    nativeFullscreenView = view
-                    customViewCallback = callback
-                    viewModel.setFullscreen(true)
-                },
-                onHideFullscreenView = {
-                    nativeFullscreenView = null
-                    customViewCallback = null
-                    viewModel.setFullscreen(false)
-                },
                 addressBarFocusRequester = addressBarFocusRequester,
                 onAddressFocusChanged = { isAddressBarFocused = it }
             )
@@ -647,7 +570,7 @@ fun BrowserScreen(
                 containerColor = containerBg,
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 bottomBar = {
-                    if (!isTablet && !isImmersivePageFullscreen) {
+                    if (!isTablet) {
                         ChromeMobileBottomBar(
                             viewModel = viewModel,
                             activeTab = activeTab,
@@ -710,103 +633,101 @@ fun BrowserScreen(
                             .fillMaxSize()
                             .weight(1f)
                     ) {
-                        if (!isImmersivePageFullscreen) {
-                            if (isTablet) {
-                                TabletHorizontalTabBar(viewModel, tabs, activeTabId)
-                            }
+                        if (isTablet) {
+                            TabletHorizontalTabBar(viewModel, tabs, activeTabId)
+                        }
 
-                            if (showFindInPage) {
-                                ChromeFindInPageBar(
-                                    query = findInPageQuery,
-                                    onQueryChange = { q ->
-                                        findInPageQuery = q
-                                        val wv = webViewPool[activeTab.id]
-                                        if (q.isNotBlank()) wv?.findAllAsync(q) else wv?.clearMatches()
-                                    },
-                                    onFindPrev = { webViewPool[activeTab.id]?.findNext(false) },
-                                    onFindNext = { webViewPool[activeTab.id]?.findNext(true) },
-                                    onClose = {
-                                        webViewPool[activeTab.id]?.clearMatches()
-                                        findInPageQuery = ""
-                                        showFindInPage = false
+                        if (showFindInPage) {
+                            ChromeFindInPageBar(
+                                query = findInPageQuery,
+                                onQueryChange = { q ->
+                                    findInPageQuery = q
+                                    val wv = webViewPool[activeTab.id]
+                                    if (q.isNotBlank()) wv?.findAllAsync(q) else wv?.clearMatches()
+                                },
+                                onFindPrev = { webViewPool[activeTab.id]?.findNext(false) },
+                                onFindNext = { webViewPool[activeTab.id]?.findNext(true) },
+                                onClose = {
+                                    webViewPool[activeTab.id]?.clearMatches()
+                                    findInPageQuery = ""
+                                    showFindInPage = false
+                                }
+                            )
+                        } else {
+                            TabletOrMobileToolbar(
+                                isTablet = isTablet,
+                                activeTab = activeTab,
+                                tabsCount = tabs.size,
+                                addressInput = addressInput,
+                                onAddressValueChange = { addressInput = it },
+                                onSearchSubmit = {
+                                    if (addressInput.isNotBlank()) {
+                                        viewModel.navigateTo(addressInput.trim())
+                                        focusManager.clearFocus()
                                     }
-                                )
-                            } else {
-                                TabletOrMobileToolbar(
-                                    isTablet = isTablet,
-                                    activeTab = activeTab,
-                                    tabsCount = tabs.size,
-                                    addressInput = addressInput,
-                                    onAddressValueChange = { addressInput = it },
-                                    onSearchSubmit = {
-                                        if (addressInput.isNotBlank()) {
-                                            viewModel.navigateTo(addressInput.trim())
-                                            focusManager.clearFocus()
-                                        }
-                                    },
-                                    isUrlInsecure = isUrlInsecure,
-                                    isCurrentUrlBookmarked = isCurrentUrlBookmarked,
-                                    showTabsDialog = showTabsDialog,
-                                    showBookmarks = showBookmarks,
-                                    showHistory = showHistory,
-                                    pageBlockedCount = pageBlockedCount,
-                                    bookmarks = bookmarks,
-                                    history = history,
-                                    onClearAddressInput = { addressInput = "" },
-                                    onToggleBookmark = {
-                                        viewModel.toggleBookmark(activeTab.title, activeTab.url)
-                                        val msg = if (isCurrentUrlBookmarked) "Bookmark removed" else "Bookmarked"
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    },
-                                    onToggleTabsSidebar = {
-                                        if (showTabsDialog) {
-                                            viewModel.setTabsDialogVisible(false)
-                                        } else {
-                                            viewModel.setBookmarksVisible(false)
-                                            viewModel.setHistoryVisible(false)
-                                            viewModel.setTabsDialogVisible(true)
-                                        }
-                                    },
-                                    onToggleBookmarksSidebar = {
-                                        if (showBookmarks) {
-                                            viewModel.setBookmarksVisible(false)
-                                        } else {
-                                            viewModel.setTabsDialogVisible(false)
-                                            viewModel.setHistoryVisible(false)
-                                            viewModel.setBookmarksVisible(true)
-                                        }
-                                    },
-                                    onToggleHistorySidebar = {
-                                        if (showHistory) {
-                                            viewModel.setHistoryVisible(false)
-                                        } else {
-                                            viewModel.setTabsDialogVisible(false)
-                                            viewModel.setBookmarksVisible(false)
-                                            viewModel.setHistoryVisible(true)
-                                        }
-                                    },
-                                    onNavigateToSettings = onNavigateToSettings,
-                                    onShowShield = { showShieldDialog = true },
-                                    onShowSecurityDashboard = { showSecurityDashboard = true },
-                                    onOpenFindInPage = { showFindInPage = true },
-                                    context = context,
-                                    viewModel = viewModel,
-                                    addressBarFocusRequester = addressBarFocusRequester,
-                                    onAddressFocusChanged = { isAddressBarFocused = it }
-                                )
-                            }
+                                },
+                                isUrlInsecure = isUrlInsecure,
+                                isCurrentUrlBookmarked = isCurrentUrlBookmarked,
+                                showTabsDialog = showTabsDialog,
+                                showBookmarks = showBookmarks,
+                                showHistory = showHistory,
+                                pageBlockedCount = pageBlockedCount,
+                                bookmarks = bookmarks,
+                                history = history,
+                                onClearAddressInput = { addressInput = "" },
+                                onToggleBookmark = {
+                                    viewModel.toggleBookmark(activeTab.title, activeTab.url)
+                                    val msg = if (isCurrentUrlBookmarked) "Bookmark removed" else "Bookmarked"
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                },
+                                onToggleTabsSidebar = {
+                                    if (showTabsDialog) {
+                                        viewModel.setTabsDialogVisible(false)
+                                    } else {
+                                        viewModel.setBookmarksVisible(false)
+                                        viewModel.setHistoryVisible(false)
+                                        viewModel.setTabsDialogVisible(true)
+                                    }
+                                },
+                                onToggleBookmarksSidebar = {
+                                    if (showBookmarks) {
+                                        viewModel.setBookmarksVisible(false)
+                                    } else {
+                                        viewModel.setTabsDialogVisible(false)
+                                        viewModel.setHistoryVisible(false)
+                                        viewModel.setBookmarksVisible(true)
+                                    }
+                                },
+                                onToggleHistorySidebar = {
+                                    if (showHistory) {
+                                        viewModel.setHistoryVisible(false)
+                                    } else {
+                                        viewModel.setTabsDialogVisible(false)
+                                        viewModel.setBookmarksVisible(false)
+                                        viewModel.setHistoryVisible(true)
+                                    }
+                                },
+                                onNavigateToSettings = onNavigateToSettings,
+                                onShowShield = { showShieldDialog = true },
+                                onShowSecurityDashboard = { showSecurityDashboard = true },
+                                onOpenFindInPage = { showFindInPage = true },
+                                context = context,
+                                viewModel = viewModel,
+                                addressBarFocusRequester = addressBarFocusRequester,
+                                onAddressFocusChanged = { isAddressBarFocused = it }
+                            )
+                        }
 
-                            // Top Position: Chrome Scrollable Shortcut & Custom JS Bar
-                            if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
-                                ChromeShortcutAndJsBar(
-                                    viewModel = viewModel,
-                                    activeTab = activeTab,
-                                    activeWebView = webViewPool[activeTab.id],
-                                    isIncognito = isIncognito,
-                                    onOpenFindInPage = { showFindInPage = true },
-                                    onOpenSecurityShield = { showSecurityDashboard = true }
-                                )
-                            }
+                        // Top Position: Chrome Scrollable Shortcut & Custom JS Bar
+                        if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
+                            ChromeShortcutAndJsBar(
+                                viewModel = viewModel,
+                                activeTab = activeTab,
+                                activeWebView = webViewPool[activeTab.id],
+                                isIncognito = isIncognito,
+                                onOpenFindInPage = { showFindInPage = true },
+                                onOpenSecurityShield = { showSecurityDashboard = true }
+                            )
                         }
 
                         // Chrome thin 2dp progress bar
@@ -869,17 +790,7 @@ fun BrowserScreen(
                                             adBlockEnabled = adBlockEnabled,
                                             trackerBlockEnabled = trackerBlockEnabled,
                                             webViewPool = webViewPool,
-                                            onFileChooser = onFileChooser,
-                                            onFullscreenView = { view, callback ->
-                                                nativeFullscreenView = view
-                                                customViewCallback = callback
-                                                viewModel.setFullscreen(true)
-                                            },
-                                            onHideFullscreenView = {
-                                                nativeFullscreenView = null
-                                                customViewCallback = null
-                                                viewModel.setFullscreen(false)
-                                            }
+                                            onFileChooser = onFileChooser
                                         )
                                     }
                                 }
@@ -920,7 +831,7 @@ fun BrowserScreen(
                         }
 
                         // Tablet Bottom Position: Chrome Scrollable Shortcut & Custom JS Bar (Mobile renders it inside ChromeMobileBottomBar)
-                        if (isTablet && !isImmersivePageFullscreen && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM) {
+                        if (isTablet && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM) {
                             HorizontalDivider(
                                 thickness = 0.5.dp,
                                 color = if (isIncognito) Color.White.copy(alpha = 0.1f)
@@ -1049,64 +960,6 @@ fun BrowserScreen(
                 activeUrl = activeTab.url,
                 onDismiss = { viewModel.setExtensionsHubVisible(false) }
             )
-        }
-
-        // Top-level HTML5 / Video Custom Fullscreen Overlay (keeps CustomWebView mounted underneath so DOM fullscreen never detaches)
-        if (nativeFullscreenView != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-            ) {
-                androidx.compose.ui.viewinterop.AndroidView(
-                    factory = {
-                        val v = nativeFullscreenView!!
-                        (v.parent as? android.view.ViewGroup)?.removeView(v)
-                        v
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                val contextActivity = context as? android.app.Activity
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        IconButton(
-                            onClick = {
-                                try {
-                                    contextActivity?.enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                                } catch (_: Exception) {}
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PictureInPicture,
-                                contentDescription = "Enter Picture in Picture",
-                                tint = Color.White
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = {
-                            customViewCallback?.onCustomViewHidden()
-                            nativeFullscreenView = null
-                            customViewCallback = null
-                            viewModel.setFullscreen(false)
-                            viewModel.setImmersivePageFullscreen(false)
-                            webViewPool[activeTab.id]?.evaluateJavascript("if(window.__kiwiExitFs) window.__kiwiExitFs();", null)
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.FullscreenExit,
-                            contentDescription = "Exit Full Screen",
-                            tint = Color.White
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -2249,25 +2102,6 @@ fun TabletOrMobileToolbar(
                         )
 
                         val currentOrientation by viewModel.screenOrientationMode.collectAsState()
-                        val isImmersiveFsMenu by viewModel.isImmersivePageFullscreen.collectAsState()
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (isImmersiveFsMenu) stringResource(R.string.menu_fullscreen_exit)
-                                    else stringResource(R.string.menu_fullscreen_enter)
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    if (isImmersiveFsMenu) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                showOverflowMenu = false
-                                viewModel.requestFullScreenToolToggle()
-                            }
-                        )
 
                         DropdownMenuItem(
                             text = {
@@ -3828,15 +3662,12 @@ fun DesktopBrowserLayout(
     onFindQueryChange: (String) -> Unit,
     onFindNext: (Boolean) -> Unit,
     onCloseFindInPage: () -> Unit,
-    onFullscreenView: (android.view.View, WebChromeClient.CustomViewCallback) -> Unit,
-    onHideFullscreenView: () -> Unit,
     addressBarFocusRequester: FocusRequester,
     onAddressFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
-    val isImmersiveDesktopFs by viewModel.isImmersivePageFullscreen.collectAsState()
     val isIncognitoDesktop = activeTab.isPrivate
     val desktopFrameBg = if (isIncognitoDesktop) ChromeIncognitoBg else MaterialTheme.colorScheme.surfaceContainerLowest
     val isSidebarOpen = showTabsDialog || showBookmarks || showHistory
@@ -3873,77 +3704,72 @@ fun DesktopBrowserLayout(
         modifier = modifier
             .fillMaxSize()
             .background(desktopFrameBg)
-            .then(
-                if (isImmersiveDesktopFs) Modifier
-                else Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-            )
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
     ) {
-        if (!isImmersiveDesktopFs) {
-            // Tier 1: Structured Desktop Window Header & Tab Strip
-            DesktopTabBar(
-                viewModel = viewModel,
-                tabs = tabs,
-                activeTabId = activeTab.id,
-                isSidebarOpen = isSidebarOpen,
-                onToggleSidebar = toggleTabsAction
+        // Tier 1: Structured Desktop Window Header & Tab Strip
+        DesktopTabBar(
+            viewModel = viewModel,
+            tabs = tabs,
+            activeTabId = activeTab.id,
+            isSidebarOpen = isSidebarOpen,
+            onToggleSidebar = toggleTabsAction
+        )
+
+        // Tier 2: Structured Desktop Navigation, Omnibox & Action Dock
+        if (showFindInPage) {
+            ChromeFindInPageBar(
+                query = findInPageQuery,
+                onQueryChange = onFindQueryChange,
+                onFindPrev = { onFindNext(false) },
+                onFindNext = { onFindNext(true) },
+                onClose = onCloseFindInPage
             )
-
-            // Tier 2: Structured Desktop Navigation, Omnibox & Action Dock
-            if (showFindInPage) {
-                ChromeFindInPageBar(
-                    query = findInPageQuery,
-                    onQueryChange = onFindQueryChange,
-                    onFindPrev = { onFindNext(false) },
-                    onFindNext = { onFindNext(true) },
-                    onClose = onCloseFindInPage
-                )
-            } else {
-                DesktopToolbar(
-                    viewModel = viewModel,
-                    activeTab = activeTab,
-                    addressInput = addressInput,
-                    onAddressValueChange = onAddressInputChanged,
-                    onSearchSubmit = {
-                        if (addressInput.isNotBlank()) {
-                            viewModel.navigateTo(addressInput.trim())
-                            focusManager.clearFocus()
-                        }
-                    },
-                    isUrlInsecure = isUrlInsecure,
-                    isCurrentUrlBookmarked = isCurrentUrlBookmarked,
-                    showBookmarks = showBookmarks,
-                    showHistory = showHistory,
-                    showTabs = showTabsDialog,
-                    pageBlockedCount = pageBlockedCount,
-                    onToggleBookmarks = toggleBookmarksAction,
-                    onToggleHistory = toggleHistoryAction,
-                    onToggleTabs = toggleTabsAction,
-                    onNavigateToSettings = onNavigateToSettings,
-                    onShowShield = onShowShield,
-                    onShowSecurityDashboard = onShowSecurityDashboard,
-                    onOpenFindInPage = onOpenFindInPage,
-                    context = context,
-                    addressBarFocusRequester = addressBarFocusRequester,
-                    onAddressFocusChanged = onAddressFocusChanged
-                )
-            }
-
-            // Tier 3: Structured Desktop Bookmarks & Quick Workspace Tools Bar
-            DesktopBookmarkBar(
+        } else {
+            DesktopToolbar(
                 viewModel = viewModel,
-                bookmarks = bookmarks,
-                tabsCount = tabs.size,
-                isSidebarOpen = isSidebarOpen,
-                onToggleSidebar = toggleTabsAction
+                activeTab = activeTab,
+                addressInput = addressInput,
+                onAddressValueChange = onAddressInputChanged,
+                onSearchSubmit = {
+                    if (addressInput.isNotBlank()) {
+                        viewModel.navigateTo(addressInput.trim())
+                        focusManager.clearFocus()
+                    }
+                },
+                isUrlInsecure = isUrlInsecure,
+                isCurrentUrlBookmarked = isCurrentUrlBookmarked,
+                showBookmarks = showBookmarks,
+                showHistory = showHistory,
+                showTabs = showTabsDialog,
+                pageBlockedCount = pageBlockedCount,
+                onToggleBookmarks = toggleBookmarksAction,
+                onToggleHistory = toggleHistoryAction,
+                onToggleTabs = toggleTabsAction,
+                onNavigateToSettings = onNavigateToSettings,
+                onShowShield = onShowShield,
+                onShowSecurityDashboard = onShowSecurityDashboard,
+                onOpenFindInPage = onOpenFindInPage,
+                context = context,
+                addressBarFocusRequester = addressBarFocusRequester,
+                onAddressFocusChanged = onAddressFocusChanged
             )
         }
+
+        // Tier 3: Structured Desktop Bookmarks & Quick Workspace Tools Bar
+        DesktopBookmarkBar(
+            viewModel = viewModel,
+            bookmarks = bookmarks,
+            tabsCount = tabs.size,
+            isSidebarOpen = isSidebarOpen,
+            onToggleSidebar = toggleTabsAction
+        )
 
         val shortcutBarVisible by viewModel.shortcutBarVisible.collectAsState()
         val shortcutBarPosition by viewModel.shortcutBarPosition.collectAsState()
         val tabSecurityThreats by viewModel.tabSecurityThreats.collectAsState()
         val activeDesktopThreat = tabSecurityThreats[activeTab.id]
 
-        if (!isImmersiveDesktopFs && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
+        if (shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.TOP) {
             ChromeShortcutAndJsBar(
                 viewModel = viewModel,
                 activeTab = activeTab,
@@ -4077,9 +3903,7 @@ fun DesktopBrowserLayout(
                                     adBlockEnabled = adBlockEnabled,
                                     trackerBlockEnabled = trackerBlockEnabled,
                                     webViewPool = webViewPool,
-                                    onFileChooser = onFileChooser,
-                                    onFullscreenView = onFullscreenView,
-                                    onHideFullscreenView = onHideFullscreenView
+                                    onFileChooser = onFileChooser
                                 )
                             }
                         }
@@ -4223,7 +4047,7 @@ fun DesktopBrowserLayout(
         }
 
         AnimatedVisibility(
-            visible = !isImmersiveDesktopFs && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
+            visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
             enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
             exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
         ) {
@@ -4582,7 +4406,6 @@ fun DesktopToolbar(
     val enabledExtCount = remember(extensionsList) { extensionsList.count { it.isEnabled } }
     val currentOrientation by viewModel.screenOrientationMode.collectAsState()
     val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
-    val isImmersiveFsDesktop by viewModel.isImmersivePageFullscreen.collectAsState()
     val isIncognito = activeTab.isPrivate
     val toolbarBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
     val omniboxBg = if (isIncognito) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainer
@@ -4856,21 +4679,6 @@ fun DesktopToolbar(
                             }
                         }
 
-                        // 1-Tap Full Screen Tool Button
-                        IconButton(
-                            onClick = { viewModel.requestFullScreenToolToggle() },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .testTag("desktop_fullscreen_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isImmersiveFsDesktop) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
-                                contentDescription = "Full Screen",
-                                tint = if (isImmersiveFsDesktop) accentTint else subTint,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
                         // 1-Tap Shortcut Bar Toggle on Desktop Toolbar
                         val isDesktopShortcutVisible by viewModel.shortcutBarVisible.collectAsState()
                         if (!isCompactDesktop) {
@@ -5014,14 +4822,6 @@ fun DesktopToolbar(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(if (isImmersiveFsDesktop) stringResource(R.string.menu_fullscreen_exit) else stringResource(R.string.menu_fullscreen_enter)) },
-                                    leadingIcon = { Icon(if (isImmersiveFsDesktop) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen, null) },
-                                    onClick = {
-                                        showDesktopOverflowMenu = false
-                                        viewModel.requestFullScreenToolToggle()
-                                    }
-                                )
-                                DropdownMenuItem(
                                     text = { Text(stringResource(R.string.menu_desktop_site)) },
                                     leadingIcon = { Icon(Icons.Outlined.PhoneAndroid, null) },
                                     onClick = {
@@ -5143,7 +4943,6 @@ fun DesktopBookmarkBar(
     val enabledQuickLinks = remember(quickLinks) {
         quickLinks.filter { it.enabled }.sortedBy { it.position }
     }
-    val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
     var editingLink by remember { mutableStateOf<com.example.manager.QuickLink?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
 
@@ -5294,41 +5093,6 @@ fun DesktopBookmarkBar(
                         fontSize = 11.sp,
                         color = contentTint,
                         fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                val fsPillInteraction = remember { MutableInteractionSource() }
-                Row(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .interactiveLiquidGlass(
-                            shape = RoundedCornerShape(999.dp),
-                            isActive = isImmersiveFs,
-                            isIncognito = isIncognito,
-                            elevation = 2.dp,
-                            interactionSource = fsPillInteraction
-                        )
-                        .clip(RoundedCornerShape(999.dp))
-                        .clickable(
-                            interactionSource = fsPillInteraction,
-                            indication = ripple(),
-                            onClick = { viewModel.requestFullScreenToolToggle() }
-                        )
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
-                        contentDescription = null,
-                        tint = accentTint,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Full Screen",
-                        fontSize = 11.sp,
-                        color = contentTint,
-                        fontWeight = FontWeight.Medium
                     )
                 }
 

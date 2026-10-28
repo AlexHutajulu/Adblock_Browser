@@ -139,13 +139,11 @@ fun HomeScreen(
             ),
             label = "home_entrance_y"
         )
-        val heroPulseTransition = rememberInfiniteTransition(label = "hero_pulse")
-        val heroScale by heroPulseTransition.animateFloat(
-            initialValue = 0.98f,
-            targetValue = 1.03f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 2200, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
+        val heroScale by animateFloatAsState(
+            targetValue = if (hasEntered) 1.0f else 0.92f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMediumLow
             ),
             label = "hero_scale"
         )

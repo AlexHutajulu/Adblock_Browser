@@ -226,31 +226,35 @@ class AdBlockTest {
     }
 
     @Test
-    fun testUpgradedFullScreenToolRegistrationAndScript() {
-        val fsScript = com.example.manager.CustomJsToolbarManager.UPGRADED_FULLSCREEN_SCRIPT
-        assertTrue("Script must support multi-vendor requestFullscreen", fsScript.contains("requestFullscreen") && fsScript.contains("webkitRequestFullscreen"))
-        assertTrue("Script must integrate with native AlexBrowserNative bridge", fsScript.contains("AlexBrowserNative") && fsScript.contains("setImmersiveFullscreen"))
-        assertTrue("Script must provide auto-hiding exit button and Escape handler", fsScript.contains("__kiwi_fs_exit") && fsScript.contains("__kiwiExitFs"))
-
+    fun testFullScreenRemovedAndBuiltInShortcutsWork() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val shortcuts = com.example.manager.CustomJsToolbarManager.getEnabledBuiltInShortcuts(context)
         assertFalse(
-            "FULLSCREEN_PAGE shortcut must be disabled by default (default off)",
-            shortcuts.contains(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
+            "ROTATE_SCREEN shortcut must be disabled by default (default off)",
+            shortcuts.contains(com.example.manager.BuiltInShortcut.ROTATE_SCREEN.id)
         )
-        // Verify user can explicitly enable it and state persists
+        // Verify user can explicitly enable ROTATE_SCREEN and state persists, while legacy fullscreen_page is filtered out
         com.example.manager.CustomJsToolbarManager.setEnabledBuiltInShortcuts(
             context,
-            setOf(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
+            setOf(com.example.manager.BuiltInShortcut.ROTATE_SCREEN.id, "fullscreen_page")
+        )
+        val savedShortcuts = com.example.manager.CustomJsToolbarManager.getEnabledBuiltInShortcuts(context)
+        assertTrue(
+            "ROTATE_SCREEN shortcut is enabled when saved",
+            savedShortcuts.contains(com.example.manager.BuiltInShortcut.ROTATE_SCREEN.id)
+        )
+        assertFalse(
+            "Legacy fullscreen_page shortcut must be filtered out",
+            savedShortcuts.contains("fullscreen_page")
+        )
+        val loadedScripts = com.example.manager.CustomJsToolbarManager.loadScripts(context)
+        assertFalse(
+            "Full screen template tpl_fullscreen_kiwi_pro must be completely removed",
+            loadedScripts.any { it.id == "tpl_fullscreen_kiwi_pro" }
         )
         assertTrue(
-            "FULLSCREEN_PAGE shortcut is enabled when saved",
-            com.example.manager.CustomJsToolbarManager.getEnabledBuiltInShortcuts(context)
-                .contains(com.example.manager.BuiltInShortcut.FULLSCREEN_PAGE.id)
-        )
-        assertTrue(
-            "Default JS scripts must include tpl_fullscreen_kiwi_pro",
-            com.example.manager.CustomJsToolbarManager.loadScripts(context).any { it.id == "tpl_fullscreen_kiwi_pro" }
+            "Default JS scripts must include tpl_smart_dark_mode",
+            loadedScripts.any { it.id == "tpl_smart_dark_mode" }
         )
     }
 

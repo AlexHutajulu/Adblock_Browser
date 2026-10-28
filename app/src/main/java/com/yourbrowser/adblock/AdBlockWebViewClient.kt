@@ -1394,8 +1394,10 @@ class AdBlockWebViewClient(
   if(window.__AlexYTSkip) return;
   window.__AlexYTSkip=true;
   var busy=false;
-  function skip(){
-    if(busy) return;
+  var timer=null;
+  function runSkip(){
+    timer=null;
+    if(busy||document.hidden) return;
     busy=true;
     try{
       var b=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button');
@@ -1405,13 +1407,18 @@ class AdBlockWebViewClient(
       var ad=document.querySelector('.ad-showing,.ytp-ad-player-overlay,.ytp-ad-simple-ad-badge,.ytp-ad-text');
       var v=ad?document.querySelector('video'):null;
       if(v&&isFinite(v.duration)&&v.duration>0){v.muted=true;v.currentTime=Math.max(v.duration-0.1,0);}
-      document.querySelectorAll('ytd-promoted-sparkles-web-renderer,ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,#player-ads,#masthead-ad').forEach(function(n){n.remove();});
+      var slots=document.querySelectorAll('ytd-promoted-sparkles-web-renderer,ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,#player-ads,#masthead-ad');
+      for(var i=0;i<slots.length;i++){slots[i].remove();}
     }catch(e){}
     busy=false;
   }
-  skip();
+  function skip(){
+    if(timer||document.hidden) return;
+    timer=setTimeout(runSkip,650);
+  }
+  runSkip();
   new MutationObserver(function(){skip();})
-    .observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+    .observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()
 
@@ -1422,6 +1429,7 @@ class AdBlockWebViewClient(
   if(window.__asVAK) return;
   try{Object.defineProperty(window,'__asVAK',{value:true,enumerable:false,configurable:false});}catch(e){window.__asVAK=true;}
   var AGG=${aggressive};
+  var IS_STREAMING=/(^|\.)(youtube\.com|youtu\.be|spotify\.com|twitch\.tv|soundcloud\.com|netflix\.com)$/i.test(location.hostname||'');
 
   var GAMBLING=['arab777','slot gacor','slot online','casino online',
     'judi online','togel online','betting online','daftar slot',
@@ -1499,6 +1507,7 @@ class AdBlockWebViewClient(
   }
 
   function step2(){
+    if(IS_STREAMING) return;
     try{['iframe','img'].forEach(function(t){
       document.querySelectorAll(t+'[src]').forEach(function(el){
         if(isIAB(el)&&hasGambling(el)&&!isProtected(el)){
@@ -1510,6 +1519,7 @@ class AdBlockWebViewClient(
   }
 
   function step3(){
+    if(IS_STREAMING) return;
     try{document.querySelectorAll('div,section,aside').forEach(function(el){
       if(el.children.length>30) return;
       if(isIAB(el)&&hasGambling(el)&&!isProtected(el)) hide(el);
@@ -1517,7 +1527,7 @@ class AdBlockWebViewClient(
   }
 
   function step4(){
-    if(!AGG) return;
+    if(!AGG||IS_STREAMING) return;
     try{document.querySelectorAll('div,section').forEach(function(el){
       if(isFixedOverlay(el)&&hasGambling(el)&&!isProtected(el)) hide(el);
     });}catch(e){}
@@ -1536,8 +1546,10 @@ class AdBlockWebViewClient(
   new MutationObserver(function(){
     if(pending||document.hidden) return;
     pending=true;
-    var sched=window.requestIdleCallback||function(cb){setTimeout(cb,450);};
-    sched(function(){pending=false;runAll();});
+    setTimeout(function(){
+      var sched=window.requestIdleCallback||function(cb){setTimeout(cb,150);};
+      sched(function(){pending=false;runAll();});
+    },1800);
   }).observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()

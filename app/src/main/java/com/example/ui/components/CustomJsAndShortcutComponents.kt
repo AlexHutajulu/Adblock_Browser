@@ -99,7 +99,6 @@ fun ChromeShortcutAndJsBar(
     val customScripts by viewModel.customJsScripts.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val displayMode by viewModel.displayMode.collectAsState()
-    val isImmersiveFs by viewModel.isImmersivePageFullscreen.collectAsState()
     val tiltState by viewModel.deviceTiltState.collectAsState()
 
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
@@ -141,26 +140,6 @@ fun ChromeShortcutAndJsBar(
                     testTag = "shortcut_dolby_control",
                     onClick = { viewModel.setDolbyDialogVisible(true) }
                 )
-
-                // 0b. Full Screen Immersive Tool Pill (1-tap Kiwi/Chrome Full Screen)
-                if (enabledShortcuts.contains(BuiltInShortcut.FULLSCREEN_PAGE.id)) {
-                    ShortcutActionPill(
-                        label = if (isImmersiveFs) "Keluar Full Screen" else "Full Screen",
-                        icon = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
-                        isHighlighted = isImmersiveFs,
-                        containerColor = if (isImmersiveFs) accentColor.copy(alpha = 0.2f) else chipBg,
-                        contentColor = if (isImmersiveFs) accentColor else chipContent,
-                        borderColor = if (isImmersiveFs) accentColor.copy(alpha = 0.6f) else null,
-                        testTag = "shortcut_fullscreen_page",
-                        onClick = {
-                            viewModel.triggerFullScreenTool(activeWebView) { msg ->
-                                if (msg.isNotBlank() && msg != "null") {
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    )
-                }
 
                 // Chrome Extensions Hub & External Importer Pill
                 val enabledExtCount = remember(extensions) { extensions.count { it.isEnabled } }

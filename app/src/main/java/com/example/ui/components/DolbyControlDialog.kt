@@ -210,13 +210,11 @@ fun DolbyAnimatedWaveBadge(
     isActive: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "dolby_wave")
-    val pulse by infiniteTransition.animateFloat(
-        initialValue = 0.88f,
-        targetValue = if (isActive) 1.08f else 0.92f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
+    val pulse by animateFloatAsState(
+        targetValue = if (isActive) 1.04f else 0.94f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
         ),
         label = "dolby_pulse"
     )
@@ -225,8 +223,8 @@ fun DolbyAnimatedWaveBadge(
         modifier = modifier
             .size(44.dp)
             .graphicsLayer {
-                scaleX = if (isActive) pulse else 1f
-                scaleY = if (isActive) pulse else 1f
+                scaleX = pulse
+                scaleY = pulse
             }
             .clip(CircleShape)
             .background(

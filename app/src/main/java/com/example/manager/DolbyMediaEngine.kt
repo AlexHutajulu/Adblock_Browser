@@ -15,6 +15,8 @@ import android.os.Build
 import android.util.Log
 import android.view.Display
 import android.webkit.WebView
+import java.util.WeakHashMap
+import java.util.concurrent.Executors
 
 enum class DolbyAtmosProfile(val title: String, val subtitle: String) {
     DYNAMIC(
@@ -76,8 +78,8 @@ data class DolbyDeviceCapabilities(
             hasHardwareDolbyAtmosCodec -> "Didukung (Hardware Decoder Dolby E-AC3-JOC / AC-4)"
             hasSystemDolbyDspEffect -> "Didukung (System Dolby Audio DSP)"
             hasSystemSpatializer -> "Didukung (Android Native 3D Spatializer)"
-            hasAndroidDynamicsProcessing -> "Kompatibel via Mesin DSP Multi-Band & WebAudio 3D"
-            else -> "Mode Mesin Spatial WebAudio 3D Aktif"
+            hasAndroidDynamicsProcessing -> "Didukung via Hardware DSP Multi-Band Android"
+            else -> "Mode Audio Hardware Offload Stabil Aktif"
         }
 
     val visionHardwareBadge: String
@@ -96,9 +98,19 @@ object DolbyMediaEngine {
     @Volatile
     private var cachedCapabilities: DolbyDeviceCapabilities? = null
 
+    private val dspExecutor = Executors.newSingleThreadExecutor()
+
+    @Volatile
+    private var lastAppliedAtmosEnabled: Boolean? = null
+
+    @Volatile
+    private var lastAppliedAtmosProfile: DolbyAtmosProfile? = null
+
     private var dynamicsProcessing: DynamicsProcessing? = null
     private var virtualizer: Virtualizer? = null
     private var bassBoost: BassBoost? = null
+
+    private val webViewStateCache = WeakHashMap<WebView, String>()
 
     /**
      * Mendeteksi kemampuan hardware perangkat secara nyata melalui MediaCodecList,
@@ -178,7 +190,7 @@ object DolbyMediaEngine {
 
         // 2. Periksa efek DSP Audio bawaan sistem (Dolby DAP / Spatial / DynamicsProcessing)
         var hasDolbyDsp = false
-        var hasDynamicsProc = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        val hasDynamicsProc = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
         try {
             val descriptors = AudioEffect.queryEffects()
             if (descriptors != null) {
@@ -208,9 +220,8 @@ object DolbyMediaEngine {
         }
 
         if (hasDynamicsProc) {
-            audioCaps.add("Android Multi-Band DynamicsProcessing DSP")
+            audioCaps.add("Android Hardware DynamicsProcessing DSP (Zero-Glitch Offload)")
         }
-        audioCaps.add("WebAudio 3D Surround Spatial Matrix")
 
         // 4. Periksa kemampuan layar HDR / Dolby Vision / Wide Color Gamut
         var hasDolbyVisionDisplay = false
@@ -262,7 +273,7 @@ object DolbyMediaEngine {
         if (hasHdr10Codec) {
             hasHdr10OrWcgDisplay = true
         }
-        videoCaps.add("Dolby Vision PQ Tone-Mapping & SVG Color Engine")
+        videoCaps.add("Dolby Vision PQ Tone-Mapping Hardware Compositor")
 
         val result = DolbyDeviceCapabilities(
             hasHardwareDolbyAtmosCodec = hasAtmosCodec,
@@ -281,97 +292,106 @@ object DolbyMediaEngine {
     }
 
     /**
-     * Mengaktifkan atau mematikan pemrosesan audio DSP Android (AudioManager parameters + DynamicsProcessing / Virtualizer)
+     * Mengaktifkan atau mematikan pemrosesan audio DSP Android pada background thread
+     * tanpa menyentuh HAL routing yang memicu bunyi "brtt" dan tanpa membajak stream WebAudio.
      */
-    @Synchronized
     fun applyNativeDolbyAtmosState(
         context: Context,
         enabled: Boolean,
         profile: DolbyAtmosProfile
     ) {
-        try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            if (enabled) {
-                val profileParam = profile.name.lowercase()
-                am?.setParameters("dolby_enabled=true;dolby_profile=$profileParam;spatial_audio_enabled=true")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    try {
-                        if (dynamicsProcessing == null) {
-                            val config = DynamicsProcessing.Config.Builder(
-                                DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                                2,
-                                true, 5,
-                                false, 0,
-                                true, 5,
-                                true
-                            ).build()
-                            dynamicsProcessing = DynamicsProcessing(0, 0, config)
+        if (lastAppliedAtmosEnabled == enabled && lastAppliedAtmosProfile == profile) {
+            return
+        }
+        lastAppliedAtmosEnabled = enabled
+        lastAppliedAtmosProfile = profile
+
+        dspExecutor.execute {
+            synchronized(this) {
+                try {
+                    if (enabled) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            try {
+                                if (dynamicsProcessing == null) {
+                                    val config = DynamicsProcessing.Config.Builder(
+                                        DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                                        2,
+                                        true, 5,
+                                        false, 0,
+                                        false, 0,
+                                        true
+                                    ).build()
+                                    dynamicsProcessing = DynamicsProcessing(0, 0, config)
+                                }
+                                val dp = dynamicsProcessing
+                                if (dp != null) {
+                                    // Headroom-safe studio gain values (mencegah clipping/suara pecah "brtt")
+                                    val bassGain = when (profile) {
+                                        DolbyAtmosProfile.MOVIE -> 2.4f
+                                        DolbyAtmosProfile.DYNAMIC -> 2.0f
+                                        DolbyAtmosProfile.MUSIC -> 1.8f
+                                        DolbyAtmosProfile.VOICE -> 0.4f
+                                    }
+                                    val voiceGain = when (profile) {
+                                        DolbyAtmosProfile.VOICE -> 2.6f
+                                        DolbyAtmosProfile.MOVIE -> 1.8f
+                                        DolbyAtmosProfile.DYNAMIC -> 1.5f
+                                        DolbyAtmosProfile.MUSIC -> 1.2f
+                                    }
+                                    val trebleGain = when (profile) {
+                                        DolbyAtmosProfile.MUSIC -> 2.2f
+                                        DolbyAtmosProfile.MOVIE -> 2.0f
+                                        DolbyAtmosProfile.DYNAMIC -> 1.8f
+                                        DolbyAtmosProfile.VOICE -> 0.8f
+                                    }
+                                    dp.setInputGainAllChannelsTo(-1.5f)
+                                    val preEq = dp.getPreEqByChannelIndex(0)
+                                    if (preEq != null && preEq.bandCount >= 5) {
+                                        preEq.getBand(0)?.apply { isEnabled = true; gain = bassGain }
+                                        preEq.getBand(1)?.apply { isEnabled = true; gain = bassGain * 0.6f }
+                                        preEq.getBand(2)?.apply { isEnabled = true; gain = voiceGain }
+                                        preEq.getBand(3)?.apply { isEnabled = true; gain = voiceGain * 0.8f }
+                                        preEq.getBand(4)?.apply { isEnabled = true; gain = trebleGain }
+                                        dp.setPreEqAllChannelsTo(preEq)
+                                    }
+                                    if (!dp.enabled) {
+                                        dp.enabled = true
+                                    }
+                                }
+                            } catch (_: Throwable) {
+                                try {
+                                    if (virtualizer == null) virtualizer = Virtualizer(0, 0)
+                                    virtualizer?.setStrength(if (profile == DolbyAtmosProfile.MOVIE) 650.toShort() else 500.toShort())
+                                    if (virtualizer?.enabled == false) virtualizer?.enabled = true
+                                    if (bassBoost == null) bassBoost = BassBoost(0, 0)
+                                    bassBoost?.setStrength(if (profile == DolbyAtmosProfile.VOICE) 150.toShort() else 400.toShort())
+                                    if (bassBoost?.enabled == false) bassBoost?.enabled = true
+                                } catch (_: Throwable) {}
+                            }
                         }
-                        val dp = dynamicsProcessing
-                        if (dp != null) {
-                            val bassGain = when (profile) {
-                                DolbyAtmosProfile.MOVIE -> 4.8f
-                                DolbyAtmosProfile.DYNAMIC -> 3.8f
-                                DolbyAtmosProfile.MUSIC -> 3.2f
-                                DolbyAtmosProfile.VOICE -> 1.0f
-                            }
-                            val voiceGain = when (profile) {
-                                DolbyAtmosProfile.VOICE -> 4.5f
-                                DolbyAtmosProfile.MOVIE -> 3.2f
-                                DolbyAtmosProfile.DYNAMIC -> 2.5f
-                                DolbyAtmosProfile.MUSIC -> 1.8f
-                            }
-                            val trebleGain = when (profile) {
-                                DolbyAtmosProfile.MUSIC -> 4.0f
-                                DolbyAtmosProfile.MOVIE -> 3.6f
-                                DolbyAtmosProfile.DYNAMIC -> 3.2f
-                                DolbyAtmosProfile.VOICE -> 1.5f
-                            }
-                            val preEq = dp.getPreEqByChannelIndex(0)
-                            if (preEq != null && preEq.bandCount >= 5) {
-                                preEq.getBand(0)?.apply { isEnabled = true; gain = bassGain }
-                                preEq.getBand(1)?.apply { isEnabled = true; gain = bassGain * 0.6f }
-                                preEq.getBand(2)?.apply { isEnabled = true; gain = voiceGain }
-                                preEq.getBand(3)?.apply { isEnabled = true; gain = voiceGain * 0.8f }
-                                preEq.getBand(4)?.apply { isEnabled = true; gain = trebleGain }
-                                dp.setPreEqAllChannelsTo(preEq)
-                            }
-                            dp.enabled = true
-                        }
-                    } catch (_: Throwable) {
-                        // Fallback ke Virtualizer + BassBoost jika session 0 dibatasi OEM
+                    } else {
                         try {
-                            if (virtualizer == null) virtualizer = Virtualizer(0, 0)
-                            virtualizer?.setStrength(if (profile == DolbyAtmosProfile.MOVIE) 900.toShort() else 750.toShort())
-                            virtualizer?.enabled = true
-                            if (bassBoost == null) bassBoost = BassBoost(0, 0)
-                            bassBoost?.setStrength(if (profile == DolbyAtmosProfile.VOICE) 250.toShort() else 650.toShort())
-                            bassBoost?.enabled = true
+                            dynamicsProcessing?.enabled = false
+                            dynamicsProcessing?.release()
                         } catch (_: Throwable) {}
+                        dynamicsProcessing = null
+
+                        try {
+                            virtualizer?.enabled = false
+                            virtualizer?.release()
+                        } catch (_: Throwable) {}
+                        virtualizer = null
+
+                        try {
+                            bassBoost?.enabled = false
+                            bassBoost?.release()
+                        } catch (_: Throwable) {}
+                        bassBoost = null
                     }
+                } catch (e: Exception) {
+                    Log.w(TAG, "applyNativeDolbyAtmosState error: ${e.message}")
                 }
-            } else {
-                am?.setParameters("dolby_enabled=false;spatial_audio_enabled=false")
-                try {
-                    dynamicsProcessing?.enabled = false
-                    dynamicsProcessing?.release()
-                } catch (_: Throwable) {}
-                dynamicsProcessing = null
-
-                try {
-                    virtualizer?.enabled = false
-                    virtualizer?.release()
-                } catch (_: Throwable) {}
-                virtualizer = null
-
-                try {
-                    bassBoost?.enabled = false
-                    bassBoost?.release()
-                } catch (_: Throwable) {}
-                bassBoost = null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "applyNativeDolbyAtmosState error: ${e.message}")
         }
     }
 
@@ -401,9 +421,9 @@ object DolbyMediaEngine {
     }
 
     /**
-     * Menyuntikkan dan memperbarui mesin Dolby Atmos (WebAudio 3D Spatial + Multi-Band EQ + DynamicsCompressor)
-     * dan Dolby Vision (PQ HDR Tone-Mapping SVG ColorMatrix + CSS Video Filter + MediaCapabilities HDR Polyfill)
-     * secara langsung ke dalam WebView secara real-time (bisa dinyalakan & dimatikan kapan saja).
+     * Menyuntikkan dukungan stream Dolby Atmos & Dolby Vision pada WebView
+     * TANPA membajak elemen <video>/<audio> ke dalam WebAudio (sehingga audio 100% menggunakan
+     * jalur Hardware AudioTrack Offload Android yang bebas bunyi "brtt", hemat baterai, dan dingin).
      */
     fun syncWebViewDolbyState(
         webView: WebView?,
@@ -413,6 +433,13 @@ object DolbyMediaEngine {
         visionMode: DolbyVisionMode
     ) {
         if (webView == null) return
+        val stateSignature = "${webView.url}|$atmosEnabled|${atmosProfile.name}|$visionEnabled|${visionMode.name}"
+        synchronized(webViewStateCache) {
+            if (webViewStateCache[webView] == stateSignature) {
+                return
+            }
+            webViewStateCache[webView] = stateSignature
+        }
         val script = buildWebViewDolbyEngineScript(
             atmosEnabled = atmosEnabled,
             atmosProfile = atmosProfile,
@@ -432,29 +459,10 @@ object DolbyMediaEngine {
         visionEnabled: Boolean,
         visionMode: DolbyVisionMode
     ): String {
-        val bassDb = when (atmosProfile) {
-            DolbyAtmosProfile.MOVIE -> 5.2
-            DolbyAtmosProfile.DYNAMIC -> 4.2
-            DolbyAtmosProfile.MUSIC -> 3.6
-            DolbyAtmosProfile.VOICE -> 1.0
-        }
-        val presenceDb = when (atmosProfile) {
-            DolbyAtmosProfile.VOICE -> 4.8
-            DolbyAtmosProfile.MOVIE -> 3.4
-            DolbyAtmosProfile.DYNAMIC -> 2.8
-            DolbyAtmosProfile.MUSIC -> 2.2
-        }
-        val airDb = when (atmosProfile) {
-            DolbyAtmosProfile.MUSIC -> 4.4
-            DolbyAtmosProfile.MOVIE -> 3.8
-            DolbyAtmosProfile.DYNAMIC -> 3.5
-            DolbyAtmosProfile.VOICE -> 1.6
-        }
-
         val cssFilterValue = when (visionMode) {
-            DolbyVisionMode.VIVID -> "contrast(1.10) saturate(1.22) brightness(1.04)"
-            DolbyVisionMode.CINEMA -> "contrast(1.13) saturate(1.12) brightness(1.01)"
-            DolbyVisionMode.BRIGHT -> "contrast(1.08) saturate(1.16) brightness(1.09)"
+            DolbyVisionMode.VIVID -> "contrast(1.08) saturate(1.18) brightness(1.03)"
+            DolbyVisionMode.CINEMA -> "contrast(1.10) saturate(1.10) brightness(1.01)"
+            DolbyVisionMode.BRIGHT -> "contrast(1.06) saturate(1.14) brightness(1.07)"
         }
 
         return """
@@ -463,15 +471,12 @@ object DolbyMediaEngine {
         window.__alexDolbyState = {
             atmosEnabled: $atmosEnabled,
             atmosProfile: '${atmosProfile.name}',
-            bassDb: $bassDb,
-            presenceDb: $presenceDb,
-            airDb: $airDb,
             visionEnabled: $visionEnabled,
             visionMode: '${visionMode.name}',
             cssFilter: '$cssFilterValue'
         };
 
-        // 1. Polyfill MediaCapabilities, MediaSource & matchMedia untuk dukungan stream Dolby Atmos & Dolby Vision HDR
+        // 1. Polyfill MediaSource & matchMedia untuk negosiasi stream Dolby Atmos & Dolby Vision HDR
         if (!window.__alexDolbyPolyfillInstalled) {
             window.__alexDolbyPolyfillInstalled = true;
             var origIsTypeSupported = (window.MediaSource && window.MediaSource.isTypeSupported)
@@ -518,7 +523,7 @@ object DolbyMediaEngine {
             }
         }
 
-        // 2. Dolby Vision Real-Time Video HDR Engine (Bisa Dinyalakan & Dimatikan Seketika)
+        // 2. Dolby Vision Real-Time Video HDR Engine (Ringan & Tanpa Memaksa Re-Layout)
         var styleEl = document.getElementById('__alex_dolby_vision_style');
         if (window.__alexDolbyState.visionEnabled) {
             if (!styleEl) {
@@ -526,117 +531,15 @@ object DolbyMediaEngine {
                 styleEl.id = '__alex_dolby_vision_style';
                 (document.head || document.documentElement).appendChild(styleEl);
             }
-            styleEl.textContent = 'video { filter: ' + window.__alexDolbyState.cssFilter + ' !important; transition: filter 0.25s ease !important; will-change: filter; }';
+            var nextCss = 'video { filter: ' + window.__alexDolbyState.cssFilter + ' !important; }';
+            if (styleEl.textContent !== nextCss) {
+                styleEl.textContent = nextCss;
+            }
         } else {
             if (styleEl) {
                 styleEl.textContent = '';
                 styleEl.remove();
             }
-            document.querySelectorAll('video').forEach(function(v) {
-                if (v.style && v.style.filter) {
-                    v.style.filter = '';
-                }
-            });
-        }
-
-        // 3. Dolby Atmos 3D WebAudio Engine (Bisa Dinyalakan & Dimatikan Seketika)
-        function applyAtmosToMediaElement(mediaEl) {
-            if (!mediaEl) return;
-            var st = window.__alexDolbyState;
-            if (!st) return;
-
-            // Jika node sudah terpasang pada elemen media ini, cukup perbarui gain filter sesuai status ON/OFF
-            if (mediaEl.__alexAtmosNodes) {
-                try {
-                    var nodes = mediaEl.__alexAtmosNodes;
-                    var now = nodes.ctx.currentTime || 0;
-                    if (st.atmosEnabled) {
-                        nodes.lowShelf.gain.setTargetAtTime(st.bassDb, now, 0.04);
-                        nodes.presence.gain.setTargetAtTime(st.presenceDb, now, 0.04);
-                        nodes.air.gain.setTargetAtTime(st.airDb, now, 0.04);
-                        nodes.compressor.threshold.setTargetAtTime(-19, now, 0.04);
-                        nodes.compressor.ratio.setTargetAtTime(3.2, now, 0.04);
-                    } else {
-                        // Bypass murni 0 dB saat Dolby Atmos dimatikan
-                        nodes.lowShelf.gain.setTargetAtTime(0, now, 0.03);
-                        nodes.presence.gain.setTargetAtTime(0, now, 0.03);
-                        nodes.air.gain.setTargetAtTime(0, now, 0.03);
-                        nodes.compressor.threshold.setTargetAtTime(0, now, 0.03);
-                        nodes.compressor.ratio.setTargetAtTime(1.0, now, 0.03);
-                    }
-                    if (nodes.ctx.state === 'suspended' && !mediaEl.paused) {
-                        nodes.ctx.resume().catch(function(){});
-                    }
-                } catch(e) {}
-                return;
-            }
-
-            if (!st.atmosEnabled) return;
-
-            try {
-                var AudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (!AudioCtx) return;
-                if (!window.__alexSharedAudioCtx) {
-                    window.__alexSharedAudioCtx = new AudioCtx();
-                }
-                var ctx = window.__alexSharedAudioCtx;
-                var source = ctx.createMediaElementSource(mediaEl);
-
-                var lowShelf = ctx.createBiquadFilter();
-                lowShelf.type = 'lowshelf';
-                lowShelf.frequency.value = 68;
-                lowShelf.gain.value = st.bassDb;
-
-                var presence = ctx.createBiquadFilter();
-                presence.type = 'peaking';
-                presence.frequency.value = 2750;
-                presence.Q.value = 1.05;
-                presence.gain.value = st.presenceDb;
-
-                var air = ctx.createBiquadFilter();
-                air.type = 'highshelf';
-                air.frequency.value = 10200;
-                air.gain.value = st.airDb;
-
-                var compressor = ctx.createDynamicsCompressor();
-                compressor.threshold.value = -19;
-                compressor.knee.value = 18;
-                compressor.ratio.value = 3.2;
-                compressor.attack.value = 0.005;
-                compressor.release.value = 0.18;
-
-                source.connect(lowShelf);
-                lowShelf.connect(presence);
-                presence.connect(air);
-                air.connect(compressor);
-                compressor.connect(ctx.destination);
-
-                mediaEl.__alexAtmosNodes = {
-                    ctx: ctx,
-                    source: source,
-                    lowShelf: lowShelf,
-                    presence: presence,
-                    air: air,
-                    compressor: compressor
-                };
-
-                if (ctx.state === 'suspended' && !mediaEl.paused) {
-                    ctx.resume().catch(function(){});
-                }
-            } catch(e) {
-                // Abaikan jika elemen media lintas-origin membatasi WebAudio
-            }
-        }
-
-        document.querySelectorAll('video, audio').forEach(applyAtmosToMediaElement);
-
-        if (!window.__alexDolbyPlayListenerInstalled) {
-            window.__alexDolbyPlayListenerInstalled = true;
-            document.addEventListener('play', function(e) {
-                if (e && e.target && (e.target.tagName === 'VIDEO' || e.target.tagName === 'AUDIO')) {
-                    applyAtmosToMediaElement(e.target);
-                }
-            }, true);
         }
     } catch(err) {}
 })();

@@ -127,8 +127,8 @@ class LayoutAndDefaultOffTest {
 
         val oldScripts = listOf(
             CustomToolbarScript(
-                id = "tpl_fullscreen_kiwi_pro",
-                name = "Full Screen",
+                id = "tpl_smart_dark_mode",
+                name = "Dark Mode",
                 jsCode = "// code",
                 isEnabled = true,
                 isBuiltInTemplate = true
@@ -144,7 +144,7 @@ class LayoutAndDefaultOffTest {
         CustomJsToolbarManager.saveScripts(context, oldScripts)
 
         val migrated = CustomJsToolbarManager.loadScripts(context)
-        val builtInTpl = migrated.firstOrNull { it.id == "tpl_fullscreen_kiwi_pro" }
+        val builtInTpl = migrated.firstOrNull { it.id == "tpl_smart_dark_mode" }
         val userScript = migrated.firstOrNull { it.id == "custom_user_script_1" }
 
         assertTrue("Built-in template should exist", builtInTpl != null)

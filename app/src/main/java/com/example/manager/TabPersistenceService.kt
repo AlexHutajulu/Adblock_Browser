@@ -171,6 +171,12 @@ object BackgroundMediaController {
         return out
     }
 
+    @Volatile
+    private var lastSyncedPositionMs: Long = 0L
+
+    @Volatile
+    private var lastSyncTimeMs: Long = 0L
+
     fun updateMediaMetadata(
         context: Context,
         webView: WebView?,
@@ -206,10 +212,20 @@ object BackgroundMediaController {
             ""
         }
 
+        val nowMs = System.currentTimeMillis()
+        val expectedPosMs = if (this.isPlaying && lastSyncTimeMs > 0L) {
+            lastSyncedPositionMs + (nowMs - lastSyncTimeMs)
+        } else {
+            lastSyncedPositionMs
+        }
+        val seekDetected = kotlin.math.abs(posMs - expectedPosMs) > 6000L && (nowMs - lastSyncTimeMs) > 1500L
+        val durationChanged = durMs > 0L && kotlin.math.abs(durMs - this.durationMs) > 2000L
+
         val stateChanged = (this.isPlaying != playing) ||
             (this.currentTitle != cleanTitle) ||
             (this.currentArtist != cleanArtist) ||
-            (this.currentArtworkUrl != finalArtworkUrl)
+            (this.currentArtworkUrl != finalArtworkUrl) ||
+            durationChanged
 
         this.isPlaying = playing
         this.currentTitle = cleanTitle
@@ -218,7 +234,9 @@ object BackgroundMediaController {
         this.positionMs = posMs
         this.durationMs = durMs
 
-        if (playing || stateChanged) {
+        if (stateChanged || seekDetected) {
+            lastSyncedPositionMs = posMs
+            lastSyncTimeMs = nowMs
             TabPersistenceService.syncMediaSession(
                 context = context,
                 isPlaying = playing,
@@ -414,6 +432,12 @@ class TabPersistenceService : Service() {
     private var mediaSession: MediaSession? = null
     private var cachedFallbackArtwork: Bitmap? = null
     private var isNotificationShown = false
+    private var lastNotifiedPlaying: Boolean? = null
+    private var lastNotifiedTitle: String = ""
+    private var lastNotifiedArtist: String = ""
+    private var lastNotifiedArtworkUrl: String = ""
+    private var lastNotifiedArtworkBitmap: Bitmap? = null
+    private var lastNotifiedDurationMs: Long = -1L
 
     override fun onCreate() {
         super.onCreate()
@@ -562,22 +586,35 @@ class TabPersistenceService : Service() {
                 }
             }
 
-            val metadataBuilder = MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
-                .putString(MediaMetadata.METADATA_KEY_ALBUM, artist)
-                .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, resolvedArtwork)
-                .putBitmap(MediaMetadata.METADATA_KEY_ART, resolvedArtwork)
-                .putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, resolvedArtwork)
-            if (durationMs > 0L) {
-                metadataBuilder.putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs)
+            val metadataChanged = (lastNotifiedTitle != title) ||
+                (lastNotifiedArtist != artist) ||
+                (lastNotifiedArtworkUrl != artworkUrl) ||
+                (lastNotifiedArtworkBitmap !== resolvedArtwork) ||
+                (lastNotifiedDurationMs != durationMs)
+
+            if (metadataChanged) {
+                val metadataBuilder = MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                    .putString(MediaMetadata.METADATA_KEY_ALBUM, artist)
+                    .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, resolvedArtwork)
+                    .putBitmap(MediaMetadata.METADATA_KEY_ART, resolvedArtwork)
+                    .putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, resolvedArtwork)
+                if (durationMs > 0L) {
+                    metadataBuilder.putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs)
+                }
+                if (artworkUrl.isNotBlank()) {
+                    metadataBuilder.putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, artworkUrl)
+                    metadataBuilder.putString(MediaMetadata.METADATA_KEY_ART_URI, artworkUrl)
+                    metadataBuilder.putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, artworkUrl)
+                }
+                session.setMetadata(metadataBuilder.build())
+                lastNotifiedTitle = title
+                lastNotifiedArtist = artist
+                lastNotifiedArtworkUrl = artworkUrl
+                lastNotifiedArtworkBitmap = resolvedArtwork
+                lastNotifiedDurationMs = durationMs
             }
-            if (artworkUrl.isNotBlank()) {
-                metadataBuilder.putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, artworkUrl)
-                metadataBuilder.putString(MediaMetadata.METADATA_KEY_ART_URI, artworkUrl)
-                metadataBuilder.putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, artworkUrl)
-            }
-            session.setMetadata(metadataBuilder.build())
 
             val playbackState = PlaybackState.Builder()
                 .setActions(
@@ -597,18 +634,19 @@ class TabPersistenceService : Service() {
                 .build()
             session.setPlaybackState(playbackState)
 
-            val notification = buildHyperIslandMediaNotification(
-                session = session,
-                isPlaying = isPlaying,
-                title = title,
-                artist = artist,
-                artwork = resolvedArtwork
-            )
-
-            if (isPlaying || isNotificationShown) {
+            val shouldNotify = metadataChanged || (lastNotifiedPlaying != isPlaying) || !isNotificationShown
+            if (shouldNotify && (isPlaying || isNotificationShown)) {
+                val notification = buildHyperIslandMediaNotification(
+                    session = session,
+                    isPlaying = isPlaying,
+                    title = title,
+                    artist = artist,
+                    artwork = resolvedArtwork
+                )
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.notify(NOTIFICATION_ID, notification)
                 isNotificationShown = true
+                lastNotifiedPlaying = isPlaying
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update HyperIsland / One UI media notification: ${e.message}")
