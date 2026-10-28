@@ -124,7 +124,25 @@ fun ChromeShortcutAndJsBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // 0. Full Screen Immersive Tool Pill (1-tap Kiwi/Chrome Full Screen)
+                // 0. Dolby Atmos & Vision Pill
+                val dolbyAtmosActive by viewModel.dolbyAtmosEnabled.collectAsState()
+                val dolbyVisionActive by viewModel.dolbyVisionEnabled.collectAsState()
+                val isAnyDolbyActive = dolbyAtmosActive || dolbyVisionActive
+                ShortcutActionPill(
+                    label = if (dolbyAtmosActive && dolbyVisionActive) "Dolby Atmos • Vision"
+                    else if (dolbyAtmosActive) "Dolby Atmos"
+                    else if (dolbyVisionActive) "Dolby Vision"
+                    else "Dolby Off",
+                    icon = Icons.Outlined.SurroundSound,
+                    isHighlighted = isAnyDolbyActive,
+                    containerColor = if (isAnyDolbyActive) accentColor.copy(alpha = 0.2f) else chipBg,
+                    contentColor = if (isAnyDolbyActive) accentColor else chipContent,
+                    borderColor = if (isAnyDolbyActive) accentColor.copy(alpha = 0.6f) else null,
+                    testTag = "shortcut_dolby_control",
+                    onClick = { viewModel.setDolbyDialogVisible(true) }
+                )
+
+                // 0b. Full Screen Immersive Tool Pill (1-tap Kiwi/Chrome Full Screen)
                 if (enabledShortcuts.contains(BuiltInShortcut.FULLSCREEN_PAGE.id)) {
                     ShortcutActionPill(
                         label = if (isImmersiveFs) "Keluar Full Screen" else "Full Screen",
@@ -393,15 +411,25 @@ private fun ShortcutActionPill(
     testTag: String,
     onClick: () -> Unit
 ) {
-    Surface(
+    val pillInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pillShape = RoundedCornerShape(999.dp)
+    Box(
         modifier = Modifier
             .height(30.dp)
-            .clip(RoundedCornerShape(50))
-            .clickable(onClick = onClick)
+            .interactiveLiquidGlass(
+                shape = pillShape,
+                isActive = isHighlighted,
+                elevation = if (isHighlighted) 3.dp else 1.5.dp,
+                interactionSource = pillInteraction
+            )
+            .clip(pillShape)
+            .clickable(
+                interactionSource = pillInteraction,
+                indication = ripple(),
+                onClick = onClick
+            )
             .testTag(testTag),
-        shape = RoundedCornerShape(50),
-        color = containerColor,
-        border = if (borderColor != null) BorderStroke(1.dp, borderColor) else null
+        contentAlignment = Alignment.Center
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp),

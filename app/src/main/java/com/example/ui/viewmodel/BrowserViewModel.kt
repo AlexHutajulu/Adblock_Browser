@@ -55,6 +55,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val settings = SettingsManager(application)
     val permissionManager = PermissionManager(application)
 
+    var isColdStartCompleted = false
+
     data class PendingPermissionRequest(
         val url: String,
         val types: List<SitePermissionType>,
@@ -277,6 +279,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _liquidGlassEnabled = MutableStateFlow(settings.liquidGlassEnabled)
     val liquidGlassEnabled = _liquidGlassEnabled.asStateFlow()
 
+    private val _dolbyAtmosEnabled = MutableStateFlow(settings.dolbyAtmosEnabled)
+    val dolbyAtmosEnabled = _dolbyAtmosEnabled.asStateFlow()
+
+    private val _dolbyAtmosProfile = MutableStateFlow(settings.dolbyAtmosProfile)
+    val dolbyAtmosProfile = _dolbyAtmosProfile.asStateFlow()
+
+    private val _dolbyVisionEnabled = MutableStateFlow(settings.dolbyVisionEnabled)
+    val dolbyVisionEnabled = _dolbyVisionEnabled.asStateFlow()
+
+    private val _dolbyVisionMode = MutableStateFlow(settings.dolbyVisionMode)
+    val dolbyVisionMode = _dolbyVisionMode.asStateFlow()
+
+    private val _dolbyDeviceCapabilities = MutableStateFlow(
+        com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(application)
+    )
+    val dolbyDeviceCapabilities = _dolbyDeviceCapabilities.asStateFlow()
+
+    private val _showDolbyDialog = MutableStateFlow(false)
+    val showDolbyDialog = _showDolbyDialog.asStateFlow()
+
+    fun setDolbyDialogVisible(visible: Boolean) {
+        _showDolbyDialog.value = visible
+    }
+
     private val _quickLinks = MutableStateFlow(com.example.manager.QuickLinkStore.load(application))
     val quickLinks = _quickLinks.asStateFlow()
 
@@ -365,6 +391,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } catch (e: Exception) {
                 Log.w(TAG, "Filter list load failed: ${e.message}")
             }
+            try {
+                com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
+                    context = getApplication(),
+                    enabled = _dolbyAtmosEnabled.value,
+                    profile = _dolbyAtmosProfile.value
+                )
+            } catch (_: Exception) {}
         }
     }
 
@@ -932,8 +965,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isPrivate = isPrivate
         )
         _tabs.update { it + newTab }
-        _activeTabId.value = newTab.id
-        _showTabsDialog.value = false
+        _activeTabId.update { newTab.id }
+        _showTabsDialog.update { false }
 
         if (safeInitialUrl.isNotEmpty() && safeInitialUrl != "about:blank") {
             val host = com.example.manager.SecurityGuardEngine.extractHost(safeInitialUrl)
@@ -993,15 +1026,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         
         if (nonPrivateTabs.isEmpty()) {
             val newTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
-            _tabs.value = listOf(newTab)
-            _activeTabId.value = newTab.id
+            _tabs.update { listOf(newTab) }
+            _activeTabId.update { newTab.id }
             if (newTab.url.isNotEmpty()) {
                 _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(newTab.url)) }
             }
         } else {
-            _tabs.value = nonPrivateTabs
+            _tabs.update { nonPrivateTabs }
             if (_activeTabId.value !in _tabs.value.map { it.id }) {
-                _activeTabId.value = _tabs.value.last().id
+                _activeTabId.update { _tabs.value.last().id }
             }
         }
         if (privateTabIds.isNotEmpty()) {
@@ -1022,8 +1055,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         val privateTabs = _tabs.value.filter { it.isPrivate }
         val newTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
-        _tabs.value = privateTabs + newTab
-        _activeTabId.value = newTab.id
+        _tabs.update { privateTabs + newTab }
+        _activeTabId.update { newTab.id }
         saveCurrentTabsToPreferences()
     }
 
@@ -1042,8 +1075,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 title = "New Tab",
                 isPrivate = false
             )
-            _tabs.value = listOf(newTab)
-            _activeTabId.value = newTab.id
+            _tabs.update { listOf(newTab) }
+            _activeTabId.update { newTab.id }
             
             if (newTab.url.isNotEmpty()) {
                 _navigationActions.update { it + (newTab.id to NavigationAction.LoadUrl(newTab.url)) }
@@ -1056,10 +1089,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val updatedTabs = oldTabs.filter { it.id != tabId }
-        _tabs.value = updatedTabs
+        _tabs.update { updatedTabs }
 
         if (_activeTabId.value == tabId) {
-            _activeTabId.value = updatedTabs.last().id
+            _activeTabId.update { updatedTabs.last().id }
         }
         if (wasPrivate && updatedTabs.none { it.isPrivate }) {
             onAllPrivateTabsClosed()
@@ -1077,7 +1110,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 loadError = null
             )
             _tabs.update { it + restoredTab }
-            _activeTabId.value = newTabId
+            _activeTabId.update { newTabId }
             if (restoredTab.url.isNotBlank() && restoredTab.url != "about:blank") {
                 _navigationActions.update { it + (newTabId to NavigationAction.LoadUrl(restoredTab.url)) }
             }
@@ -1091,7 +1124,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val currentIndex = currentTabs.indexOfFirst { it.id == _activeTabId.value }
             if (currentIndex != -1) {
                 val nextIndex = (currentIndex + 1) % currentTabs.size
-                _activeTabId.value = currentTabs[nextIndex].id
+                _activeTabId.update { currentTabs[nextIndex].id }
                 saveCurrentTabsToPreferences()
             }
         }
@@ -1103,7 +1136,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val currentIndex = currentTabs.indexOfFirst { it.id == _activeTabId.value }
             if (currentIndex != -1) {
                 val prevIndex = if (currentIndex - 1 < 0) currentTabs.size - 1 else currentIndex - 1
-                _activeTabId.value = currentTabs[prevIndex].id
+                _activeTabId.update { currentTabs[prevIndex].id }
                 saveCurrentTabsToPreferences()
             }
         }
@@ -1115,8 +1148,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (it.id == tabId && it.isSuspended) it.copy(isSuspended = false) else it
             }
         }
-        _activeTabId.value = tabId
-        _showTabsDialog.value = false
+        _activeTabId.update { tabId }
+        _showTabsDialog.update { false }
         saveCurrentTabsToPreferences()
     }
 
@@ -1332,9 +1365,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun emergencyPrivacyReset() {
         // Clear all tabs except a blank secure new tab
         val privTab = BrowserTab(url = "", title = "Private Tab", isPrivate = true)
-        _tabs.value = listOf(privTab)
-        _activeTabId.value = privTab.id
-        _navigationActions.value = emptyMap()
+        _tabs.update { listOf(privTab) }
+        _activeTabId.update { privTab.id }
+        _navigationActions.update { emptyMap() }
         _closedTabs.clear()
         settings.clearPersistedTabs()
         
@@ -1396,6 +1429,45 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setLiquidGlassEnabled(enabled: Boolean) {
         settings.liquidGlassEnabled = enabled
         _liquidGlassEnabled.value = enabled
+    }
+
+    fun setDolbyAtmosEnabled(enabled: Boolean) {
+        settings.dolbyAtmosEnabled = enabled
+        _dolbyAtmosEnabled.value = enabled
+        com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
+            context = getApplication(),
+            enabled = enabled,
+            profile = _dolbyAtmosProfile.value
+        )
+    }
+
+    fun setDolbyAtmosProfile(profile: com.example.manager.DolbyAtmosProfile) {
+        settings.dolbyAtmosProfile = profile
+        _dolbyAtmosProfile.value = profile
+        if (_dolbyAtmosEnabled.value) {
+            com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
+                context = getApplication(),
+                enabled = true,
+                profile = profile
+            )
+        }
+    }
+
+    fun setDolbyVisionEnabled(enabled: Boolean) {
+        settings.dolbyVisionEnabled = enabled
+        _dolbyVisionEnabled.value = enabled
+    }
+
+    fun setDolbyVisionMode(mode: com.example.manager.DolbyVisionMode) {
+        settings.dolbyVisionMode = mode
+        _dolbyVisionMode.value = mode
+    }
+
+    fun refreshDolbyDeviceCapabilities() {
+        _dolbyDeviceCapabilities.value = com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(
+            context = getApplication(),
+            forceRefresh = true
+        )
     }
 
     fun addQuickLink(title: String, rawUrl: String): Boolean {
@@ -1499,7 +1571,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun clearCacheAndCookies(context: Context, closeTabs: Boolean = false) {
+    fun clearCacheAndCookies(context: Context, closeTabs: Boolean = true) {
         try {
             val tempWebView = android.webkit.WebView(context)
             tempWebView.clearCache(true)
@@ -1512,9 +1584,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (closeTabs) {
                 settings.clearPersistedTabs()
                 val defaultTab = BrowserTab(url = "", title = "New Tab", isPrivate = false)
-                _tabs.value = listOf(defaultTab)
-                _activeTabId.value = defaultTab.id
-                _showTabsDialog.value = false
+                _tabs.update { listOf(defaultTab) }
+                _activeTabId.update { defaultTab.id }
+                _showTabsDialog.update { false }
             }
 
             Log.d(TAG, "Cache, cookies & site storage cleared successfully (closeTabs=$closeTabs).")

@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,8 +40,12 @@ import com.example.manager.PrivacyShieldMode
 import com.example.ui.components.DeveloperAiAttributionSection
 import com.example.ui.components.SettingsDivider
 import com.example.ui.components.SettingsNavRow
+import com.example.ui.components.SettingsRangeSliderRow
 import com.example.ui.components.SettingsSection
+import com.example.ui.components.SettingsSliderRow
 import com.example.ui.components.SettingsSwitchRow
+import com.example.ui.theme.LiquidGlassRadioButton
+import com.example.ui.theme.interactiveLiquidGlass
 import com.example.ui.viewmodel.BrowserViewModel
 
 enum class SettingsCategory(val titleRes: Int, val icon: ImageVector) {
@@ -270,6 +276,12 @@ fun SettingsScreen(
 
     @Composable
     fun renderAppearanceSection() {
+        val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
+        var adaptiveZoomBounds by remember(desktopZoomScale) {
+            val minBound = (desktopZoomScale - 25).coerceIn(50, 150).toFloat()
+            val maxBound = (desktopZoomScale + 25).coerceIn(100, 200).toFloat()
+            mutableStateOf(minBound..maxBound)
+        }
         SettingsSection(title = stringResource(R.string.settings_section_appearance)) {
             SettingsNavRow(
                 title = stringResource(R.string.pref_theme_title),
@@ -302,6 +314,30 @@ fun SettingsScreen(
                 onClick = { showDisplayModeDialog = true }
             )
             SettingsDivider()
+            SettingsSliderRow(
+                title = "Zoom Halaman Desktop",
+                valueLabel = "${desktopZoomScale}%",
+                icon = Icons.Outlined.ZoomIn,
+                value = desktopZoomScale.toFloat(),
+                valueRange = 50f..200f,
+                steps = 9,
+                onValueChange = { viewModel.setDesktopZoomScale((it.toInt() / 5) * 5) }
+            )
+            SettingsDivider()
+            SettingsRangeSliderRow(
+                title = "Rentang Skala Zoom Adaptif",
+                valueLabel = "${adaptiveZoomBounds.start.toInt()}% - ${adaptiveZoomBounds.endInclusive.toInt()}%",
+                icon = Icons.Outlined.AspectRatio,
+                value = adaptiveZoomBounds,
+                valueRange = 50f..200f,
+                steps = 5,
+                onValueChange = { range ->
+                    adaptiveZoomBounds = range
+                    val midZoom = ((range.start + range.endInclusive) / 2f).toInt()
+                    viewModel.setDesktopZoomScale(((midZoom / 5) * 5).coerceIn(50, 200))
+                }
+            )
+            SettingsDivider()
             SettingsNavRow(
                 title = stringResource(R.string.settings_reset_quick_links),
                 subtitle = stringResource(R.string.settings_reset_quick_links_summary),
@@ -315,6 +351,47 @@ fun SettingsScreen(
                     ).show()
                 }
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        val dolbyAtmosEnabled by viewModel.dolbyAtmosEnabled.collectAsState()
+        val dolbyAtmosProfile by viewModel.dolbyAtmosProfile.collectAsState()
+        val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
+        val dolbyVisionMode by viewModel.dolbyVisionMode.collectAsState()
+        val dolbyCapabilities by viewModel.dolbyDeviceCapabilities.collectAsState()
+
+        SettingsSection(title = "Dolby Atmos & Dolby Vision (Audio & HDR)") {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                com.example.ui.components.DolbyHardwareDetectorCard(
+                    capabilities = dolbyCapabilities,
+                    onRescan = {
+                        viewModel.refreshDolbyDeviceCapabilities()
+                        Toast.makeText(
+                            context,
+                            "Deteksi ulang perangkat selesai",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+                com.example.ui.components.DolbyAtmosControlCard(
+                    enabled = dolbyAtmosEnabled,
+                    selectedProfile = dolbyAtmosProfile,
+                    onToggle = { viewModel.setDolbyAtmosEnabled(it) },
+                    onSelectProfile = { viewModel.setDolbyAtmosProfile(it) }
+                )
+                com.example.ui.components.DolbyVisionControlCard(
+                    enabled = dolbyVisionEnabled,
+                    selectedMode = dolbyVisionMode,
+                    onToggle = { viewModel.setDolbyVisionEnabled(it) },
+                    onSelectMode = { viewModel.setDolbyVisionMode(it) }
+                )
+            }
         }
     }
 
@@ -406,7 +483,7 @@ fun SettingsScreen(
             SettingsSwitchRow(
                 title = stringResource(R.string.pref_popups_title),
                 subtitle = stringResource(R.string.pref_popups_summary),
-                icon = Icons.Outlined.OpenInNew,
+                icon = Icons.AutoMirrored.Outlined.OpenInNew,
                 checked = openPopupsInNewTab,
                 onCheckedChange = { viewModel.setOpenPopupsInNewTab(it) }
             )
@@ -655,6 +732,12 @@ private fun <T> SingleChoiceSelectionDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.interactiveLiquidGlass(
+            shape = RoundedCornerShape(24.dp),
+            elevation = 8.dp
+        ),
+        shape = RoundedCornerShape(24.dp),
+        containerColor = Color.Transparent,
         title = {
             Text(
                 text = title,
@@ -664,22 +747,26 @@ private fun <T> SingleChoiceSelectionDialog(
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 options.forEach { (value, label) ->
                     val isSelected = value == selected
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .interactiveLiquidGlass(
+                                isActive = isSelected,
+                                shape = RoundedCornerShape(14.dp),
+                                elevation = if (isSelected) 3.dp else 1.dp
+                            )
                             .clickable { onSelect(value) },
-                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent,
-                        shape = RoundedCornerShape(10.dp)
+                        color = Color.Transparent,
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -690,9 +777,14 @@ private fun <T> SingleChoiceSelectionDialog(
                                 ),
                                 color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             )
-                            RadioButton(
+                            LiquidGlassRadioButton(
                                 selected = isSelected,
-                                onClick = { onSelect(value) }
+                                onClick = { onSelect(value) },
+                                modifier = Modifier.interactiveLiquidGlass(
+                                    isActive = isSelected,
+                                    shape = CircleShape,
+                                    elevation = 2.dp
+                                )
                             )
                         }
                     }

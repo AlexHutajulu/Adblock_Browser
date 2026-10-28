@@ -13,19 +13,43 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
 import android.webkit.ValueCallback
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.manager.DisplayMode
+import com.example.ui.theme.interactiveLiquidGlass
 import com.example.ui.viewmodel.BrowserTab
 import com.example.ui.viewmodel.BrowserViewModel
+import kotlin.math.roundToInt
 
 private const val TAG = "CustomWebView"
 
+@OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun CustomWebView(
@@ -74,6 +98,22 @@ fun CustomWebView(
     val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
 
     val backgroundPlaybackEnabled by viewModel.backgroundPlaybackEnabled.collectAsState()
+    val dolbyAtmosEnabled by viewModel.dolbyAtmosEnabled.collectAsState()
+    val dolbyAtmosProfile by viewModel.dolbyAtmosProfile.collectAsState()
+    val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
+    val dolbyVisionMode by viewModel.dolbyVisionMode.collectAsState()
+    val rememberedDesktopUserAgent = remember(context) { desktopUserAgentFromDefault(context) }
+
+    LaunchedEffect(tab.id, tab.url, dolbyAtmosEnabled, dolbyAtmosProfile, dolbyVisionEnabled, dolbyVisionMode) {
+        val webView = webViewPool[tab.id] ?: return@LaunchedEffect
+        com.example.manager.DolbyMediaEngine.syncWebViewDolbyState(
+            webView = webView,
+            atmosEnabled = dolbyAtmosEnabled,
+            atmosProfile = dolbyAtmosProfile,
+            visionEnabled = dolbyVisionEnabled,
+            visionMode = dolbyVisionMode
+        )
+    }
 
     LaunchedEffect(tab.id, inspectToolsEnabled) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
@@ -145,6 +185,10 @@ fun CustomWebView(
             webView.onPause()
         } else {
             webView.onResume()
+            webView.resumeTimers()
+            if (tab.isPlayingAudio) {
+                com.example.manager.BackgroundMediaController.attachMediaWebView(webView)
+            }
         }
     }
 
@@ -168,19 +212,123 @@ fun CustomWebView(
         webView.evaluateJavascript(muteScript, null)
     }
 
-    AndroidView(
-        factory = { context ->
-            com.example.manager.FrameMetricsTelemetrySync.validateRenderToken(context)
-            webViewPool.getOrPut(tab.id) {
-                WebView(context).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-                    com.example.manager.DocumentStartCosmetics.install(this)
-                    isFocusable = true
-                    isFocusableInTouchMode = true
+    val pullRefreshState = rememberPullToRefreshState()
+    var manualPullProgress by remember { mutableFloatStateOf(0f) }
+
+    PullToRefreshBox(
+        isRefreshing = tab.isLoading,
+        onRefresh = { viewModel.reload() },
+        state = pullRefreshState,
+        modifier = modifier.fillMaxSize(),
+        indicator = {
+            val combinedFraction = maxOf(pullRefreshState.distanceFraction, manualPullProgress)
+            val showIndicator = tab.isLoading || combinedFraction > 0.08f
+            AnimatedVisibility(
+                visible = showIndicator,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 14.dp)
+                    .offset {
+                        val pullDp = (combinedFraction.coerceIn(0f, 1.25f) * 32f).roundToInt()
+                        IntOffset(0, pullDp)
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .interactiveLiquidGlass(
+                            shape = CircleShape,
+                            isActive = tab.isLoading,
+                            isIncognito = tab.isPrivate,
+                            elevation = 6.dp
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (tab.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            progress = { combinedFraction.coerceIn(0f, 1f) },
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+    ) {
+        AndroidView(
+            factory = { context ->
+                com.example.manager.FrameMetricsTelemetrySync.validateRenderToken(context)
+
+                val webView = webViewPool.getOrPut(tab.id) {
+                    object : WebView(context) {
+                        private var touchDownY = 0f
+                        private var isPullingFromTop = false
+
+                        override fun onWindowVisibilityChanged(visibility: Int) {
+                            val currentTabState = viewModel.tabs.value.find { it.id == tab.id }
+                            if (visibility != android.view.View.VISIBLE &&
+                                (viewModel.backgroundPlaybackEnabled.value || currentTabState?.isPlayingAudio == true)
+                            ) {
+                                // Anti-Kill Background Playback: spoof visibility so Chromium/YouTube keeps playing audio
+                                super.onWindowVisibilityChanged(android.view.View.VISIBLE)
+                            } else {
+                                super.onWindowVisibilityChanged(visibility)
+                            }
+                        }
+
+                        @SuppressLint("ClickableViewAccessibility")
+                        override fun onTouchEvent(event: android.view.MotionEvent?): Boolean {
+                            if (event != null) {
+                                val thresholdPx = 128f * resources.displayMetrics.density
+                                when (event.actionMasked) {
+                                    android.view.MotionEvent.ACTION_DOWN -> {
+                                        touchDownY = event.rawY
+                                        isPullingFromTop = (scrollY == 0 && !canScrollVertically(-1))
+                                        manualPullProgress = 0f
+                                    }
+                                    android.view.MotionEvent.ACTION_MOVE -> {
+                                        if (isPullingFromTop && scrollY == 0 && !canScrollVertically(-1)) {
+                                            val dy = event.rawY - touchDownY
+                                            if (dy > 16f) {
+                                                manualPullProgress = ((dy - 16f) / thresholdPx).coerceIn(0f, 1.25f)
+                                            } else {
+                                                manualPullProgress = 0f
+                                            }
+                                        } else {
+                                            isPullingFromTop = false
+                                            manualPullProgress = 0f
+                                        }
+                                    }
+                                    android.view.MotionEvent.ACTION_UP,
+                                    android.view.MotionEvent.ACTION_CANCEL -> {
+                                        if (isPullingFromTop && manualPullProgress >= 1f && !tab.isLoading) {
+                                            reload()
+                                        }
+                                        isPullingFromTop = false
+                                        manualPullProgress = 0f
+                                    }
+                                }
+                            }
+                            return super.onTouchEvent(event)
+                        }
+                    }.apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                        com.example.manager.DocumentStartCosmetics.install(this)
+                        isFocusable = true
+                        isFocusableInTouchMode = true
 
                     // Set standard DNT: Both Standard and Strict send DNT
 
@@ -217,7 +365,7 @@ fun CustomWebView(
                         }
 
                         if (viewModel.displayMode.value != DisplayMode.MOBILE) {
-                            userAgentString = desktopUserAgentFromDefault(context)
+                            userAgentString = rememberedDesktopUserAgent
                             textZoom = viewModel.desktopZoomScale.value.coerceIn(50, 200)
                         } else {
                             textZoom = 100
@@ -331,8 +479,51 @@ fun CustomWebView(
                             val now = System.currentTimeMillis()
                             if (now - lastAudioStateTimestamp < 150L) return
                             lastAudioStateTimestamp = now
+                            val wvRef = this@apply
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 viewModel.updateTabPlayingAudio(tab.id, isPlaying)
+                                val currentTabSnapshot = viewModel.tabs.value.find { it.id == tab.id }
+                                val fallbackTitle = currentTabSnapshot?.title?.takeIf { it.isNotBlank() } ?: wvRef.title.orEmpty()
+                                val fallbackHost = safeHost(currentTabSnapshot?.url ?: currentPageUrlRef.get())
+                                com.example.manager.BackgroundMediaController.updateMediaMetadata(
+                                    context = context.applicationContext,
+                                    webView = wvRef,
+                                    playing = isPlaying,
+                                    title = fallbackTitle.ifBlank { "AlexBrowser Media" },
+                                    artist = fallbackHost.ifBlank { "AlexBrowser" }
+                                )
+                            }
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun onMediaMetadataChanged(
+                            isPlaying: Boolean,
+                            title: String,
+                            artist: String,
+                            currentTimeSec: Double,
+                            durationSec: Double,
+                            artworkUrl: String
+                        ) {
+                            val wvRef = this@apply
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                viewModel.updateTabPlayingAudio(tab.id, isPlaying)
+                                val currentTabSnapshot = viewModel.tabs.value.find { it.id == tab.id }
+                                val resolvedTitle = title.trim().ifBlank {
+                                    currentTabSnapshot?.title?.takeIf { it.isNotBlank() } ?: wvRef.title.orEmpty()
+                                }
+                                val resolvedArtist = artist.trim().ifBlank {
+                                    safeHost(currentTabSnapshot?.url ?: currentPageUrlRef.get()).ifBlank { "AlexBrowser" }
+                                }
+                                com.example.manager.BackgroundMediaController.updateMediaMetadata(
+                                    context = context.applicationContext,
+                                    webView = wvRef,
+                                    playing = isPlaying,
+                                    title = resolvedTitle.ifBlank { "AlexBrowser Media" },
+                                    artist = resolvedArtist,
+                                    positionSec = if (currentTimeSec.isFinite()) currentTimeSec else 0.0,
+                                    durationSec = if (durationSec.isFinite()) durationSec else 0.0,
+                                    artworkUrl = artworkUrl.trim()
+                                )
                             }
                         }
 
@@ -531,9 +722,18 @@ fun CustomWebView(
                                     stage = com.example.manager.ExtensionRunAt.DOCUMENT_START,
                                     isPrivate = tab.isPrivate
                                 )
+                                com.example.manager.DolbyMediaEngine.syncWebViewDolbyState(
+                                    webView = view,
+                                    atmosEnabled = viewModel.dolbyAtmosEnabled.value,
+                                    atmosProfile = viewModel.dolbyAtmosProfile.value,
+                                    visionEnabled = viewModel.dolbyVisionEnabled.value,
+                                    visionMode = viewModel.dolbyVisionMode.value
+                                )
                             }
                             viewModel.clearTabActivePermissions(tab.id)
-                            viewModel.updateTabPlayingAudio(tab.id, false)
+                            if (url.isNullOrBlank() || url == "about:blank") {
+                                viewModel.updateTabPlayingAudio(tab.id, false)
+                            }
                             viewModel.updateTabLoading(tab.id, true)
                             viewModel.updateTabError(tab.id, null)
                             viewModel.updateTabNavigation(
@@ -612,9 +812,20 @@ fun CustomWebView(
                             viewModel.updateTabTitle(tab.id, title)
                             viewModel.handlePageLoadComplete(title, url, tab.isPrivate)
                             
-                            // Inject middle-click handler, media audio state tracker, and sync mute state if muted
+                            // Inject middle-click handler, background Page Visibility spoofer, HyperIsland media metadata bridge, and sync mute state
                             view?.evaluateJavascript("""
                                 (function() {
+                                    if (${viewModel.backgroundPlaybackEnabled.value} && !window.__alexBgVisibilitySpoofed) {
+                                        window.__alexBgVisibilitySpoofed = true;
+                                        try {
+                                            Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+                                            Object.defineProperty(document, 'webkitHidden', { get: function() { return false; }, configurable: true });
+                                            Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+                                            window.addEventListener('visibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
+                                            document.addEventListener('visibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
+                                            document.addEventListener('webkitvisibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
+                                        } catch(e) {}
+                                    }
                                     if (!window.__middleClickInjected) {
                                         window.__middleClickInjected = true;
                                         document.addEventListener('auxclick', function(e) {
@@ -626,19 +837,91 @@ fun CustomWebView(
                                                 }
                                             }
                                         });
+                                        var lastTimeSyncMs = 0;
+                                        function resolveMediaArtworkUrl(activeMedia) {
+                                            try {
+                                                // 1. Standard W3C MediaSession API artwork (YouTube, Spotify, SoundCloud, Apple Music, etc.)
+                                                if (navigator.mediaSession && navigator.mediaSession.metadata && Array.isArray(navigator.mediaSession.metadata.artwork) && navigator.mediaSession.metadata.artwork.length > 0) {
+                                                    var artList = navigator.mediaSession.metadata.artwork;
+                                                    var bestArt = artList[artList.length - 1];
+                                                    if (bestArt && bestArt.src) {
+                                                        return new URL(bestArt.src, location.href).href;
+                                                    }
+                                                }
+                                                // 2. YouTube Video / Shorts / Music High-Res Thumbnail
+                                                var host = location.hostname.toLowerCase();
+                                                if (host.indexOf('youtube.com') !== -1 || host.indexOf('youtu.be') !== -1) {
+                                                    var vid = new URLSearchParams(location.search).get('v');
+                                                    if (!vid) {
+                                                        var m = location.pathname.match(/\/(?:shorts|embed|live|v)\/([a-zA-Z0-9_-]{11})/);
+                                                        if (m) vid = m[1];
+                                                    }
+                                                    if (!vid && host.indexOf('youtu.be') !== -1) {
+                                                        var p = location.pathname.replace(/^\//, '');
+                                                        if (p.length >= 11) vid = p.substring(0, 11);
+                                                    }
+                                                    if (vid) {
+                                                        return 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg';
+                                                    }
+                                                }
+                                                // 3. HTML5 Video poster attribute
+                                                if (activeMedia && activeMedia.poster) {
+                                                    return new URL(activeMedia.poster, location.href).href;
+                                                }
+                                                // 4. Spotify / SoundCloud / Music player cover art or artist avatar in DOM
+                                                var coverImg = document.querySelector('[data-testid="cover-art-image"], [data-testid="now-playing-widget"] img, [data-testid="entity-image"], .now-playing-bar img, .playbackSoundBadge__avatar img, .art-work img, img.cover-art');
+                                                if (coverImg && coverImg.src) {
+                                                    return new URL(coverImg.src, location.href).href;
+                                                }
+                                                // 5. OpenGraph / Twitter card thumbnail fallback
+                                                var ogMeta = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]');
+                                                if (ogMeta && ogMeta.content) {
+                                                    return new URL(ogMeta.content, location.href).href;
+                                                }
+                                            } catch(e) {}
+                                            return '';
+                                        }
                                         function syncMediaState() {
                                             try {
-                                                var playing = Array.from(document.querySelectorAll('video, audio')).some(function(m) {
-                                                    return !m.paused && !m.ended && m.readyState > 2;
+                                                var mediaElements = Array.from(document.querySelectorAll('video, audio'));
+                                                var activeMedia = mediaElements.find(function(m) {
+                                                    return !m.paused && !m.ended && m.readyState > 1;
+                                                }) || mediaElements[0];
+                                                var playing = mediaElements.some(function(m) {
+                                                    return !m.paused && !m.ended && m.readyState > 1;
                                                 });
-                                                if (window.AlexBrowserNative && window.AlexBrowserNative.onAudioStateChanged) {
+                                                var metaTitle = document.title || '';
+                                                var metaArtist = location.hostname.replace(/^www\./, '') || 'AlexBrowser';
+                                                if (navigator.mediaSession && navigator.mediaSession.metadata) {
+                                                    if (navigator.mediaSession.metadata.title) metaTitle = navigator.mediaSession.metadata.title;
+                                                    if (navigator.mediaSession.metadata.artist) metaArtist = navigator.mediaSession.metadata.artist;
+                                                }
+                                                var artworkUrl = resolveMediaArtworkUrl(activeMedia);
+                                                var curTime = (activeMedia && isFinite(activeMedia.currentTime)) ? activeMedia.currentTime : 0;
+                                                var durTime = (activeMedia && isFinite(activeMedia.duration)) ? activeMedia.duration : 0;
+                                                if (window.AlexBrowserNative && window.AlexBrowserNative.onMediaMetadataChanged) {
+                                                    window.AlexBrowserNative.onMediaMetadataChanged(playing, metaTitle, metaArtist, curTime, durTime, artworkUrl);
+                                                } else if (window.AlexBrowserNative && window.AlexBrowserNative.onAudioStateChanged) {
                                                     window.AlexBrowserNative.onAudioStateChanged(playing);
                                                 }
                                             } catch(e) {}
                                         }
                                         document.addEventListener('play', syncMediaState, true);
+                                        document.addEventListener('playing', syncMediaState, true);
                                         document.addEventListener('pause', syncMediaState, true);
                                         document.addEventListener('ended', syncMediaState, true);
+                                        document.addEventListener('loadedmetadata', syncMediaState, true);
+                                        document.addEventListener('durationchange', syncMediaState, true);
+                                        document.addEventListener('timeupdate', function() {
+                                            var now = Date.now();
+                                            if (now - lastTimeSyncMs > 2500) {
+                                                lastTimeSyncMs = now;
+                                                syncMediaState();
+                                            }
+                                        }, true);
+                                        window.addEventListener('yt-navigate-finish', function() {
+                                            setTimeout(syncMediaState, 600);
+                                        });
                                     }
                                     if (${tab.isMuted}) {
                                         document.querySelectorAll('video, audio').forEach(function(media) {
@@ -682,8 +965,15 @@ fun CustomWebView(
                                 Log.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
                             }
 
-                            // Re-ensure client security shield, Auto-Run Custom JS Toolbar scripts & Browser Extensions
+                            // Re-ensure client security shield, Auto-Run Custom JS Toolbar scripts, Dolby Atmos/Vision & Browser Extensions
                             if (view != null) {
+                                com.example.manager.DolbyMediaEngine.syncWebViewDolbyState(
+                                    webView = view,
+                                    atmosEnabled = viewModel.dolbyAtmosEnabled.value,
+                                    atmosProfile = viewModel.dolbyAtmosProfile.value,
+                                    visionEnabled = viewModel.dolbyVisionEnabled.value,
+                                    visionMode = viewModel.dolbyVisionMode.value
+                                )
                                 com.example.manager.SecurityGuardEngine.injectClientSecurityScript(
                                     webView = view,
                                     blockClipboardHijack = viewModel.blockClipboardHijack.value,
@@ -1326,8 +1616,11 @@ fun CustomWebView(
                 // Detach from prior parent if reused
                 (parent as? ViewGroup)?.removeView(this)
             }
+
+            webView
         },
-        update = { webView ->
+        update = { view ->
+            val webView = (view as? WebView) ?: webViewPool[tab.id] ?: return@AndroidView
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
                 val expectedDark = if (forceWebPageDarkMode) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
@@ -1338,7 +1631,7 @@ fun CustomWebView(
                 }
             }
 
-            val desktopUserAgent = desktopUserAgentFromDefault(context)
+            val desktopUserAgent = rememberedDesktopUserAgent
             val wantsDesktop = displayMode != DisplayMode.MOBILE
             val isCurrentlyDesktop = webView.settings.userAgentString?.let {
                 it.contains("Windows NT") || it.contains("X11; Linux x86_64")
@@ -1401,8 +1694,9 @@ fun CustomWebView(
                 webView.loadUrl(tab.url, headers)
             }
         },
-        modifier = modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize()
     )
+    }
 
     // Execute navigation commands (LoadUrl, GoBack, GoForward, Reload, StopLoading) strictly ONCE per actionId
     val currentNavAction = navigationActions[tab.id]

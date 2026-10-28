@@ -20,6 +20,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -44,8 +46,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -115,7 +119,11 @@ fun BrowserScreen(
     val activeTab = tabs.find { it.id == activeTabId } ?: tabs.firstOrNull() ?: BrowserTab()
     val isIncognito = activeTab.isPrivate
 
-    val webViewPool = remember { java.util.LinkedHashMap<String, android.webkit.WebView>(16, 0.75f, true) }
+    val webViewPool = remember {
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, android.webkit.WebView>(16, 0.75f, true) {}
+        )
+    }
 
     val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
     val devToolsStates by viewModel.devToolsStates.collectAsState()
@@ -210,6 +218,18 @@ fun BrowserScreen(
         }
     }
 
+    val showDolbyDialog by viewModel.showDolbyDialog.collectAsState()
+    val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
+    LaunchedEffect(hostActivity, dolbyVisionEnabled) {
+        com.example.manager.DolbyMediaEngine.applyWindowDolbyVisionMode(hostActivity, dolbyVisionEnabled)
+    }
+    if (showDolbyDialog) {
+        DolbyControlDialog(
+            viewModel = viewModel,
+            onDismiss = { viewModel.setDolbyDialogVisible(false) }
+        )
+    }
+
     // Unified BackHandler - Steps back one page at a time in WebView history before returning to Home
     androidx.activity.compose.BackHandler(enabled = true) {
         val webView = webViewPool[activeTabId]
@@ -269,22 +289,26 @@ fun BrowserScreen(
     val tabIds = remember(tabs) { tabs.map { it.id }.toSet() }
     LaunchedEffect(tabIds, activeTabId) {
         // Touch active tab entry to update access order in LinkedHashMap LRU
-        webViewPool[activeTabId]
+        val activeWv = webViewPool[activeTabId]
+        if (activeWv != null) {
+            // Access recorded in LinkedHashMap(accessOrder = true)
+        }
         viewModel.markTabSuspended(activeTabId, false)
 
-        val iterator = webViewPool.iterator()
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (entry.key !in tabIds) {
-                safeDestroyWebView(entry.value)
-                iterator.remove()
-            }
+        val staleKeys = synchronized(webViewPool) {
+            webViewPool.keys.filter { it !in tabIds }
         }
-        // Evict least-recently-used inactive non-audio WebView instances if pool exceeds 3 (Balanced Profile)
-        val maxPoolSize = 3
+        staleKeys.forEach { staleId ->
+            webViewPool.remove(staleId)?.let { safeDestroyWebView(it) }
+        }
+
+        // Keep up to 12 active WebViews in the pool when Background Playback is enabled so switching across Tab 1, Tab 2, Tab 3+ never kills previous tabs
+        val maxPoolSize = if (backgroundPlaybackEnabled) 12 else 4
         if (webViewPool.size > maxPoolSize) {
-            val evictCandidates = webViewPool.keys.filter { id ->
-                id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
+            val evictCandidates = synchronized(webViewPool) {
+                webViewPool.keys.filter { id ->
+                    id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
+                }
             }
             val excessCount = webViewPool.size - maxPoolSize
             evictCandidates.take(excessCount).forEach { evictId ->
@@ -297,8 +321,10 @@ fun BrowserScreen(
     // 1-Tap & System Memory Trim Hibernation Handler
     LaunchedEffect(hibernateSignal) {
         if (hibernateSignal <= 0L) return@LaunchedEffect
-        val toHibernate = webViewPool.keys.filter { id ->
-            id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
+        val toHibernate = synchronized(webViewPool) {
+            webViewPool.keys.filter { id ->
+                id != activeTabId && tabs.find { it.id == id }?.isPlayingAudio != true
+            }
         }
         toHibernate.forEach { id ->
             webViewPool.remove(id)?.let { safeDestroyWebView(it) }
@@ -308,23 +334,27 @@ fun BrowserScreen(
 
     // Battery & CPU Hibernation: Pause inactive background tabs and resume only the active tab
     LaunchedEffect(activeTabId, isAppPaused, backgroundPlaybackEnabled, tabs) {
-        // Iterate over a snapshot of entries so LinkedHashMap access-order isn't mutated during iteration
-        webViewPool.entries.toList().forEach { (id, wv) ->
+        val snapshot = synchronized(webViewPool) { webViewPool.entries.toList() }
+        snapshot.forEach { (id, wv) ->
             val tabObj = tabs.find { it.id == id }
-            val keepAudioAlive = backgroundPlaybackEnabled && (tabObj?.isPlayingAudio == true)
-            if (id == activeTabId && !isAppPaused) {
+            // JANGAN PERNAH pause WebView jika Background Playback aktif atau sedang memutar media
+            val keepAlive = backgroundPlaybackEnabled || (tabObj?.isPlayingAudio == true)
+
+            if ((id == activeTabId && !isAppPaused) || keepAlive) {
                 try {
                     wv.onResume()
                     wv.resumeTimers()
                 } catch (_: Throwable) {}
-            } else if (!keepAudioAlive) {
+            } else {
                 try {
                     wv.onPause()
                 } catch (_: Throwable) {}
             }
         }
-        val activePlayingAudio = backgroundPlaybackEnabled && tabs.any { it.isPlayingAudio }
-        if (isAppPaused && !activePlayingAudio) {
+
+        // Cegah pause timer global jika ada tab yang harus tetap hidup
+        val shouldKeepTimersAlive = backgroundPlaybackEnabled || tabs.any { it.isPlayingAudio }
+        if (isAppPaused && !shouldKeepTimersAlive) {
             try {
                 webViewPool[activeTabId]?.pauseTimers()
             } catch (_: Throwable) {}
@@ -333,7 +363,8 @@ fun BrowserScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webViewPool.values.toList().forEach { webView ->
+            val allViews = synchronized(webViewPool) { webViewPool.values.toList() }
+            allViews.forEach { webView ->
                 safeDestroyWebView(webView)
             }
             webViewPool.clear()
@@ -342,10 +373,15 @@ fun BrowserScreen(
 
     var addressInput by remember { mutableStateOf(activeTab.url) }
     var isAddressBarFocused by remember { mutableStateOf(false) }
-    LaunchedEffect(activeTab.id) {
+    LaunchedEffect(activeTabId) {
         addressInput = activeTab.url
+        if (showFindInPage) {
+            webViewPool[activeTabId]?.clearMatches()
+            findInPageQuery = ""
+            showFindInPage = false
+        }
     }
-    LaunchedEffect(activeTab.url) {
+    LaunchedEffect(activeTab.url, isAddressBarFocused) {
         if (!isAddressBarFocused) {
             addressInput = activeTab.url
         }
@@ -482,8 +518,8 @@ fun BrowserScreen(
         val url = intentToOpen!!
         AlertDialog(
             onDismissRequest = { viewModel.clearIntentToOpen() },
-            title = { Text(stringResource(R.string.dialog_external_app_title), fontWeight = FontWeight.SemiBold) },
-            text = { Text(stringResource(R.string.dialog_external_app_message, url.take(180))) },
+            title = { Text("Buka di aplikasi eksternal?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Situs ini ingin membuka aplikasi di luar AdBlock Browser:\n${url.take(180)}") },
             confirmButton = {
                 Button(onClick = {
                     val safeIntent = com.example.manager.SecurityGuardEngine.buildSafeExternalIntent(context, url)
@@ -552,10 +588,11 @@ fun BrowserScreen(
                 } else false
             }
     ) {
-        val isTablet = maxWidth >= 680.dp
+        val layoutProfile = WindowLayoutProfile(maxWidth, maxHeight)
+        val isTablet = layoutProfile.isTabletOrWide
         val displayMode by viewModel.displayMode.collectAsState()
 
-        if (displayMode == DisplayMode.DESKTOP) {
+        if (displayMode == DisplayMode.DESKTOP && isTablet) {
             DesktopBrowserLayout(
                 viewModel = viewModel,
                 activeTab = activeTab,
@@ -606,14 +643,37 @@ fun BrowserScreen(
                 onAddressFocusChanged = { isAddressBarFocused = it }
             )
         } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(containerBg)
-            ) {
+            Scaffold(
+                containerColor = containerBg,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                bottomBar = {
+                    if (!isTablet && !isImmersivePageFullscreen) {
+                        ChromeMobileBottomBar(
+                            viewModel = viewModel,
+                            activeTab = activeTab,
+                            activeWebView = webViewPool[activeTab.id],
+                            tabsCount = tabs.size,
+                            isIncognito = isIncognito,
+                            pageBlockedCount = pageBlockedCount,
+                            shortcutBarVisible = shortcutBarVisible,
+                            shortcutBarPosition = shortcutBarPosition,
+                            onBack = { viewModel.goBack() },
+                            onForward = { viewModel.goForward() },
+                            onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
+                            onHome = { viewModel.goHome() },
+                            onOpenTabs = { viewModel.setTabsDialogVisible(true) },
+                            onOpenShield = { showShieldDialog = true },
+                            onOpenFindInPage = { showFindInPage = true },
+                            onOpenSecurityShield = { showSecurityDashboard = true },
+                            adBlockEnabled = adBlockEnabled
+                        )
+                    }
+                }
+            ) { innerPadding ->
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
+                        .padding(innerPadding)
                         .imePadding()
                 ) {
                     // Tablet inline side panel
@@ -624,7 +684,7 @@ fun BrowserScreen(
                     ) {
                         Surface(
                             modifier = Modifier
-                                .width(310.dp)
+                                .width(layoutProfile.adaptiveSidebarWidth)
                                 .fillMaxHeight(),
                             color = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface,
                             tonalElevation = 2.dp
@@ -772,56 +832,89 @@ fun BrowserScreen(
                             )
                         }
 
-                        // Active Web Content
+                        // Active & Background-Playing Multi-Tab Web Content Stack
+                        // Keeping background tabs mounted in the window hierarchy prevents Chromium from detaching/stopping media when switching from Tab 1 to Tab 2, Tab 3, etc.
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
                         ) {
-                            if (activeTabThreat != null) {
-                                ChromeSecurityThreatInterstitial(
-                                    threat = activeTabThreat,
-                                    onBackToSafety = {
-                                        viewModel.clearTabSecurityThreat(activeTab.id)
-                                        val wv = webViewPool[activeTab.id]
-                                        if (wv?.canGoBack() == true) {
-                                            viewModel.goBack()
+                            val isShowingActiveWeb = activeTabThreat == null &&
+                                activeTab.loadError == null &&
+                                activeTab.url.isNotBlank() &&
+                                activeTab.url != "about:blank"
+
+                            val mountedWebTabs = tabs.filter { tabItem ->
+                                tabItem.url.isNotBlank() &&
+                                    tabItem.url != "about:blank" &&
+                                    !tabItem.isSuspended &&
+                                    (tabItem.id == activeTab.id ||
+                                        tabItem.isPlayingAudio ||
+                                        (backgroundPlaybackEnabled && webViewPool.containsKey(tabItem.id)))
+                            }
+
+                            mountedWebTabs.forEach { tabItem ->
+                                val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveWeb
+                                key(tabItem.id) {
+                                    Box(
+                                        modifier = if (isCurrentVisibleTab) {
+                                            Modifier.fillMaxSize().zIndex(1f)
                                         } else {
-                                            viewModel.goHome()
+                                            Modifier.size(1.dp).alpha(0f).zIndex(0f)
                                         }
-                                    },
-                                    onProceedAnyway = {
-                                        viewModel.proceedDespiteSecurityThreat(activeTab.id, activeTabThreat)
+                                    ) {
+                                        CustomWebView(
+                                            tab = tabItem,
+                                            viewModel = viewModel,
+                                            adBlockEnabled = adBlockEnabled,
+                                            trackerBlockEnabled = trackerBlockEnabled,
+                                            webViewPool = webViewPool,
+                                            onFileChooser = onFileChooser,
+                                            onFullscreenView = { view, callback ->
+                                                nativeFullscreenView = view
+                                                customViewCallback = callback
+                                                viewModel.setFullscreen(true)
+                                            },
+                                            onHideFullscreenView = {
+                                                nativeFullscreenView = null
+                                                customViewCallback = null
+                                                viewModel.setFullscreen(false)
+                                            }
+                                        )
                                     }
-                                )
-                            } else if (activeTab.loadError != null) {
-                                WebErrorPlaceholderPage(activeTab.loadError, viewModel)
-                            } else if (activeTab.url.isBlank() || activeTab.url == "about:blank") {
-                                HomeScreen(
-                                    viewModel = viewModel,
-                                    onNavigate = { viewModel.navigateTo(it) },
-                                    onSearchSubmit = { viewModel.navigateTo(it) }
-                                )
-                            } else {
-                                key(activeTab.id) {
-                                    CustomWebView(
-                                        tab = activeTab,
-                                        viewModel = viewModel,
-                                        adBlockEnabled = adBlockEnabled,
-                                        trackerBlockEnabled = trackerBlockEnabled,
-                                        webViewPool = webViewPool,
-                                        onFileChooser = onFileChooser,
-                                        onFullscreenView = { view, callback ->
-                                            nativeFullscreenView = view
-                                            customViewCallback = callback
-                                            viewModel.setFullscreen(true)
-                                        },
-                                        onHideFullscreenView = {
-                                            nativeFullscreenView = null
-                                            customViewCallback = null
-                                            viewModel.setFullscreen(false)
-                                        }
-                                    )
+                                }
+                            }
+
+                            if (!isShowingActiveWeb) {
+                                Box(modifier = Modifier.fillMaxSize().zIndex(2f)) {
+                                    if (activeTabThreat != null) {
+                                        ChromeSecurityThreatInterstitial(
+                                            threat = activeTabThreat,
+                                            onBackToSafety = {
+                                                viewModel.clearTabSecurityThreat(activeTab.id)
+                                                val wv = webViewPool[activeTab.id]
+                                                if (wv?.canGoBack() == true) {
+                                                    viewModel.goBack()
+                                                } else {
+                                                    viewModel.goHome()
+                                                }
+                                            },
+                                            onProceedAnyway = {
+                                                viewModel.proceedDespiteSecurityThreat(activeTab.id, activeTabThreat)
+                                            }
+                                        )
+                                    } else if (activeTab.loadError != null) {
+                                        WebErrorPlaceholderPage(activeTab.loadError, viewModel)
+                                    } else {
+                                        HomeScreen(
+                                            viewModel = viewModel,
+                                            onNavigate = { viewModel.navigateTo(it) },
+                                            onSearchSubmit = { viewModel.navigateTo(it) },
+                                            onFocusOmnibox = {
+                                                try { addressBarFocusRequester.requestFocus() } catch (_: Exception) {}
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -850,7 +943,7 @@ fun BrowserScreen(
                             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .fillMaxHeight(0.45f)
+                                .fillMaxHeight(if (layoutProfile.isFloatingOrCompactHeight) 0.65f else 0.45f)
                         ) {
                             DevToolsPanel(
                                 viewModel = viewModel,
@@ -860,35 +953,6 @@ fun BrowserScreen(
                                 onClose = { viewModel.toggleDevTools(activeTab.id) },
                                 modifier = Modifier.fillMaxSize()
                             )
-                        }
-
-                        // DockContainer in layout flow (not floating overlay) so WebView height adjusts cleanly
-                        if (!isTablet && !isImmersivePageFullscreen) {
-                            DockContainer(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .windowInsetsPadding(WindowInsets.navigationBars)
-                            ) {
-                                ChromeMobileBottomBar(
-                                    viewModel = viewModel,
-                                    activeTab = activeTab,
-                                    activeWebView = webViewPool[activeTab.id],
-                                    tabsCount = tabs.size,
-                                    isIncognito = isIncognito,
-                                    pageBlockedCount = pageBlockedCount,
-                                    shortcutBarVisible = shortcutBarVisible,
-                                    shortcutBarPosition = shortcutBarPosition,
-                                    onBack = { viewModel.goBack() },
-                                    onForward = { viewModel.goForward() },
-                                    onNewTab = { viewModel.addNewTab(isPrivate = isIncognito) },
-                                    onHome = { viewModel.goHome() },
-                                    onOpenTabs = { viewModel.setTabsDialogVisible(true) },
-                                    onOpenShield = { showShieldDialog = true },
-                                    onOpenFindInPage = { showFindInPage = true },
-                                    onOpenSecurityShield = { showSecurityDashboard = true },
-                                    adBlockEnabled = adBlockEnabled
-                                )
-                            }
                         }
                     }
                 }
@@ -931,8 +995,8 @@ fun BrowserScreen(
             }
         }
 
-        // Mobile Full-Screen Chrome Overlays (Only when in Mobile DisplayMode; Desktop Mode uses its own structured Sidebar)
-        if (!isTablet && displayMode != DisplayMode.DESKTOP) {
+        // Mobile Full-Screen Chrome Overlays (whenever !isTablet, including when Desktop UA is enabled on mobile)
+        if (!isTablet) {
             if (showTabsDialog) {
                 MobileTabsDialog(viewModel, tabs, activeTabId)
             }
@@ -1092,18 +1156,23 @@ fun ChromeFindInPageBar(
     }
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp
+        modifier = Modifier
+            .fillMaxWidth()
+            .interactiveLiquidGlass(shape = RoundedCornerShape(0.dp), elevation = 2.dp),
+        color = Color.Transparent,
+        tonalElevation = 0.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .height(54.dp)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                    .then(if (isFloatingWindow) Modifier.padding(top = 14.dp) else Modifier)
+                    .height(54.dp)
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             Icon(
                 imageVector = Icons.Default.Search,
                 contentDescription = null,
@@ -1117,7 +1186,7 @@ fun ChromeFindInPageBar(
             ) {
                 if (query.isEmpty()) {
                     Text(
-                        text = "Find in page",
+                        text = "Cari di halaman",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1140,22 +1209,23 @@ fun ChromeFindInPageBar(
             IconButton(
                 onClick = onFindPrev,
                 enabled = query.isNotBlank(),
-                modifier = Modifier.size(38.dp)
+                modifier = Modifier.size(40.dp)
             ) {
-                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous match")
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Hasil sebelumnya")
             }
             IconButton(
                 onClick = onFindNext,
                 enabled = query.isNotBlank(),
-                modifier = Modifier.size(38.dp)
+                modifier = Modifier.size(40.dp)
             ) {
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match")
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Hasil berikutnya")
             }
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.size(38.dp)
-            ) {
-                Icon(Icons.Default.Close, contentDescription = "Close find in page")
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Tutup pencarian di halaman")
+                }
             }
         }
     }
@@ -1199,253 +1269,179 @@ private fun ChromeMobileBottomBar(
     onOpenSecurityShield: () -> Unit,
     adBlockEnabled: Boolean
 ) {
-    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val iconTint = if (isIncognito) Color.White else if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
-    val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val isDark = isAppInDarkTheme()
+    val iconTint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+    val accentTint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val canBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
 
-    // Liquid Glass Multi-Stop Crystal Refractive Gradients (Bening iOS 28 Aesthetic)
-    // Completely removes all muddy solid/semi-translucent gray backgrounds
-    val glassBrush = remember(isIncognito, isDark) {
-        if (isIncognito) {
-            Brush.verticalGradient(
-                listOf(
-                    Color(0x59000000), // 35% black crystal
-                    Color(0x3B000000), // 23% black crystal
-                    Color(0x4D000000)  // 30% black crystal
-                )
-            )
-        } else if (isDark) {
-            Brush.verticalGradient(
-                listOf(
-                    Color(0x590F172A),
-                    Color(0x3B0F172A),
-                    Color(0x4D0F172A)
-                )
-            )
-        } else {
-            Brush.verticalGradient(
-                listOf(
-                    Color(0x73FFFFFF), // 45% white crystal
-                    Color(0x40FFFFFF), // 25% white crystal
-                    Color(0x66FFFFFF)  // 40% white crystal
-                )
-            )
-        }
-    }
-
-    // Specular liquid reflection border (crystal glass rim, no gray borders)
-    val glassBorderBrush = remember(isIncognito, isDark) {
-        Brush.verticalGradient(
-            listOf(
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.45f else 0.80f),
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.15f else 0.35f),
-                Color.White.copy(alpha = if (isDark || isIncognito) 0.05f else 0.15f)
-            )
-        )
-    }
-
-    val dockShape = RoundedCornerShape(26.dp)
-    val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
-
+    // Satu Kapsul Kaca Cair Terpadu (Sesuai Video Referensi Detik 00:05 - 00:31)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .interactiveLiquidGlass(
+                isDark = isDark,
+                isIncognito = isIncognito,
+                shape = RoundedCornerShape(30.dp),
+                elevation = 10.dp
+            )
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
     ) {
-        LiquidGlassSurface(
-            modifier = Modifier
-                .widthIn(max = 560.dp)
-                .fillMaxWidth(),
-            shape = dockShape,
-            enabled = liquidGlassEnabled && !isIncognito
-        ) {
-            Box(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            AnimatedVisibility(
+                visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
+                enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+                exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    ChromeShortcutAndJsBar(
+                        viewModel = viewModel,
+                        activeTab = activeTab,
+                        activeWebView = activeWebView,
+                        isIncognito = isIncognito,
+                        onOpenFindInPage = onOpenFindInPage,
+                        onOpenSecurityShield = onOpenSecurityShield
+                    )
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = if (isIncognito || isDark) Color.White.copy(alpha = 0.14f)
+                        else Color.Black.copy(alpha = 0.08f)
+                    )
+                }
+            }
+
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (liquidGlassEnabled && !isIncognito) Modifier.background(glassBrush) else Modifier)
+                    .height(60.dp)
+                    .padding(horizontal = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (liquidGlassEnabled && !isIncognito) {
-                    // Top Specular Gleam Arc (delicate crystal reflection)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(
-                                Brush.horizontalGradient(
-                                    listOf(
-                                        Color.Transparent,
-                                        Color.White.copy(alpha = if (isDark || isIncognito) 0.40f else 0.70f),
-                                        Color.Transparent
-                                    )
-                                )
-                            )
+                IconButton(
+                    onClick = onBack,
+                    enabled = canBack,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .testTag("mobile_back_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = if (canBack) iconTint else iconTint.copy(alpha = 0.30f),
+                        modifier = Modifier.size(21.dp)
                     )
                 }
 
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // Collapsible Shortcut Bar with matching Liquid Glass integration
-                    AnimatedVisibility(
-                        visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
-                        enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-                        exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            ChromeShortcutAndJsBar(
-                                viewModel = viewModel,
-                                activeTab = activeTab,
-                                activeWebView = activeWebView,
-                                isIncognito = isIncognito,
-                                onOpenFindInPage = onOpenFindInPage,
-                                onOpenSecurityShield = onOpenSecurityShield
-                            )
-                            HorizontalDivider(
-                                thickness = 0.5.dp,
-                                color = Color.White.copy(alpha = if (isIncognito || isDark) 0.15f else 0.30f)
-                            )
-                        }
-                    }
+                IconButton(
+                    onClick = onForward,
+                    enabled = activeTab.canGoForward,
+                    modifier = Modifier.size(46.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Forward",
+                        tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.30f),
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
 
-                    // Main Liquid Glass Taskbar Icons Row
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
-                        IconButton(
-                            onClick = onBack,
-                            enabled = canNavigateBack,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("mobile_back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = if (canNavigateBack) iconTint else iconTint.copy(alpha = 0.28f),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        IconButton(
-                            onClick = onForward,
-                            enabled = activeTab.canGoForward,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Forward",
-                                tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.28f),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        // iOS 28 Center Glowing Liquid Orb "+" New Tab Button
-                        val newTabOrbBrush = remember(isIncognito, accentColor) {
-                            if (isIncognito) {
-                                Brush.linearGradient(
-                                    listOf(ChromeIncognitoAccent, Color(0xFF6366F1))
-                                )
-                            } else {
-                                Brush.linearGradient(
-                                    listOf(Color(0xFF007AFF), Color(0xFF3B82F6), Color(0xFF6366F1))
-                                )
-                            }
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .shadow(
-                                    elevation = 8.dp,
-                                    shape = CircleShape,
-                                    spotColor = if (isIncognito) ChromeIncognitoAccent else Color(0xFF007AFF)
-                                )
-                                .background(newTabOrbBrush)
-                                .border(1.2.dp, Color.White.copy(alpha = 0.7f), CircleShape)
-                                .clickable(onClick = onNewTab)
-                                .testTag("mobile_new_tab_orb"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "New Tab",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        // 1-Tap Collapsible Shortcut Bar Toggle (Lightning Bolt with liquid feedback)
-                        IconButton(
-                            onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("mobile_toggle_shortcut_bar")
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (shortcutBarVisible) accentColor.copy(alpha = 0.22f)
-                                        else Color.Transparent
-                                    )
-                                    .border(
-                                        width = if (shortcutBarVisible) 1.dp else 0.dp,
-                                        color = if (shortcutBarVisible) accentColor.copy(alpha = 0.5f) else Color.Transparent,
-                                        shape = CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
-                                    contentDescription = if (shortcutBarVisible) "Tutup Pintasan" else "Buka Pintasan & Ekstensi",
-                                    tint = if (shortcutBarVisible) accentColor else iconTint.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                        }
-
-                        // Iconic Chrome Rounded Square Tab Counter with Liquid Glass Finish
-                        ChromeTabCountButton(
-                            count = tabsCount,
+                // Tombol "+" Lensa Kaca Interaktif (Sesuai Video 00:18 - 00:24)
+                val newTabInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .size(50.dp)
+                        .interactiveLiquidGlass(
+                            isActive = true,
+                            interactionSource = newTabInteraction,
+                            shape = CircleShape,
+                            isDark = isDark,
                             isIncognito = isIncognito,
-                            onClick = onOpenTabs
+                            elevation = 4.dp
                         )
+                        .clickable(
+                            interactionSource = newTabInteraction,
+                            indication = null,
+                            onClick = onNewTab
+                        )
+                        .testTag("mobile_new_tab_orb"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "New Tab",
+                        tint = if (isIncognito || isDark) Color.White else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
 
-                        // AdShield Quick Button with live blocked badge
-                        IconButton(
-                            onClick = onOpenShield,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            BadgedBox(
-                                badge = {
-                                    if (adBlockEnabled && pageBlockedCount > 0) {
-                                        Badge(
-                                            containerColor = Color(0xFF10B981),
-                                            contentColor = Color.White
-                                        ) {
-                                            Text(
-                                                text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
-                                    contentDescription = "AdShield Guard",
-                                    tint = if (adBlockEnabled) Color(0xFF10B981) else iconTint.copy(alpha = 0.65f),
-                                    modifier = Modifier.size(22.dp)
+                val shortcutInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .then(
+                            if (shortcutBarVisible) {
+                                Modifier.interactiveLiquidGlass(
+                                    isActive = true,
+                                    interactionSource = shortcutInteraction,
+                                    shape = CircleShape,
+                                    isDark = isDark,
+                                    isIncognito = isIncognito,
+                                    elevation = 2.dp
                                 )
+                            } else Modifier
+                        )
+                        .clickable(
+                            interactionSource = shortcutInteraction,
+                            indication = null,
+                            onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) }
+                        )
+                        .testTag("mobile_toggle_shortcut_bar"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                        contentDescription = "Pintasan & JS",
+                        tint = if (shortcutBarVisible) accentTint else iconTint,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
+
+                ChromeTabCountButton(
+                    count = tabsCount,
+                    isIncognito = isIncognito,
+                    onClick = onOpenTabs,
+                    modifier = Modifier.size(46.dp)
+                )
+
+                IconButton(
+                    onClick = onOpenShield,
+                    modifier = Modifier.size(46.dp)
+                ) {
+                    BadgedBox(
+                        badge = {
+                            if (adBlockEnabled && pageBlockedCount > 0) {
+                                Badge {
+                                    Text(
+                                        text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
+                                        fontSize = 9.sp
+                                    )
+                                }
                             }
                         }
+                    ) {
+                        Icon(
+                            imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
+                            contentDescription = "AdShield",
+                            tint = if (adBlockEnabled) accentTint else iconTint.copy(alpha = 0.65f),
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -1514,15 +1510,18 @@ fun TabletHorizontalTabBar(
     val stripBg = if (isIncognito) ChromeIncognitoBg else MaterialTheme.colorScheme.surfaceContainerLowest
     val activeTabBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .height(42.dp)
-            .background(stripBg)
-            .padding(start = 8.dp, end = 8.dp, top = 6.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                .then(if (isFloatingWindow) Modifier.padding(top = 14.dp) else Modifier)
+                .height(42.dp)
+                .background(stripBg)
+                .padding(start = 8.dp, end = 8.dp, top = 6.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -1545,13 +1544,18 @@ fun TabletHorizontalTabBar(
                     if (isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                 }
 
+                val isTabDark = isAppInDarkTheme() || isIncognito
                 Surface(
                     modifier = Modifier
                         .widthIn(min = 130.dp, max = 220.dp)
                         .fillMaxHeight()
+                        .then(
+                            if (isActive) Modifier.liquidGlass(isActive = true, cornerRadius = 100.dp, isDark = isTabDark)
+                            else Modifier
+                        )
                         .clickable { viewModel.selectTab(tab.id) },
-                    shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
-                    color = tabColor
+                    shape = if (isActive) RoundedCornerShape(100.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                    color = if (isActive) Color.Transparent else tabColor
                 ) {
                     Row(
                         modifier = Modifier
@@ -1587,13 +1591,13 @@ fun TabletHorizontalTabBar(
 
                         IconButton(
                             onClick = { viewModel.removeTab(tab.id) },
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "Close Tab",
+                                contentDescription = "Tutup tab ${tab.title.ifBlank { "Tab Baru" }}",
                                 tint = textColor.copy(alpha = 0.7f),
-                                modifier = Modifier.size(13.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                         }
                     }
@@ -1625,6 +1629,7 @@ fun TabletHorizontalTabBar(
                 tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp)
             )
+        }
         }
     }
 }
@@ -1669,282 +1674,385 @@ fun TabletOrMobileToolbar(
 
     var isOmniboxFocused by remember { mutableStateOf(false) }
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var showClearBrowsingDataConfirm by remember { mutableStateOf(false) }
     val currentDisplayMode by viewModel.displayMode.collectAsState()
     val adBlockEnabledState by viewModel.adBlockEnabled.collectAsState()
 
-    Column(modifier = modifier.fillMaxWidth()) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = toolbarBg
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (!isTablet) Modifier.statusBarsPadding() else Modifier)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+    val isDark = isAppInDarkTheme()
+
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = toolbarBg
             ) {
-                if (isTablet) {
-                    val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
-                    IconButton(
-                        onClick = { viewModel.goBack() },
-                        enabled = canNavigateBack,
-                        modifier = Modifier.size(38.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = if (canNavigateBack) contentTint else contentTint.copy(alpha = 0.32f),
-                            modifier = Modifier.size(20.dp)
+                // PERBAIKAN: Gunakan windowInsetsPadding + extra top padding di Floating Window untuk menghindari bentrok kontrol jendela OS (HyperOS/Freeform)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (!isTablet) {
+                                Modifier
+                                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                                    .then(if (isFloatingWindow) Modifier.padding(top = 14.dp) else Modifier)
+                            } else {
+                                Modifier
+                            }
                         )
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isTablet) {
+                        val canNavigateBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
+                        val navCapsuleInteraction = remember { MutableInteractionSource() }
+                        Row(
+                            modifier = Modifier
+                                .interactiveLiquidGlass(
+                                    interactionSource = navCapsuleInteraction,
+                                    shape = RoundedCornerShape(22.dp),
+                                    isDark = isDark,
+                                    isIncognito = isIncognito,
+                                    elevation = 3.dp
+                                )
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(
+                                onClick = { viewModel.goBack() },
+                                enabled = canNavigateBack,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = if (canNavigateBack) contentTint else contentTint.copy(alpha = 0.32f),
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.goForward() },
+                                enabled = activeTab.canGoForward,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "Forward",
+                                    tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                                    contentDescription = "Refresh",
+                                    tint = contentTint,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
                     }
-                    IconButton(
-                        onClick = { viewModel.goForward() },
-                        enabled = activeTab.canGoForward,
-                        modifier = Modifier.size(38.dp)
+
+                    // Home button with Interactive Liquid Glass lens
+                    val homeInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .interactiveLiquidGlass(
+                                interactionSource = homeInteraction,
+                                shape = CircleShape,
+                                isDark = isDark,
+                                isIncognito = isIncognito,
+                                elevation = 3.dp
+                            )
+                            .clickable(
+                                interactionSource = homeInteraction,
+                                indication = null
+                            ) {
+                                focusManager.clearFocus()
+                                viewModel.goHome()
+                            },
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "Forward",
-                            tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                        modifier = Modifier.size(38.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                            contentDescription = "Refresh",
+                            imageVector = Icons.Outlined.Home,
+                            contentDescription = "Home",
                             tint = contentTint,
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                }
 
-                // Home button (authentic Chrome Android left button)
-                IconButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        viewModel.goHome()
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Home,
-                        contentDescription = "Home",
-                        tint = contentTint,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
+                    Spacer(modifier = Modifier.width(6.dp))
 
-                Spacer(modifier = Modifier.width(4.dp))
-
-                // Authentic Google Chrome Pill Omnibox
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(omniboxBg)
-                        .then(
-                            if (isOmniboxFocused) {
-                                Modifier.border(
-                                    1.5.dp,
-                                    if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary,
-                                    RoundedCornerShape(24.dp)
-                                )
-                            } else Modifier
-                        )
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Chrome Page Info / SSL Lock button inside left of Omnibox
-                    IconButton(
-                        onClick = onShowSecurityDashboard,
-                        modifier = Modifier.size(28.dp)
+                    // Interactive Liquid Glass Pill Omnibox
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                            .interactiveLiquidGlass(
+                                isActive = isOmniboxFocused,
+                                shape = RoundedCornerShape(24.dp),
+                                isDark = isDark,
+                                isIncognito = isIncognito,
+                                elevation = 4.dp
+                            )
+                            .then(
+                                if (isOmniboxFocused) {
+                                    Modifier.border(
+                                        1.5.dp,
+                                        if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary,
+                                        RoundedCornerShape(24.dp)
+                                    )
+                                } else Modifier
+                            )
+                            .padding(horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = when {
-                                activeTab.url.isBlank() || activeTab.url == "about:blank" -> Icons.Default.Search
-                                isUrlInsecure -> Icons.Outlined.Warning
-                                else -> Icons.Outlined.Tune
-                            },
-                            contentDescription = "Page Info",
-                            tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else subTint,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        // Chrome Page Info / SSL Lock button inside left of Omnibox
+                        IconButton(
+                            onClick = onShowSecurityDashboard,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = when {
+                                    activeTab.url.isBlank() || activeTab.url == "about:blank" -> Icons.Default.Search
+                                    isUrlInsecure -> Icons.Outlined.Warning
+                                    else -> Icons.Outlined.Tune
+                                },
+                                contentDescription = "Info Situs & Keamanan",
+                                tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else subTint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(2.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 4.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (addressInput.isEmpty()) {
+                                Text(
+                                    text = if (isIncognito) "Cari atau ketik URL di Samaran" else "Cari atau ketik alamat web",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                    color = subTint,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicTextField(
+                                value = addressInput,
+                                onValueChange = onAddressValueChange,
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 14.sp,
+                                    color = contentTint
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    imeAction = ImeAction.Search,
+                                    autoCorrectEnabled = false
+                                ),
+                                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(addressBarFocusRequester)
+                                    .onFocusChanged {
+                                        isOmniboxFocused = it.isFocused
+                                        onAddressFocusChanged(it.isFocused)
+                                    },
+                                cursorBrush = SolidColor(if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary)
+                            )
+                        }
+
+                        if (addressInput.isNotEmpty() && isOmniboxFocused) {
+                            IconButton(
+                                onClick = onClearAddressInput,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Bersihkan URL",
+                                    tint = subTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        } else if (!isOmniboxFocused && activeTab.url.isNotBlank() && activeTab.url != "about:blank") {
+                            IconButton(
+                                onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                                    contentDescription = if (activeTab.isLoading) "Hentikan" else "Muat Ulang",
+                                    tint = subTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        } else if (isTablet) {
+                            IconButton(
+                                onClick = onToggleBookmark,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
+                                    contentDescription = "Bookmark",
+                                    tint = if (isCurrentUrlBookmarked) MaterialTheme.colorScheme.primary else subTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Right Action Buttons wrapped in Interactive Liquid Glass
+                    val extensionsList by viewModel.extensions.collectAsState()
+                    val enabledExtCount = remember(extensionsList) { extensionsList.count { it.isEnabled } }
+                    val extInteraction = remember { MutableInteractionSource() }
 
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 4.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        if (addressInput.isEmpty()) {
-                            Text(
-                                text = if (isIncognito) "Search or type URL in Incognito" else "Search or type web address",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                                color = subTint,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                            .size(40.dp)
+                            .interactiveLiquidGlass(
+                                isActive = enabledExtCount > 0,
+                                interactionSource = extInteraction,
+                                shape = CircleShape,
+                                isDark = isDark,
+                                isIncognito = isIncognito,
+                                elevation = 3.dp
                             )
-                        }
-                        BasicTextField(
-                            value = addressInput,
-                            onValueChange = onAddressValueChange,
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 14.sp,
-                                color = contentTint
-                            ),
-                            keyboardOptions = KeyboardOptions(
-                                imeAction = ImeAction.Search,
-                                autoCorrectEnabled = false
-                            ),
-                            keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(addressBarFocusRequester)
-                                .onFocusChanged {
-                                    isOmniboxFocused = it.isFocused
-                                    onAddressFocusChanged(it.isFocused)
-                                },
-                            cursorBrush = SolidColor(if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary)
-                        )
-                    }
-
-                    if (addressInput.isNotEmpty() && isOmniboxFocused) {
-                        IconButton(
-                            onClick = onClearAddressInput,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Clear URL",
-                                tint = subTint,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    } else if (!isOmniboxFocused && activeTab.url.isNotBlank() && activeTab.url != "about:blank") {
-                        IconButton(
-                            onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                                contentDescription = if (activeTab.isLoading) "Stop" else "Reload",
-                                tint = subTint,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    } else if (isTablet) {
-                        IconButton(
-                            onClick = onToggleBookmark,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
-                                contentDescription = "Bookmark",
-                                tint = if (isCurrentUrlBookmarked) MaterialTheme.colorScheme.primary else subTint,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(4.dp))
-
-                // On Mobile: Extensions Puzzle Button + Tab Switcher [N] button right next to Omnibox
-                val extensionsList by viewModel.extensions.collectAsState()
-                val enabledExtCount = remember(extensionsList) { extensionsList.count { it.isEnabled } }
-
-                IconButton(
-                    onClick = { viewModel.setExtensionsHubVisible(true) },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .testTag("toolbar_extensions_button")
-                ) {
-                    BadgedBox(
-                        badge = {
-                            if (enabledExtCount > 0) {
-                                Badge { Text(enabledExtCount.toString(), fontSize = 8.sp) }
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Extension,
-                            contentDescription = "Extensions",
-                            tint = if (enabledExtCount > 0) MaterialTheme.colorScheme.primary else contentTint,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-
-                if (!isTablet) {
-                    ChromeTabCountButton(
-                        count = tabsCount,
-                        isIncognito = isIncognito,
-                        onClick = { viewModel.setTabsDialogVisible(true) }
-                    )
-                } else {
-                    IconButton(
-                        onClick = onShowShield,
-                        modifier = Modifier.size(38.dp)
+                            .clickable(
+                                interactionSource = extInteraction,
+                                indication = null
+                            ) { viewModel.setExtensionsHubVisible(true) }
+                            .testTag("toolbar_extensions_button"),
+                        contentAlignment = Alignment.Center
                     ) {
                         BadgedBox(
                             badge = {
-                                if (adBlockEnabledState && pageBlockedCount > 0) {
-                                    Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 9.sp) }
+                                if (enabledExtCount > 0) {
+                                    Badge { Text(enabledExtCount.toString(), fontSize = 10.sp) }
                                 }
                             }
                         ) {
                             Icon(
-                                imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
-                                contentDescription = "AdShield",
-                                tint = if (adBlockEnabledState) MaterialTheme.colorScheme.primary else subTint,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = Icons.Outlined.Extension,
+                                contentDescription = "Ekstensi",
+                                tint = if (enabledExtCount > 0) MaterialTheme.colorScheme.primary else contentTint,
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
-                    IconButton(
-                        onClick = onToggleBookmarksSidebar,
-                        modifier = Modifier.size(38.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Bookmarks,
-                            contentDescription = "Bookmarks",
-                            tint = if (showBookmarks) MaterialTheme.colorScheme.primary else contentTint,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
 
-                // Authentic Google Chrome 3-Dot Overflow Menu
-                val menuConfig = LocalConfiguration.current
-                val menuStatusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-                val menuNavBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-                val maxMenuHeight = remember(menuConfig.screenHeightDp, menuStatusBarTop, menuNavBarBottom) {
-                    (menuConfig.screenHeightDp.dp - menuStatusBarTop - menuNavBarBottom - 110.dp).coerceAtLeast(240.dp)
-                }
-                val overflowScrollState = rememberScrollState()
+                    if (isTablet) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        val shieldInteraction = remember { MutableInteractionSource() }
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .interactiveLiquidGlass(
+                                    isActive = adBlockEnabledState,
+                                    interactionSource = shieldInteraction,
+                                    shape = CircleShape,
+                                    isDark = isDark,
+                                    isIncognito = isIncognito,
+                                    elevation = 3.dp
+                                )
+                                .clickable(
+                                    interactionSource = shieldInteraction,
+                                    indication = null,
+                                    onClick = onShowShield
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (adBlockEnabledState && pageBlockedCount > 0) {
+                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 10.sp) }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
+                                    contentDescription = "AdShield",
+                                    tint = if (adBlockEnabledState) MaterialTheme.colorScheme.primary else subTint,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        }
 
-                Box {
-                    IconButton(
-                        onClick = { showOverflowMenu = true },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = stringResource(R.string.menu_more_options),
-                            tint = contentTint,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        val bmarkInteraction = remember { MutableInteractionSource() }
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .interactiveLiquidGlass(
+                                    isActive = showBookmarks,
+                                    interactionSource = bmarkInteraction,
+                                    shape = CircleShape,
+                                    isDark = isDark,
+                                    isIncognito = isIncognito,
+                                    elevation = 3.dp
+                                )
+                                .clickable(
+                                    interactionSource = bmarkInteraction,
+                                    indication = null,
+                                    onClick = onToggleBookmarksSidebar
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Bookmarks,
+                                contentDescription = "Bookmarks",
+                                tint = if (showBookmarks) MaterialTheme.colorScheme.primary else contentTint,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                     }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // Authentic Google Chrome 3-Dot Overflow Menu with Liquid Glass Button
+                    val menuConfig = LocalConfiguration.current
+                    val menuStatusBarTop = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding()
+                    val menuNavBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                    val maxMenuHeight = remember(menuConfig.screenHeightDp, menuStatusBarTop, menuNavBarBottom) {
+                        (menuConfig.screenHeightDp.dp - menuStatusBarTop - menuNavBarBottom - 110.dp).coerceAtLeast(240.dp)
+                    }
+                    val overflowScrollState = rememberScrollState()
+                    val menuBtnInteraction = remember { MutableInteractionSource() }
+
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .interactiveLiquidGlass(
+                                    isActive = showOverflowMenu,
+                                    interactionSource = menuBtnInteraction,
+                                    shape = CircleShape,
+                                    isDark = isDark,
+                                    isIncognito = isIncognito,
+                                    elevation = 3.dp
+                                )
+                                .clickable(
+                                    interactionSource = menuBtnInteraction,
+                                    indication = null
+                                ) { showOverflowMenu = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = stringResource(R.string.menu_more_options),
+                                tint = contentTint,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
 
                     DropdownMenu(
                         expanded = showOverflowMenu,
@@ -2179,6 +2287,31 @@ fun TabletOrMobileToolbar(
                             }
                         )
 
+                        val dolbyAtmosMenu by viewModel.dolbyAtmosEnabled.collectAsState()
+                        val dolbyVisionMenu by viewModel.dolbyVisionEnabled.collectAsState()
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("Dolby Atmos & Dolby Vision")
+                                    Text(
+                                        text = when {
+                                            dolbyAtmosMenu && dolbyVisionMenu -> "Atmos 3D & Vision HDR Aktif"
+                                            dolbyAtmosMenu -> "Dolby Atmos Aktif"
+                                            dolbyVisionMenu -> "Dolby Vision HDR Aktif"
+                                            else -> "Nonaktif (Ketuk untuk mengaktifkan)"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            leadingIcon = { Icon(Icons.Outlined.SurroundSound, contentDescription = null) },
+                            onClick = {
+                                showOverflowMenu = false
+                                viewModel.setDolbyDialogVisible(true)
+                            }
+                        )
+
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_custom_js_studio)) },
                             leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
@@ -2222,9 +2355,7 @@ fun TabletOrMobileToolbar(
                             },
                             onClick = {
                                 showOverflowMenu = false
-                                viewModel.clearCacheAndCookies(context)
-                                viewModel.clearAllHistory()
-                                Toast.makeText(context, context.getString(R.string.menu_browsing_data_cleared), Toast.LENGTH_SHORT).show()
+                                showClearBrowsingDataConfirm = true
                             }
                         )
 
@@ -2232,6 +2363,37 @@ fun TabletOrMobileToolbar(
                     }
                 }
             }
+        }
+
+        if (showClearBrowsingDataConfirm) {
+            AlertDialog(
+                onDismissRequest = { showClearBrowsingDataConfirm = false },
+                title = { Text("Hapus Data Penjelajahan?", fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text("Tindakan ini akan menghapus seluruh riwayat penjelajahan, cache, cookie situs, dan menutup tab yang sedang aktif.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showClearBrowsingDataConfirm = false
+                            viewModel.clearCacheAndCookies(context, closeTabs = true)
+                            viewModel.clearAllHistory()
+                            Toast.makeText(context, context.getString(R.string.menu_browsing_data_cleared), Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
+                        Text("Hapus Semua")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearBrowsingDataConfirm = false }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                }
+            )
         }
 
         // Authentic Chrome Omnibox Quick Actions & Autocomplete Bar when Focused
@@ -2344,19 +2506,23 @@ fun TabletOrMobileToolbar(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Icon(
-                                    imageVector = Icons.Default.NorthWest,
-                                    contentDescription = "Fill URL",
-                                    tint = subTint,
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .clickable { onAddressValueChange(url) }
-                                )
+                                IconButton(
+                                    onClick = { onAddressValueChange(url) },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.NorthWest,
+                                        contentDescription = "Isi URL ke bilah alamat",
+                                        tint = subTint,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -2495,6 +2661,36 @@ fun SidebarBookmarksPanel(
     context: Context,
     modifier: Modifier = Modifier
 ) {
+    var showClearBookmarksConfirm by remember { mutableStateOf(false) }
+
+    if (showClearBookmarksConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearBookmarksConfirm = false },
+            title = { Text("Hapus Semua Bookmark?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Seluruh bookmark yang tersimpan akan dihapus secara permanen.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearBookmarksConfirm = false
+                        viewModel.clearAllBookmarks()
+                        Toast.makeText(context, "Semua bookmark dihapus", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Hapus Semua")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearBookmarksConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -2506,22 +2702,19 @@ fun SidebarBookmarksPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Bookmarks",
+                text = "Bookmark",
                 fontWeight = FontWeight.SemiBold,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Row {
                 if (bookmarks.isNotEmpty()) {
-                    IconButton(onClick = {
-                        viewModel.clearAllBookmarks()
-                        Toast.makeText(context, "Bookmarks cleared", Toast.LENGTH_SHORT).show()
-                    }) {
-                        Icon(Icons.Outlined.Delete, contentDescription = "Clear all", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { showClearBookmarksConfirm = true }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Hapus semua bookmark", modifier = Modifier.size(18.dp))
                     }
                 }
                 IconButton(onClick = { viewModel.setBookmarksVisible(false) }) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Close, contentDescription = "Tutup", modifier = Modifier.size(18.dp))
                 }
             }
         }
@@ -2536,7 +2729,7 @@ fun SidebarBookmarksPanel(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "No bookmarks yet",
+                    text = "Belum ada bookmark",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2585,11 +2778,11 @@ fun SidebarBookmarksPanel(
                             }
                             IconButton(
                                 onClick = { viewModel.deleteBookmarkItem(bookmark.id) },
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Delete",
+                                    contentDescription = "Hapus bookmark",
                                     modifier = Modifier.size(16.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -2609,6 +2802,36 @@ fun SidebarHistoryPanel(
     context: Context,
     modifier: Modifier = Modifier
 ) {
+    var showClearHistoryConfirm by remember { mutableStateOf(false) }
+
+    if (showClearHistoryConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearHistoryConfirm = false },
+            title = { Text("Hapus Semua Riwayat?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Seluruh riwayat kunjungan halaman akan dihapus secara permanen.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearHistoryConfirm = false
+                        viewModel.clearAllHistory()
+                        Toast.makeText(context, "Riwayat penjelajahan dihapus", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Hapus Semua")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearHistoryConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -2620,22 +2843,19 @@ fun SidebarHistoryPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "History",
+                text = "Riwayat",
                 fontWeight = FontWeight.SemiBold,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Row {
                 if (historyList.isNotEmpty()) {
-                    IconButton(onClick = {
-                        viewModel.clearAllHistory()
-                        Toast.makeText(context, "History cleared", Toast.LENGTH_SHORT).show()
-                    }) {
-                        Icon(Icons.Outlined.Delete, contentDescription = "Clear history", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { showClearHistoryConfirm = true }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Hapus riwayat", modifier = Modifier.size(18.dp))
                     }
                 }
                 IconButton(onClick = { viewModel.setHistoryVisible(false) }) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Close, contentDescription = "Tutup", modifier = Modifier.size(18.dp))
                 }
             }
         }
@@ -2751,376 +2971,401 @@ fun MobileTabsDialog(
             modifier = Modifier.fillMaxSize(),
             color = bg
         ) {
-            Column(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding()
             ) {
-                // Chrome Tab Switcher Top Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Left: "+ New tab" button like Chrome Android
-                    TextButton(
-                        onClick = {
-                            viewModel.addNewTab(isPrivate = showIncognitoTabs)
-                            viewModel.setTabsDialogVisible(false)
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "New tab",
-                            tint = textPrimary
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (showIncognitoTabs) "New Incognito" else "New tab",
-                            color = textPrimary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                val isCompactDialogWidth = maxWidth < 340.dp
+                val gridMinCellSize = if (maxWidth < 360.dp) 130.dp else 156.dp
 
-                    // Center Regular vs Incognito Segmented Switcher
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (showIncognitoTabs) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainer
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Responsive Chrome Tab Switcher Top Bar (Anti-Clipping on narrow Floating Window)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(modifier = Modifier.padding(3.dp)) {
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (!showIncognitoTabs) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                modifier = Modifier.clickable { showIncognitoTabs = false }
+                        // Left: "+ New tab" button
+                        if (isCompactDialogWidth) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.addNewTab(isPrivate = showIncognitoTabs)
+                                    viewModel.setTabsDialogVisible(false)
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(16.dp)
-                                            .border(
-                                                1.5.dp,
-                                                if (!showIncognitoTabs) MaterialTheme.colorScheme.onPrimaryContainer else textSecondary,
-                                                RoundedCornerShape(4.dp)
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "$regularCount",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 9.sp
-                                            ),
-                                            color = if (!showIncognitoTabs) MaterialTheme.colorScheme.onPrimaryContainer else textSecondary
-                                        )
-                                    }
-                                }
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (showIncognitoTabs) ChromeIncognitoSurface else Color.Transparent,
-                                modifier = Modifier.clickable { showIncognitoTabs = true }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.VisibilityOff,
-                                        contentDescription = "Incognito tabs",
-                                        tint = if (showIncognitoTabs) ChromeIncognitoAccent else textSecondary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    if (incognitoCount > 0) {
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "$incognitoCount",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = if (showIncognitoTabs) ChromeIncognitoAccent else textSecondary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Right: 3-dot Tab Switcher menu + Close
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box {
-                            IconButton(onClick = { showTabSwitcherMenu = true }) {
                                 Icon(
-                                    imageVector = Icons.Default.MoreVert,
-                                    contentDescription = "Tab options",
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = if (showIncognitoTabs) "Tab Samaran Baru" else "Tab Baru",
                                     tint = textPrimary
                                 )
                             }
-                            DropdownMenu(
-                                expanded = showTabSwitcherMenu,
-                                onDismissRequest = { showTabSwitcherMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.menu_new_tab)) },
-                                    leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
-                                    onClick = {
-                                        showTabSwitcherMenu = false
-                                        viewModel.addNewTab(isPrivate = false)
-                                        viewModel.setTabsDialogVisible(false)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.menu_new_incognito_tab)) },
-                                    leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
-                                    onClick = {
-                                        showTabSwitcherMenu = false
-                                        viewModel.addNewTab(isPrivate = true)
-                                        viewModel.setTabsDialogVisible(false)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.menu_recent_tabs)) },
-                                    leadingIcon = { Icon(Icons.Outlined.Restore, null) },
-                                    onClick = {
-                                        showTabSwitcherMenu = false
-                                        viewModel.reopenClosedTab()
-                                        viewModel.setTabsDialogVisible(false)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.tab_hibernate_ram)) },
-                                    leadingIcon = { Icon(Icons.Outlined.Memory, null) },
-                                    onClick = {
-                                        showTabSwitcherMenu = false
-                                        viewModel.requestHibernateInactiveTabs()
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.tab_close_all), color = MaterialTheme.colorScheme.error) },
-                                    leadingIcon = { Icon(Icons.Outlined.Close, null, tint = MaterialTheme.colorScheme.error) },
-                                    onClick = {
-                                        showTabSwitcherMenu = false
-                                        viewModel.closeAllTabs()
-                                        viewModel.setTabsDialogVisible(false)
-                                    }
-                                )
-                            }
-                        }
-                        IconButton(onClick = { viewModel.setTabsDialogVisible(false) }) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close tab switcher",
-                                tint = textPrimary
-                            )
-                        }
-                    }
-                }
-
-                if (filteredTabs.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = if (showIncognitoTabs) Icons.Outlined.VisibilityOff else Icons.Outlined.Tab,
-                                contentDescription = null,
-                                tint = textSecondary,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = if (showIncognitoTabs) "No Incognito tabs open" else "No tabs open",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = textPrimary
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
+                        } else {
+                            TextButton(
                                 onClick = {
                                     viewModel.addNewTab(isPrivate = showIncognitoTabs)
                                     viewModel.setTabsDialogVisible(false)
                                 }
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Tab baru",
+                                    tint = textPrimary
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(if (showIncognitoTabs) "Open Incognito Tab" else "Open New Tab")
+                                Text(
+                                    text = if (showIncognitoTabs) "Samaran Baru" else "Tab baru",
+                                    color = textPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
                             }
                         }
-                    }
-                } else {
-                    // Authentic Chrome 2-Column Tab Cards Grid
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 156.dp),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f),
-                        contentPadding = PaddingValues(14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(filteredTabs, key = { it.id }) { tab ->
-                            val isActive = tab.id == activeTabId
-                            val cardColor = if (showIncognitoTabs) ChromeIncognitoSurface else MaterialTheme.colorScheme.surfaceContainer
-                            val previewBg = if (showIncognitoTabs) ChromeIncognitoBg else MaterialTheme.colorScheme.surface
-                            val borderStroke = if (isActive) {
-                                BorderStroke(
-                                    2.5.dp,
-                                    if (showIncognitoTabs) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
-                                )
-                            } else {
-                                BorderStroke(
-                                    1.dp,
-                                    if (showIncognitoTabs) Color.White.copy(alpha = 0.12f)
-                                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                )
-                            }
 
-                            val domainHost = remember(tab.url) {
-                                try {
-                                    Uri.parse(tab.url).host?.removePrefix("www.") ?: ""
-                                } catch (_: Exception) { "" }
-                            }
-
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(198.dp)
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .clickable {
-                                        viewModel.selectTab(tab.id)
-                                        viewModel.setTabsDialogVisible(false)
-                                    },
-                                shape = RoundedCornerShape(18.dp),
-                                color = cardColor,
-                                border = borderStroke
-                            ) {
-                                Column(modifier = Modifier.fillMaxSize()) {
-                                    // Tab Card Header (Favicon + Title + Close X)
+                        // Center Regular vs Incognito Segmented Switcher
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (showIncognitoTabs) ChromeIncognitoOmnibox else MaterialTheme.colorScheme.surfaceContainer
+                        ) {
+                            Row(modifier = Modifier.padding(3.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (!showIncognitoTabs) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                    modifier = Modifier.clickable { showIncognitoTabs = false }
+                                ) {
                                     Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                                        modifier = Modifier.padding(horizontal = if (isCompactDialogWidth) 10.dp else 14.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(20.dp)
-                                                .clip(CircleShape)
-                                                .background(
-                                                    if (showIncognitoTabs) ChromeIncognitoOmnibox
-                                                    else MaterialTheme.colorScheme.primaryContainer
+                                                .size(18.dp)
+                                                .border(
+                                                    1.5.dp,
+                                                    if (!showIncognitoTabs) MaterialTheme.colorScheme.onPrimaryContainer else textSecondary,
+                                                    RoundedCornerShape(4.dp)
                                                 ),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            if (tab.isPrivate) {
-                                                Icon(
-                                                    imageVector = Icons.Default.VisibilityOff,
-                                                    contentDescription = null,
-                                                    tint = ChromeIncognitoAccent,
-                                                    modifier = Modifier.size(12.dp)
-                                                )
-                                            } else {
-                                                com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = tab.title.ifBlank { "New Tab" },
-                                            style = MaterialTheme.typography.labelLarge.copy(
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 12.sp
-                                            ),
-                                            color = textPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        IconButton(
-                                            onClick = { viewModel.removeTab(tab.id) },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Close tab",
-                                                tint = textSecondary,
-                                                modifier = Modifier.size(16.dp)
+                                            Text(
+                                                text = "$regularCount",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 10.sp
+                                                ),
+                                                color = if (!showIncognitoTabs) MaterialTheme.colorScheme.onPrimaryContainer else textSecondary
                                             )
                                         }
                                     }
-
-                                    // Tab Card Preview Body
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .weight(1f)
-                                            .padding(start = 6.dp, end = 6.dp, bottom = 6.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = previewBg
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (showIncognitoTabs) ChromeIncognitoSurface else Color.Transparent,
+                                    modifier = Modifier.clickable { showIncognitoTabs = true }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = if (isCompactDialogWidth) 10.dp else 14.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column(
+                                        Icon(
+                                            imageVector = Icons.Default.VisibilityOff,
+                                            contentDescription = "Tab samaran",
+                                            tint = if (showIncognitoTabs) ChromeIncognitoAccent else textSecondary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        if (incognitoCount > 0) {
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = "$incognitoCount",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.sp
+                                                ),
+                                                color = if (showIncognitoTabs) ChromeIncognitoAccent else textSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Right: 3-dot Tab Switcher menu + Close
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box {
+                                IconButton(onClick = { showTabSwitcherMenu = true }) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "Opsi tab",
+                                        tint = textPrimary
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showTabSwitcherMenu,
+                                    onDismissRequest = { showTabSwitcherMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.menu_new_tab)) },
+                                        leadingIcon = { Icon(Icons.Outlined.AddBox, null) },
+                                        onClick = {
+                                            showTabSwitcherMenu = false
+                                            viewModel.addNewTab(isPrivate = false)
+                                            viewModel.setTabsDialogVisible(false)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.menu_new_incognito_tab)) },
+                                        leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
+                                        onClick = {
+                                            showTabSwitcherMenu = false
+                                            viewModel.addNewTab(isPrivate = true)
+                                            viewModel.setTabsDialogVisible(false)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.menu_recent_tabs)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Restore, null) },
+                                        onClick = {
+                                            showTabSwitcherMenu = false
+                                            viewModel.reopenClosedTab()
+                                            viewModel.setTabsDialogVisible(false)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.tab_hibernate_ram)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Memory, null) },
+                                        onClick = {
+                                            showTabSwitcherMenu = false
+                                            viewModel.requestHibernateInactiveTabs()
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.tab_close_all), color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = { Icon(Icons.Outlined.Close, null, tint = MaterialTheme.colorScheme.error) },
+                                        onClick = {
+                                            showTabSwitcherMenu = false
+                                            viewModel.closeAllTabs(isIncognito = showIncognitoTabs)
+                                            viewModel.setTabsDialogVisible(false)
+                                        }
+                                    )
+                                }
+                            }
+                            IconButton(onClick = { viewModel.setTabsDialogVisible(false) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Tutup pengalih tab",
+                                    tint = textPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    if (filteredTabs.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = if (showIncognitoTabs) Icons.Outlined.VisibilityOff else Icons.Outlined.Tab,
+                                    contentDescription = null,
+                                    tint = textSecondary,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = if (showIncognitoTabs) "Belum ada tab Samaran" else "Belum ada tab terbuka",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = textPrimary
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        viewModel.addNewTab(isPrivate = showIncognitoTabs)
+                                        viewModel.setTabsDialogVisible(false)
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (showIncognitoTabs) "Buka Tab Samaran" else "Buka Tab Baru")
+                                }
+                            }
+                        }
+                    } else {
+                        // Responsive Tab Cards Grid
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = gridMinCellSize),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .weight(1f),
+                            contentPadding = PaddingValues(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(filteredTabs, key = { it.id }) { tab ->
+                                val isActive = tab.id == activeTabId
+                                val cardColor = if (showIncognitoTabs) ChromeIncognitoSurface else MaterialTheme.colorScheme.surfaceContainer
+                                val previewBg = if (showIncognitoTabs) ChromeIncognitoBg else MaterialTheme.colorScheme.surface
+                                val borderStroke = if (isActive) {
+                                    BorderStroke(
+                                        2.5.dp,
+                                        if (showIncognitoTabs) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    BorderStroke(
+                                        1.dp,
+                                        if (showIncognitoTabs) Color.White.copy(alpha = 0.12f)
+                                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    )
+                                }
+
+                                val domainHost = remember(tab.url) {
+                                    try {
+                                        Uri.parse(tab.url).host?.removePrefix("www.") ?: ""
+                                    } catch (_: Exception) { "" }
+                                }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 160.dp, max = 198.dp)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable {
+                                            viewModel.selectTab(tab.id)
+                                            viewModel.setTabsDialogVisible(false)
+                                        },
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = cardColor,
+                                    border = borderStroke
+                                ) {
+                                    Column(modifier = Modifier.fillMaxSize()) {
+                                        // Tab Card Header (Favicon + Title + Close X)
+                                        Row(
                                             modifier = Modifier
-                                                .fillMaxSize()
-                                                .padding(12.dp),
-                                            verticalArrangement = Arrangement.Center,
-                                            horizontalAlignment = Alignment.CenterHorizontally
+                                                .fillMaxWidth()
+                                                .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(40.dp)
+                                                    .size(20.dp)
                                                     .clip(CircleShape)
                                                     .background(
                                                         if (showIncognitoTabs) ChromeIncognitoOmnibox
-                                                        else MaterialTheme.colorScheme.surfaceContainerLow
+                                                        else MaterialTheme.colorScheme.primaryContainer
                                                     ),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 if (tab.isPrivate) {
-                                                    Text(
-                                                        text = domainHost.firstOrNull()?.uppercase() ?: "G",
-                                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                                        color = ChromeIncognitoAccent
+                                                    Icon(
+                                                        imageVector = Icons.Default.VisibilityOff,
+                                                        contentDescription = null,
+                                                        tint = ChromeIncognitoAccent,
+                                                        modifier = Modifier.size(12.dp)
                                                     )
                                                 } else {
-                                                    com.example.manager.SiteIcon(host = tab.url, sizeDp = 24)
+                                                    com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
                                                 }
                                             }
-                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
                                             Text(
-                                                text = if (domainHost.isNotBlank()) domainHost else "Google New Tab",
-                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                text = tab.title.ifBlank { "Tab Baru" },
+                                                style = MaterialTheme.typography.labelLarge.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 12.sp
+                                                ),
                                                 color = textPrimary,
                                                 maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(
-                                                text = if (tab.url.isBlank() || tab.url == "about:blank") "chrome://newtab" else tab.url,
-                                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                                                color = textSecondary,
-                                                maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                textAlign = TextAlign.Center
+                                                modifier = Modifier.weight(1f)
                                             )
-                                            if (tab.isSuspended && !isActive) {
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Surface(
-                                                    shape = RoundedCornerShape(100.dp),
-                                                    color = MaterialTheme.colorScheme.secondaryContainer
-                                                ) {
-                                                    Text(
-                                                        text = "Eco · Hemat RAM",
-                                                        style = MaterialTheme.typography.labelSmall.copy(
-                                                            fontSize = 9.sp,
-                                                            fontWeight = FontWeight.SemiBold
+                                            IconButton(
+                                                onClick = { viewModel.removeTab(tab.id) },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Tutup tab ${tab.title.ifBlank { "Tab Baru" }}",
+                                                    tint = textSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+
+                                        // Tab Card Preview Body
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .weight(1f)
+                                                .padding(start = 6.dp, end = 6.dp, bottom = 6.dp),
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = previewBg
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .padding(12.dp),
+                                                verticalArrangement = Arrangement.Center,
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(CircleShape)
+                                                        .background(
+                                                            if (showIncognitoTabs) ChromeIncognitoOmnibox
+                                                            else MaterialTheme.colorScheme.surfaceContainerLow
                                                         ),
-                                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                    )
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (tab.isPrivate) {
+                                                        Text(
+                                                            text = domainHost.firstOrNull()?.uppercase() ?: "G",
+                                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                                            color = ChromeIncognitoAccent
+                                                        )
+                                                    } else {
+                                                        com.example.manager.SiteIcon(host = tab.url, sizeDp = 24)
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Text(
+                                                    text = if (domainHost.isNotBlank()) domainHost else "Tab Baru",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = if (tab.url.isBlank() || tab.url == "about:blank") "alex://newtab" else tab.url,
+                                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                                    color = textSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    textAlign = TextAlign.Center
+                                                )
+                                                if (tab.isSuspended && !isActive) {
+                                                    Spacer(modifier = Modifier.height(6.dp))
+                                                    Surface(
+                                                        shape = RoundedCornerShape(100.dp),
+                                                        color = MaterialTheme.colorScheme.secondaryContainer
+                                                    ) {
+                                                        Text(
+                                                            text = "Eco · Hemat RAM",
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.SemiBold
+                                                            ),
+                                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -3143,12 +3388,41 @@ fun MobileBookmarksDialog(
     context: Context
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var showClearBookmarksConfirm by remember { mutableStateOf(false) }
     val filteredBookmarks = remember(bookmarks, searchQuery) {
         if (searchQuery.isBlank()) bookmarks
         else bookmarks.filter {
             it.title.contains(searchQuery, ignoreCase = true) ||
                 it.url.contains(searchQuery, ignoreCase = true)
         }
+    }
+
+    if (showClearBookmarksConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearBookmarksConfirm = false },
+            title = { Text("Hapus Semua Bookmark?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Seluruh bookmark yang tersimpan akan dihapus secara permanen.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearBookmarksConfirm = false
+                        viewModel.clearAllBookmarks()
+                        Toast.makeText(context, "Semua bookmark dihapus", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Hapus Semua")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearBookmarksConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
     }
 
     Dialog(
@@ -3167,10 +3441,7 @@ fun MobileBookmarksDialog(
                     actions = {
                         if (bookmarks.isNotEmpty()) {
                             TextButton(
-                                onClick = {
-                                    viewModel.clearAllBookmarks()
-                                    Toast.makeText(context, "Bookmarks cleared", Toast.LENGTH_SHORT).show()
-                                }
+                                onClick = { showClearBookmarksConfirm = true }
                             ) {
                                 Text(stringResource(R.string.settings_clear_all), color = MaterialTheme.colorScheme.error)
                             }
@@ -3221,7 +3492,7 @@ fun MobileBookmarksDialog(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "No matching bookmarks" else "No bookmarks here yet",
+                                text = if (searchQuery.isNotBlank()) "Tidak ada bookmark yang cocok" else "Belum ada bookmark tersimpan",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -3295,12 +3566,41 @@ fun MobileHistoryDialog(
     context: Context
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var showClearHistoryConfirm by remember { mutableStateOf(false) }
     val filteredHistory = remember(history, searchQuery) {
         if (searchQuery.isBlank()) history
         else history.filter {
             it.title.contains(searchQuery, ignoreCase = true) ||
                 it.url.contains(searchQuery, ignoreCase = true)
         }
+    }
+
+    if (showClearHistoryConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearHistoryConfirm = false },
+            title = { Text("Hapus Semua Riwayat?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Seluruh riwayat kunjungan halaman akan dihapus secara permanen.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearHistoryConfirm = false
+                        viewModel.clearAllHistory()
+                        Toast.makeText(context, "Riwayat penjelajahan dihapus", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Hapus Semua")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearHistoryConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
     }
 
     Dialog(
@@ -3319,10 +3619,7 @@ fun MobileHistoryDialog(
                     actions = {
                         if (history.isNotEmpty()) {
                             TextButton(
-                                onClick = {
-                                    viewModel.clearAllHistory()
-                                    Toast.makeText(context, "Browsing history cleared", Toast.LENGTH_SHORT).show()
-                                }
+                                onClick = { showClearHistoryConfirm = true }
                             ) {
                                 Text(stringResource(R.string.menu_clear_browsing_data), color = MaterialTheme.colorScheme.error)
                             }
@@ -3576,7 +3873,10 @@ fun DesktopBrowserLayout(
         modifier = modifier
             .fillMaxSize()
             .background(desktopFrameBg)
-            .then(if (isImmersiveDesktopFs) Modifier else Modifier.statusBarsPadding())
+            .then(
+                if (isImmersiveDesktopFs) Modifier
+                else Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+            )
     ) {
         if (!isImmersiveDesktopFs) {
             // Tier 1: Structured Desktop Window Header & Tab Strip
@@ -3686,7 +3986,8 @@ fun DesktopBrowserLayout(
                 .fillMaxWidth()
                 .weight(1f)
         ) {
-            val isWideWorkspace = maxWidth >= 640.dp
+            val workspaceProfile = WindowLayoutProfile(maxWidth, maxHeight)
+            val isWideWorkspace = workspaceProfile.isTabletOrWide
 
             Row(modifier = Modifier.fillMaxSize()) {
                 // Docked Left Sidebar on Wide/Landscape Viewports
@@ -3697,7 +3998,7 @@ fun DesktopBrowserLayout(
                 ) {
                     Surface(
                         modifier = Modifier
-                            .width(276.dp)
+                            .width(workspaceProfile.adaptiveSidebarWidth)
                             .fillMaxHeight(),
                         color = if (isIncognitoDesktop) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface,
                         tonalElevation = 2.dp
@@ -3739,48 +4040,81 @@ fun DesktopBrowserLayout(
                     }
                 }
 
-                // Main Desktop Web Content Area
+                // Main Desktop Web Content Area (Multi-Tab Mounted Stack so Tab 1 keeps playing when switching to Tab 2, Tab 3, etc.)
+                val backgroundPlaybackEnabledDesktop by viewModel.backgroundPlaybackEnabled.collectAsState()
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .weight(1f)
                 ) {
-                    if (activeDesktopThreat != null) {
-                        ChromeSecurityThreatInterstitial(
-                            threat = activeDesktopThreat,
-                            onBackToSafety = {
-                                viewModel.clearTabSecurityThreat(activeTab.id)
-                                val wv = webViewPool[activeTab.id]
-                                if (wv?.canGoBack() == true) {
-                                    viewModel.goBack()
+                    val isShowingActiveDesktopWeb = activeDesktopThreat == null &&
+                        activeTab.loadError == null &&
+                        activeTab.url.isNotBlank() &&
+                        activeTab.url != "about:blank"
+
+                    val mountedDesktopWebTabs = tabs.filter { tabItem ->
+                        tabItem.url.isNotBlank() &&
+                            tabItem.url != "about:blank" &&
+                            !tabItem.isSuspended &&
+                            (tabItem.id == activeTab.id ||
+                                tabItem.isPlayingAudio ||
+                                (backgroundPlaybackEnabledDesktop && webViewPool.containsKey(tabItem.id)))
+                    }
+
+                    mountedDesktopWebTabs.forEach { tabItem ->
+                        val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveDesktopWeb
+                        key(tabItem.id) {
+                            Box(
+                                modifier = if (isCurrentVisibleTab) {
+                                    Modifier.fillMaxSize().zIndex(1f)
                                 } else {
-                                    viewModel.goHome()
+                                    Modifier.size(1.dp).alpha(0f).zIndex(0f)
                                 }
-                            },
-                            onProceedAnyway = {
-                                viewModel.proceedDespiteSecurityThreat(activeTab.id, activeDesktopThreat)
+                            ) {
+                                CustomWebView(
+                                    tab = tabItem,
+                                    viewModel = viewModel,
+                                    adBlockEnabled = adBlockEnabled,
+                                    trackerBlockEnabled = trackerBlockEnabled,
+                                    webViewPool = webViewPool,
+                                    onFileChooser = onFileChooser,
+                                    onFullscreenView = onFullscreenView,
+                                    onHideFullscreenView = onHideFullscreenView
+                                )
                             }
-                        )
-                    } else if (activeTab.loadError != null) {
-                        WebErrorPlaceholderPage(activeTab.loadError, viewModel)
-                    } else if (activeTab.url.isBlank() || activeTab.url == "about:blank") {
-                        HomeScreen(
-                            viewModel = viewModel,
-                            onNavigate = { viewModel.navigateTo(it) },
-                            onSearchSubmit = { viewModel.navigateTo(it) }
-                        )
-                    } else {
-                        key(activeTab.id) {
-                            CustomWebView(
-                                tab = activeTab,
-                                viewModel = viewModel,
-                                adBlockEnabled = adBlockEnabled,
-                                trackerBlockEnabled = trackerBlockEnabled,
-                                webViewPool = webViewPool,
-                                onFileChooser = onFileChooser,
-                                onFullscreenView = onFullscreenView,
-                                onHideFullscreenView = onHideFullscreenView
-                            )
+                        }
+                    }
+
+                    if (!isShowingActiveDesktopWeb) {
+                        Box(modifier = Modifier.fillMaxSize().zIndex(2f)) {
+                            if (activeDesktopThreat != null) {
+                                ChromeSecurityThreatInterstitial(
+                                    threat = activeDesktopThreat,
+                                    onBackToSafety = {
+                                        viewModel.clearTabSecurityThreat(activeTab.id)
+                                        val wv = webViewPool[activeTab.id]
+                                        if (wv?.canGoBack() == true) {
+                                            viewModel.goBack()
+                                        } else {
+                                            viewModel.goHome()
+                                        }
+                                    },
+                                    onProceedAnyway = {
+                                        viewModel.proceedDespiteSecurityThreat(activeTab.id, activeDesktopThreat)
+                                    }
+                                )
+                            } else if (activeTab.loadError != null) {
+                                WebErrorPlaceholderPage(activeTab.loadError, viewModel)
+                            } else {
+                                HomeScreen(
+                                    viewModel = viewModel,
+                                    onNavigate = { viewModel.navigateTo(it) },
+                                    onSearchSubmit = { viewModel.navigateTo(it) },
+                                    onFocusOmnibox = {
+                                        try { addressBarFocusRequester.requestFocus() } catch (_: Exception) {}
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -3791,7 +4125,7 @@ fun DesktopBrowserLayout(
                     enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                     exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
                     modifier = Modifier
-                        .width(320.dp)
+                        .width(workspaceProfile.adaptiveSidebarWidth)
                         .fillMaxHeight()
                 ) {
                     DevToolsPanel(
@@ -3875,7 +4209,7 @@ fun DesktopBrowserLayout(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .fillMaxHeight(0.48f)
+                    .fillMaxHeight(if (workspaceProfile.isFloatingOrCompactHeight) 0.65f else 0.48f)
             ) {
                 DevToolsPanel(
                     viewModel = viewModel,
@@ -3975,43 +4309,59 @@ fun DesktopTabBar(
     val orientationMode by viewModel.screenOrientationMode.collectAsState()
     val tiltState by viewModel.deviceTiltState.collectAsState()
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(42.dp)
-            .background(stripBg)
-            .padding(start = 6.dp, end = 6.dp, top = 5.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        // Left: Workspace Sidebar Toggle Button with Tab Counter
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = if (isSidebarOpen) accentColor.copy(alpha = 0.18f) else Color.Transparent,
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+        val sidebarInteraction = remember { MutableInteractionSource() }
+
+        Row(
             modifier = Modifier
-                .padding(bottom = 3.dp, end = 4.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { onToggleSidebar() }
-                .testTag("desktop_sidebar_toggle")
+                .fillMaxWidth()
+                .height(if (isFloatingWindow) 46.dp else 42.dp)
+                .background(stripBg)
+                .padding(
+                    start = 6.dp,
+                    end = 6.dp,
+                    top = if (isFloatingWindow) 9.dp else 5.dp
+                ),
+            verticalAlignment = Alignment.Bottom
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            // Left: Workspace Sidebar Toggle Button with Tab Counter (Liquid Glass)
+            Box(
+                modifier = Modifier
+                    .padding(bottom = 3.dp, end = 4.dp)
+                    .interactiveLiquidGlass(
+                        shape = RoundedCornerShape(10.dp),
+                        isActive = isSidebarOpen,
+                        isIncognito = isIncognito,
+                        elevation = 2.dp,
+                        interactionSource = sidebarInteraction
+                    )
+                    .clickable(
+                        interactionSource = sidebarInteraction,
+                        indication = null,
+                        onClick = { onToggleSidebar() }
+                    )
+                    .testTag("desktop_sidebar_toggle")
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
-                    contentDescription = "Workspace Sidebar",
-                    tint = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = "${tabs.size}",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
+                        contentDescription = "Workspace Sidebar",
+                        tint = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "${tabs.size}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isSidebarOpen) accentColor else if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-        }
 
         // Center-Left: Scrollable Structured Desktop Tabs + Add Tab Button
         Row(
@@ -4042,14 +4392,26 @@ fun DesktopTabBar(
                     } catch (_: Exception) { "G" }
                 }
 
-                Surface(
+                val tabInteraction = remember(tab.id) { MutableInteractionSource() }
+                val tabShape = RoundedCornerShape(12.dp)
+                Box(
                     modifier = Modifier
+                        .padding(bottom = 2.dp)
                         .widthIn(min = 128.dp, max = 216.dp)
                         .fillMaxHeight()
-                        .clickable { viewModel.selectTab(tab.id) },
-                    shape = RoundedCornerShape(topStart = 11.dp, topEnd = 11.dp),
-                    color = tabColor,
-                    tonalElevation = if (isActive) 2.dp else 0.dp
+                        .interactiveLiquidGlass(
+                            shape = tabShape,
+                            isActive = isActive,
+                            isIncognito = isIncognito || tab.isPrivate,
+                            elevation = if (isActive) 3.dp else 1.5.dp,
+                            interactionSource = tabInteraction
+                        )
+                        .clip(tabShape)
+                        .clickable(
+                            interactionSource = tabInteraction,
+                            indication = ripple(),
+                            onClick = { viewModel.selectTab(tab.id) }
+                        )
                 ) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Top Active Accent Line
@@ -4123,13 +4485,13 @@ fun DesktopTabBar(
 
                             IconButton(
                                 onClick = { viewModel.removeTab(tab.id) },
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Close Tab",
+                                    contentDescription = "Tutup tab ${tab.title.ifBlank { "Tab Baru" }}",
                                     tint = textColor.copy(alpha = 0.72f),
-                                    modifier = Modifier.size(13.dp)
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
                         }
@@ -4137,37 +4499,54 @@ fun DesktopTabBar(
                 }
             }
 
-            // "+" New Tab Button right next to the last tab
+            // "+" New Tab Button right next to the last tab (Liquid Glass)
+            val addTabInteraction = remember { MutableInteractionSource() }
             IconButton(
                 onClick = { viewModel.addNewTab(isPrivate = false) },
+                interactionSource = addTabInteraction,
                 modifier = Modifier
                     .padding(bottom = 2.dp)
-                    .size(30.dp)
+                    .size(34.dp)
+                    .interactiveLiquidGlass(
+                        shape = CircleShape,
+                        isIncognito = isIncognito,
+                        elevation = 2.dp,
+                        interactionSource = addTabInteraction
+                    )
                     .testTag("desktop_new_tab_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
                     contentDescription = "Tab Baru",
                     tint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(17.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
 
+            val addIncognitoInteraction = remember { MutableInteractionSource() }
             IconButton(
                 onClick = { viewModel.addNewTab(isPrivate = true) },
+                interactionSource = addIncognitoInteraction,
                 modifier = Modifier
                     .padding(bottom = 2.dp)
-                    .size(30.dp)
+                    .size(34.dp)
+                    .interactiveLiquidGlass(
+                        shape = CircleShape,
+                        isActive = isIncognito,
+                        isIncognito = isIncognito,
+                        elevation = 2.dp,
+                        interactionSource = addIncognitoInteraction
+                    )
             ) {
                 Icon(
                     imageVector = Icons.Outlined.VisibilityOff,
                     contentDescription = "Tab Samaran Baru",
                     tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(17.dp)
                 )
             }
+            }
         }
-
     }
 }
 
@@ -4226,96 +4605,112 @@ fun DesktopToolbar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // 1. Left Structured Navigation Capsule (Back, Forward, Reload, Home)
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
+                // 1. Left Structured Navigation Capsule (Back, Forward, Reload, Home) with Interactive Liquid Glass
+                val leftCapsuleInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(20.dp),
+                            isIncognito = isIncognito,
+                            elevation = 3.dp,
+                            interactionSource = leftCapsuleInteraction
+                        )
+                        .animateContentSize(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        )
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         IconButton(
                             onClick = { viewModel.goBack() },
                             enabled = canNavigateBack,
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(38.dp)
                                 .testTag("desktop_back_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Back",
                                 tint = if (canNavigateBack) contentTint else contentTint.copy(alpha = 0.32f),
-                                modifier = Modifier.size(17.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                         IconButton(
                             onClick = { viewModel.goForward() },
                             enabled = activeTab.canGoForward,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                                 contentDescription = "Forward",
                                 tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
-                                modifier = Modifier.size(17.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                         IconButton(
                             onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
                             Icon(
                                 imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
                                 contentDescription = "Refresh",
                                 tint = contentTint,
-                                modifier = Modifier.size(17.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                         if (!isCompactDesktop) {
                             IconButton(
                                 onClick = { viewModel.goHome() },
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(38.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Home,
                                     contentDescription = "Home",
                                     tint = contentTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
                     }
                 }
 
-                // 2. Center Structured Desktop Omnibox Pill
+                // 2. Center Structured Desktop Omnibox Pill with Interactive Liquid Glass
+                val desktopOmniboxInteraction = remember { MutableInteractionSource() }
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .height(38.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(omniboxBg)
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                            RoundedCornerShape(20.dp)
+                        .height(42.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(21.dp),
+                            isIncognito = isIncognito,
+                            elevation = 3.dp,
+                            interactionSource = desktopOmniboxInteraction
                         )
-                        .padding(horizontal = 10.dp),
+                        .padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = if (isUrlInsecure && activeTab.url.isNotBlank()) Icons.Outlined.Warning else Icons.Outlined.Lock,
-                        contentDescription = "Page Info",
-                        tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else accentTint,
-                        modifier = Modifier
-                            .size(15.dp)
-                            .clickable { onShowSecurityDashboard() }
-                    )
+                    IconButton(
+                        onClick = onShowSecurityDashboard,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isUrlInsecure && activeTab.url.isNotBlank()) Icons.Outlined.Warning else Icons.Outlined.Lock,
+                            contentDescription = "Info Situs & Keamanan",
+                            tint = if (isUrlInsecure && activeTab.url.isNotBlank()) MaterialTheme.colorScheme.error else accentTint,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
 
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(horizontal = 8.dp),
+                            .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         if (addressInput.isEmpty()) {
@@ -4348,9 +4743,9 @@ fun DesktopToolbar(
                     if (addressInput.isNotEmpty()) {
                         IconButton(
                             onClick = { onAddressValueChange("") },
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear", tint = subTint, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Clear, contentDescription = "Bersihkan", tint = subTint, modifier = Modifier.size(16.dp))
                         }
                     }
 
@@ -4373,7 +4768,7 @@ fun DesktopToolbar(
                         ) {
                             Text(
                                 text = "${desktopZoomScale}%",
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -4387,32 +4782,45 @@ fun DesktopToolbar(
                             val msg = if (isCurrentUrlBookmarked) "Bookmark dihapus" else "Ditambahkan ke Bookmark"
                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         },
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
                             imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
                             contentDescription = "Bookmark",
                             tint = if (isCurrentUrlBookmarked) accentTint else subTint,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                 }
 
-                // 3. Right Structured Action Dock Capsule
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
+                // 3. Right Structured Action Dock Capsule with Interactive Liquid Glass
+                val rightCapsuleInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(20.dp),
+                            isIncognito = isIncognito,
+                            elevation = 3.dp,
+                            interactionSource = rightCapsuleInteraction
+                        )
+                        .animateContentSize(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        )
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         // AdShield Guard Button
-                        IconButton(onClick = onShowShield, modifier = Modifier.size(32.dp)) {
+                        IconButton(onClick = onShowShield, modifier = Modifier.size(38.dp)) {
                             BadgedBox(
                                 badge = {
                                     if (adBlockEnabledState && pageBlockedCount > 0) {
-                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 8.sp) }
+                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 10.sp) }
                                     }
                                 }
                             ) {
@@ -4420,7 +4828,7 @@ fun DesktopToolbar(
                                     imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
                                     contentDescription = "AdShield",
                                     tint = if (adBlockEnabledState) accentTint else subTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -4429,13 +4837,13 @@ fun DesktopToolbar(
                         IconButton(
                             onClick = { viewModel.setExtensionsHubVisible(true) },
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(38.dp)
                                 .testTag("desktop_extensions_button")
                         ) {
                             BadgedBox(
                                 badge = {
                                     if (enabledExtCount > 0) {
-                                        Badge { Text(enabledExtCount.toString(), fontSize = 8.sp) }
+                                        Badge { Text(enabledExtCount.toString(), fontSize = 10.sp) }
                                     }
                                 }
                             ) {
@@ -4443,7 +4851,7 @@ fun DesktopToolbar(
                                     imageVector = Icons.Outlined.Extension,
                                     contentDescription = "Extensions",
                                     tint = if (enabledExtCount > 0) accentTint else subTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -4452,7 +4860,7 @@ fun DesktopToolbar(
                         IconButton(
                             onClick = { viewModel.requestFullScreenToolToggle() },
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(38.dp)
                                 .testTag("desktop_fullscreen_button")
                         ) {
                             Icon(
@@ -4469,14 +4877,14 @@ fun DesktopToolbar(
                             IconButton(
                                 onClick = { viewModel.setShortcutBarVisible(!isDesktopShortcutVisible) },
                                 modifier = Modifier
-                                    .size(32.dp)
+                                    .size(38.dp)
                                     .testTag("desktop_toggle_shortcut_bar")
                             ) {
                                 Icon(
                                     imageVector = if (isDesktopShortcutVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
                                     contentDescription = "Pintasan & JS Bar",
                                     tint = if (isDesktopShortcutVisible) accentTint else subTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
 
@@ -4485,13 +4893,13 @@ fun DesktopToolbar(
                                     viewModel.setDisplayMode(DisplayMode.MOBILE)
                                     Toast.makeText(context, "Beralih ke Mode Mobile", Toast.LENGTH_SHORT).show()
                                 },
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(38.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.PhoneAndroid,
                                     contentDescription = "Mode Mobile",
                                     tint = accentTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -4508,13 +4916,13 @@ fun DesktopToolbar(
                         Box {
                             IconButton(
                                 onClick = { showDesktopOverflowMenu = true },
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(38.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
                                     contentDescription = stringResource(R.string.menu_more_options),
                                     tint = contentTint,
-                                    modifier = Modifier.size(17.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
 
@@ -4526,50 +4934,64 @@ fun DesktopToolbar(
                                     .widthIn(min = 272.dp, max = 340.dp)
                                     .heightIn(max = maxDesktopMenuHeight)
                             ) {
-                                // Structured Header 1: Desktop Zoom & Viewport Controller
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                    shape = RoundedCornerShape(12.dp),
+                                // Structured Header 1: Desktop Zoom & Viewport Controller with LiquidGlassSlider
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        .interactiveLiquidGlass(
+                                            shape = RoundedCornerShape(14.dp),
+                                            isIncognito = isIncognito,
+                                            elevation = 2.dp
+                                        )
                                 ) {
-                                    Row(
+                                    Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Text(
-                                            text = "Zoom Desktop",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
-                                        )
                                         Row(
+                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            OutlinedIconButton(
-                                                onClick = { viewModel.adjustDesktopZoomScale(-15) },
-                                                modifier = Modifier.size(26.dp)
-                                            ) {
-                                                Icon(Icons.Default.Remove, contentDescription = "Zoom Out", modifier = Modifier.size(14.dp))
-                                            }
                                             Text(
-                                                text = "${desktopZoomScale}%",
-                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier
-                                                    .clickable { viewModel.setDesktopZoomScale(100) }
-                                                    .padding(horizontal = 6.dp)
+                                                text = "Zoom Desktop",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
                                             )
-                                            OutlinedIconButton(
-                                                onClick = { viewModel.adjustDesktopZoomScale(15) },
-                                                modifier = Modifier.size(26.dp)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
-                                                Icon(Icons.Default.Add, contentDescription = "Zoom In", modifier = Modifier.size(14.dp))
+                                                OutlinedIconButton(
+                                                    onClick = { viewModel.adjustDesktopZoomScale(-15) },
+                                                    modifier = Modifier.size(26.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Remove, contentDescription = "Zoom Out", modifier = Modifier.size(14.dp))
+                                                }
+                                                Text(
+                                                    text = "${desktopZoomScale}%",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .clickable { viewModel.setDesktopZoomScale(100) }
+                                                        .padding(horizontal = 6.dp)
+                                                )
+                                                OutlinedIconButton(
+                                                    onClick = { viewModel.adjustDesktopZoomScale(15) },
+                                                    modifier = Modifier.size(26.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Add, contentDescription = "Zoom In", modifier = Modifier.size(14.dp))
+                                                }
                                             }
                                         }
+                                        LiquidGlassSlider(
+                                            value = desktopZoomScale.toFloat(),
+                                            onValueChange = { viewModel.setDesktopZoomScale(it.toInt()) },
+                                            valueRange = 50f..200f,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
                                 }
 
@@ -4725,177 +5147,322 @@ fun DesktopBookmarkBar(
     var editingLink by remember { mutableStateOf<com.example.manager.QuickLink?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
 
+    val activeTabId by viewModel.activeTabId.collectAsState()
+    val tabs by viewModel.tabs.collectAsState()
+    val isIncognito = remember(tabs, activeTabId) {
+        tabs.find { it.id == activeTabId }?.isPrivate == true
+    }
+    val barBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
+    val contentTint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface
+    val accentTint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val isZapperActive by viewModel.isElementZapperActive.collectAsState()
+    val barCapsuleInteraction = remember { MutableInteractionSource() }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface
+        color = barBg
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(32.dp)
                 .padding(horizontal = 10.dp, vertical = 3.dp)
-                .horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                .interactiveLiquidGlass(
+                    shape = RoundedCornerShape(18.dp),
+                    isIncognito = isIncognito,
+                    elevation = 2.5.dp,
+                    interactionSource = barCapsuleInteraction
+                )
         ) {
-            // Zone 1: Structured Desktop Workspace Tools
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (isSidebarOpen) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
-                    .clickable { onToggleSidebar() }
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Panel ($tabsCount)",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))
-                    .clickable { viewModel.setExtensionsHubVisible(true) }
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Extension,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.menu_extensions),
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .clickable { viewModel.requestFullScreenToolToggle() }
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Full Screen",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .clickable { viewModel.setElementZapperActive(true) }
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.TouchApp,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Zapper",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-
-            VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-            // Zone 2: Customizable Quick Links (tap to open, long-press to edit/disable/delete)
-            enabledQuickLinks.forEach { link ->
+                // Zone 1: Structured Desktop Workspace Tools with Interactive Liquid Glass Pills
+                val panelPillInteraction = remember { MutableInteractionSource() }
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .combinedClickable(
-                            onClick = { viewModel.navigateTo(link.url) },
-                            onLongClick = { editingLink = link }
+                        .height(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(999.dp),
+                            isActive = isSidebarOpen,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = panelPillInteraction
                         )
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable(
+                            interactionSource = panelPillInteraction,
+                            indication = ripple(),
+                            onClick = { onToggleSidebar() }
+                        )
+                        .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    com.example.manager.SiteIcon(host = link.url, sizeDp = 14)
-                    Spacer(modifier = Modifier.width(5.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.ViewSidebar,
+                        contentDescription = null,
+                        tint = accentTint,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = link.title,
+                        text = "Panel ($tabsCount)",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = contentTint,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                val isExtHubOpen by viewModel.showExtensionsHub.collectAsState()
+                val extPillInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(999.dp),
+                            isActive = isExtHubOpen,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = extPillInteraction
+                        )
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable(
+                            interactionSource = extPillInteraction,
+                            indication = ripple(),
+                            onClick = { viewModel.setExtensionsHubVisible(true) }
+                        )
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Extension,
+                        contentDescription = null,
+                        tint = accentTint,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.menu_extensions),
+                        fontSize = 11.sp,
+                        color = contentTint,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                val dolbyAtmosOn by viewModel.dolbyAtmosEnabled.collectAsState()
+                val dolbyVisionOn by viewModel.dolbyVisionEnabled.collectAsState()
+                val isDolbyActive = dolbyAtmosOn || dolbyVisionOn
+                val dolbyPillInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(999.dp),
+                            isActive = isDolbyActive,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = dolbyPillInteraction
+                        )
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable(
+                            interactionSource = dolbyPillInteraction,
+                            indication = ripple(),
+                            onClick = { viewModel.setDolbyDialogVisible(true) }
+                        )
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SurroundSound,
+                        contentDescription = "Dolby Atmos & Vision",
+                        tint = accentTint,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = when {
+                            dolbyAtmosOn && dolbyVisionOn -> "Dolby Atmos • Vision"
+                            dolbyAtmosOn -> "Dolby Atmos"
+                            dolbyVisionOn -> "Dolby Vision"
+                            else -> "Dolby Off"
+                        },
+                        fontSize = 11.sp,
+                        color = contentTint,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                val fsPillInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(999.dp),
+                            isActive = isImmersiveFs,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = fsPillInteraction
+                        )
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable(
+                            interactionSource = fsPillInteraction,
+                            indication = ripple(),
+                            onClick = { viewModel.requestFullScreenToolToggle() }
+                        )
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isImmersiveFs) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                        contentDescription = null,
+                        tint = accentTint,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Full Screen",
+                        fontSize = 11.sp,
+                        color = contentTint,
                         fontWeight = FontWeight.Medium
                     )
                 }
-            }
 
-            // "+" button to add a new Quick Link
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .clickable { showAddDialog = true }
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-                    .testTag("desktop_add_quick_link_button"),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = stringResource(R.string.quick_link_add),
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
+                val zapperPillInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = RoundedCornerShape(999.dp),
+                            isActive = isZapperActive,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = zapperPillInteraction
+                        )
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable(
+                            interactionSource = zapperPillInteraction,
+                            indication = ripple(),
+                            onClick = { viewModel.setElementZapperActive(true) }
+                        )
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.TouchApp,
+                        contentDescription = null,
+                        tint = accentTint,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Zapper",
+                        fontSize = 11.sp,
+                        color = contentTint,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
 
-            if (bookmarks.isNotEmpty()) {
                 VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                bookmarks.take(10).forEach { bmark ->
+
+                // Zone 2: Customizable Quick Links with Interactive Liquid Glass Pills (tap to open, long-press to edit/disable/delete)
+                enabledQuickLinks.forEach { link ->
+                    val linkInteraction = remember(link.id) { MutableInteractionSource() }
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { viewModel.navigateTo(bmark.url) }
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                            .height(28.dp)
+                            .interactiveLiquidGlass(
+                                shape = RoundedCornerShape(999.dp),
+                                isIncognito = isIncognito,
+                                elevation = 1.5.dp,
+                                interactionSource = linkInteraction
+                            )
+                            .clip(RoundedCornerShape(999.dp))
+                            .combinedClickable(
+                                interactionSource = linkInteraction,
+                                indication = ripple(),
+                                onClick = { viewModel.navigateTo(link.url) },
+                                onLongClick = { editingLink = link }
+                            )
+                            .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        com.example.manager.SiteIcon(host = bmark.url, sizeDp = 14)
+                        com.example.manager.SiteIcon(host = link.url, sizeDp = 14)
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = bmark.title,
+                            text = link.title,
                             fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = contentTint,
+                            fontWeight = FontWeight.Medium
                         )
+                    }
+                }
+
+                // "+" button to add a new Quick Link (Liquid Glass)
+                val addQuickLinkInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .interactiveLiquidGlass(
+                            shape = CircleShape,
+                            isIncognito = isIncognito,
+                            elevation = 2.dp,
+                            interactionSource = addQuickLinkInteraction
+                        )
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = addQuickLinkInteraction,
+                            indication = ripple(),
+                            onClick = { showAddDialog = true }
+                        )
+                        .testTag("desktop_add_quick_link_button"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = stringResource(R.string.quick_link_add),
+                        tint = accentTint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                if (bookmarks.isNotEmpty()) {
+                    VerticalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    bookmarks.take(10).forEach { bmark ->
+                        val bmarkInteraction = remember(bmark.id) { MutableInteractionSource() }
+                        Row(
+                            modifier = Modifier
+                                .height(28.dp)
+                                .interactiveLiquidGlass(
+                                    shape = RoundedCornerShape(999.dp),
+                                    isIncognito = isIncognito,
+                                    elevation = 1.5.dp,
+                                    interactionSource = bmarkInteraction
+                                )
+                                .clip(RoundedCornerShape(999.dp))
+                                .clickable(
+                                    interactionSource = bmarkInteraction,
+                                    indication = ripple(),
+                                    onClick = { viewModel.navigateTo(bmark.url) }
+                                )
+                                .padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            com.example.manager.SiteIcon(host = bmark.url, sizeDp = 14)
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = bmark.title,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = contentTint
+                            )
+                        }
                     }
                 }
             }
@@ -5002,7 +5569,7 @@ fun DesktopBookmarkBar(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(stringResource(R.string.quick_link_show_in_bar))
-                        Switch(
+                        LiquidGlassSwitch(
                             checked = enabledState,
                             onCheckedChange = { enabledState = it }
                         )
@@ -5096,10 +5663,15 @@ fun WebGuardShieldDialog(
                 modifier = Modifier
                     .widthIn(max = 460.dp)
                     .fillMaxWidth()
+                    .interactiveLiquidGlass(
+                        shape = RoundedCornerShape(24.dp),
+                        isIncognito = activeTab.isPrivate,
+                        elevation = 8.dp
+                    )
                     .clickable(enabled = false) {},
                 shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp
+                color = Color.Transparent,
+                tonalElevation = 0.dp
             ) {
                 Column(
                     modifier = Modifier
@@ -5209,7 +5781,7 @@ fun WebGuardShieldDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Switch(
+                            LiquidGlassSwitch(
                                 checked = !isSiteWhitelisted,
                                 onCheckedChange = { enableAdBlock ->
                                     if (host.isNotEmpty()) {
@@ -5487,10 +6059,15 @@ fun SecurityDashboardDialog(
                 modifier = Modifier
                     .widthIn(max = 460.dp)
                     .fillMaxWidth()
+                    .interactiveLiquidGlass(
+                        shape = RoundedCornerShape(24.dp),
+                        isIncognito = currentTab?.isPrivate == true,
+                        elevation = 8.dp
+                    )
                     .clickable(enabled = false) {},
                 shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp
+                color = Color.Transparent,
+                tonalElevation = 0.dp
             ) {
                 Column(
                     modifier = Modifier
@@ -5594,10 +6171,119 @@ fun SecurityDashboardDialog(
                         val blockCamMic by viewModel.blockCameraMicStrict.collectAsState()
                         val blockClipboard by viewModel.blockClipboardHijack.collectAsState()
                         val blockPopups by viewModel.blockHiddenPopups.collectAsState()
+                        val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
+                        var shieldSensitivityRange by remember(desktopZoomScale) {
+                            val low = (desktopZoomScale - 20).coerceIn(50, 150).toFloat()
+                            val high = (desktopZoomScale + 20).coerceIn(100, 200).toFloat()
+                            mutableStateOf(low..high)
+                        }
 
                         Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .interactiveLiquidGlass(
+                                    shape = RoundedCornerShape(16.dp),
+                                    isIncognito = currentTab?.isPrivate == true,
+                                    elevation = 2.dp
+                                ),
                             shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow
+                            color = Color.Transparent
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.pref_privacy_shield_title),
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                listOf(
+                                    com.example.manager.PrivacyShieldMode.STANDARD to stringResource(R.string.privacy_shield_standard),
+                                    com.example.manager.PrivacyShieldMode.STRICT to stringResource(R.string.privacy_shield_strict)
+                                ).forEach { (modeOption, modeLabel) ->
+                                    val isModeSelected = privacyShieldMode == modeOption
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .interactiveLiquidGlass(
+                                                isActive = isModeSelected,
+                                                shape = RoundedCornerShape(12.dp),
+                                                isIncognito = currentTab?.isPrivate == true,
+                                                elevation = 1.dp
+                                            )
+                                            .clickable { viewModel.setPrivacyShieldMode(modeOption) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = modeLabel,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = if (isModeSelected) FontWeight.SemiBold else FontWeight.Normal
+                                            ),
+                                            color = if (isModeSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        LiquidGlassRadioButton(
+                                            selected = isModeSelected,
+                                            onClick = { viewModel.setPrivacyShieldMode(modeOption) },
+                                            modifier = Modifier.interactiveLiquidGlass(
+                                                isActive = isModeSelected,
+                                                shape = CircleShape,
+                                                isIncognito = currentTab?.isPrivate == true,
+                                                elevation = 2.dp
+                                            )
+                                        )
+                                    }
+                                }
+
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Rentang Skala & Sensitivitas Halaman",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                    )
+                                    Text(
+                                        text = "${shieldSensitivityRange.start.toInt()}% - ${shieldSensitivityRange.endInclusive.toInt()}%",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                LiquidGlassRangeSlider(
+                                    value = shieldSensitivityRange,
+                                    onValueChange = { range ->
+                                        shieldSensitivityRange = range
+                                        val avg = ((range.start + range.endInclusive) / 2f).toInt()
+                                        viewModel.setDesktopZoomScale(((avg / 5) * 5).coerceIn(50, 200))
+                                    },
+                                    valueRange = 50f..200f,
+                                    steps = 5,
+                                    modifier = Modifier.interactiveLiquidGlass(
+                                        shape = RoundedCornerShape(100.dp),
+                                        isIncognito = currentTab?.isPrivate == true,
+                                        elevation = 1.dp
+                                    )
+                                )
+                            }
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .interactiveLiquidGlass(
+                                    shape = RoundedCornerShape(16.dp),
+                                    isIncognito = currentTab?.isPrivate == true,
+                                    elevation = 2.dp
+                                ),
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color.Transparent
                         ) {
                             Column(
                                 modifier = Modifier
@@ -5619,7 +6305,16 @@ fun SecurityDashboardDialog(
                                         Text(stringResource(R.string.security_https_only_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
                                         Text(stringResource(R.string.security_https_only_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Switch(checked = httpsOnly, onCheckedChange = { viewModel.setHttpsOnlyMode(it) })
+                                    LiquidGlassSwitch(
+                                        checked = httpsOnly,
+                                        onCheckedChange = { viewModel.setHttpsOnlyMode(it) },
+                                        modifier = Modifier.interactiveLiquidGlass(
+                                            isActive = httpsOnly,
+                                            shape = CircleShape,
+                                            isIncognito = currentTab?.isPrivate == true,
+                                            elevation = 2.dp
+                                        )
+                                    )
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -5630,7 +6325,16 @@ fun SecurityDashboardDialog(
                                         Text(stringResource(R.string.security_phishing_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
                                         Text(stringResource(R.string.security_phishing_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Switch(checked = phishingGuard, onCheckedChange = { viewModel.setPhishingProtectionEnabled(it) })
+                                    LiquidGlassSwitch(
+                                        checked = phishingGuard,
+                                        onCheckedChange = { viewModel.setPhishingProtectionEnabled(it) },
+                                        modifier = Modifier.interactiveLiquidGlass(
+                                            isActive = phishingGuard,
+                                            shape = CircleShape,
+                                            isIncognito = currentTab?.isPrivate == true,
+                                            elevation = 2.dp
+                                        )
+                                    )
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -5641,7 +6345,16 @@ fun SecurityDashboardDialog(
                                         Text(stringResource(R.string.security_cam_mic_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
                                         Text(stringResource(R.string.security_cam_mic_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Switch(checked = blockCamMic, onCheckedChange = { viewModel.setBlockCameraMicStrict(it) })
+                                    LiquidGlassSwitch(
+                                        checked = blockCamMic,
+                                        onCheckedChange = { viewModel.setBlockCameraMicStrict(it) },
+                                        modifier = Modifier.interactiveLiquidGlass(
+                                            isActive = blockCamMic,
+                                            shape = CircleShape,
+                                            isIncognito = currentTab?.isPrivate == true,
+                                            elevation = 2.dp
+                                        )
+                                    )
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -5652,12 +6365,18 @@ fun SecurityDashboardDialog(
                                         Text(stringResource(R.string.security_clipboard_title), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
                                         Text(stringResource(R.string.security_clipboard_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Switch(
+                                    LiquidGlassSwitch(
                                         checked = blockClipboard && blockPopups,
                                         onCheckedChange = {
                                             viewModel.setBlockClipboardHijack(it)
                                             viewModel.setBlockHiddenPopups(it)
-                                        }
+                                        },
+                                        modifier = Modifier.interactiveLiquidGlass(
+                                            isActive = blockClipboard && blockPopups,
+                                            shape = CircleShape,
+                                            isIncognito = currentTab?.isPrivate == true,
+                                            elevation = 2.dp
+                                        )
                                     )
                                 }
                             }

@@ -393,6 +393,7 @@ class AdBlockWebViewClient(
     // ─── Stealth CSS injection (Zero detectable ID/attribute footprint) ──────
 
     private fun injectCSS(view: WebView, css: String) {
+        hiddenCount.incrementAndGet()
         val escaped = css.replace("\\", "\\\\").replace("`", "\\`").replace("\${", "\\\${")
         view.evaluateJavascript("""
 (function(){

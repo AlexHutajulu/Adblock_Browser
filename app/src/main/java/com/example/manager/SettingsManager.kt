@@ -270,6 +270,28 @@ class SettingsManager(private val context: Context) {
         get() = prefs.getBoolean("liquid_glass_enabled_v1", defaultLiquidGlass(context))
         set(value) = prefs.edit().putBoolean("liquid_glass_enabled_v1", value).apply()
 
+    var dolbyAtmosEnabled: Boolean
+        get() = prefs.getBoolean("dolby_atmos_enabled_v1", true)
+        set(value) = prefs.edit().putBoolean("dolby_atmos_enabled_v1", value).apply()
+
+    var dolbyAtmosProfile: DolbyAtmosProfile
+        get() {
+            val raw = prefs.getString("dolby_atmos_profile_v1", DolbyAtmosProfile.DYNAMIC.name) ?: DolbyAtmosProfile.DYNAMIC.name
+            return try { DolbyAtmosProfile.valueOf(raw) } catch (_: Exception) { DolbyAtmosProfile.DYNAMIC }
+        }
+        set(value) = prefs.edit().putString("dolby_atmos_profile_v1", value.name).apply()
+
+    var dolbyVisionEnabled: Boolean
+        get() = prefs.getBoolean("dolby_vision_enabled_v1", true)
+        set(value) = prefs.edit().putBoolean("dolby_vision_enabled_v1", value).apply()
+
+    var dolbyVisionMode: DolbyVisionMode
+        get() {
+            val raw = prefs.getString("dolby_vision_mode_v1", DolbyVisionMode.VIVID.name) ?: DolbyVisionMode.VIVID.name
+            return try { DolbyVisionMode.valueOf(raw) } catch (_: Exception) { DolbyVisionMode.VIVID }
+        }
+        set(value) = prefs.edit().putString("dolby_vision_mode_v1", value.name).apply()
+
     private fun defaultLiquidGlass(ctx: Context): Boolean {
         return try {
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager

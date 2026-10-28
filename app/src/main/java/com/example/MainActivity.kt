@@ -153,6 +153,7 @@ class MainActivity : AppCompatActivity() {
 
             // Read settings theme choices dynamically
             val currentTheme by viewModel.appTheme.collectAsState()
+            val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
             val allowScreenRecording by viewModel.allowScreenRecording.collectAsState()
             val systemDark = isSystemInDarkTheme()
             
@@ -174,15 +175,25 @@ class MainActivity : AppCompatActivity() {
                 androidx.compose.ui.platform.LocalConfiguration provides localizedConfig,
                 androidx.activity.compose.LocalActivityResultRegistryOwner provides this@MainActivity
             ) {
-                MyApplicationTheme(darkTheme = isDarkTheme) {
+                MyApplicationTheme(
+                    darkTheme = isDarkTheme,
+                    liquidGlassEnabled = liquidGlassEnabled
+                ) {
                     Scaffold(modifier = Modifier.fillMaxSize()) { _ ->
                         // Custom state based navigation for bulletproof WebView lifecycle management
-                        var currentRoute by remember { mutableStateOf(NavigationRoute.SPLASH) }
+                        var currentRoute by remember {
+                            mutableStateOf(
+                                if (!viewModel.isColdStartCompleted) NavigationRoute.SPLASH else NavigationRoute.BROWSER
+                            )
+                        }
 
                         when (currentRoute) {
                             NavigationRoute.SPLASH -> {
                                 SplashScreen(
-                                    onTimeout = { currentRoute = NavigationRoute.BROWSER }
+                                    onTimeout = {
+                                        viewModel.isColdStartCompleted = true // Tandai bahwa splash sudah selesai untuk sesi RAM ini
+                                        currentRoute = NavigationRoute.BROWSER
+                                    }
                                 )
                             }
                             NavigationRoute.BROWSER, NavigationRoute.SETTINGS -> {
@@ -234,15 +245,48 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value) {
+        val hasAudioTab = viewModel.tabs.value.any { it.isPlayingAudio } ||
+            com.example.manager.BackgroundMediaController.isPlaying
+        if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value && !hasAudioTab) {
             viewModel.setAppPaused(true)
+        } else {
+            viewModel.setAppPaused(false)
+            if (hasAudioTab) {
+                com.example.manager.TabPersistenceService.syncMediaSession(
+                    context = applicationContext,
+                    isPlaying = true,
+                    title = com.example.manager.BackgroundMediaController.currentTitle,
+                    artist = com.example.manager.BackgroundMediaController.currentArtist,
+                    positionMs = com.example.manager.BackgroundMediaController.positionMs,
+                    durationMs = com.example.manager.BackgroundMediaController.durationMs,
+                    artworkUrl = com.example.manager.BackgroundMediaController.currentArtworkUrl
+                )
+            }
         }
     }
 
     override fun onStop() {
         super.onStop()
-        if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value) {
+        val hasAudioTab = viewModel.tabs.value.any { it.isPlayingAudio } ||
+            com.example.manager.BackgroundMediaController.isPlaying
+        if (!viewModel.backgroundPlaybackEnabled.value && !viewModel.isPipMode.value && !hasAudioTab) {
             viewModel.setAppPaused(true)
+        } else {
+            viewModel.setAppPaused(false)
+            try {
+                startService(Intent(this, com.example.manager.TabPersistenceService::class.java))
+            } catch (_: Exception) {}
+            if (hasAudioTab) {
+                com.example.manager.TabPersistenceService.syncMediaSession(
+                    context = applicationContext,
+                    isPlaying = true,
+                    title = com.example.manager.BackgroundMediaController.currentTitle,
+                    artist = com.example.manager.BackgroundMediaController.currentArtist,
+                    positionMs = com.example.manager.BackgroundMediaController.positionMs,
+                    durationMs = com.example.manager.BackgroundMediaController.durationMs,
+                    artworkUrl = com.example.manager.BackgroundMediaController.currentArtworkUrl
+                )
+            }
         }
     }
 
@@ -256,8 +300,8 @@ class MainActivity : AppCompatActivity() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (::viewModel.isInitialized &&
-            (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
-             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+            !viewModel.backgroundPlaybackEnabled.value &&
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
         ) {
             viewModel.requestHibernateInactiveTabs()
         }
@@ -265,7 +309,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onLowMemory() {
         super.onLowMemory()
-        if (::viewModel.isInitialized) {
+        if (::viewModel.isInitialized && !viewModel.backgroundPlaybackEnabled.value) {
             viewModel.requestHibernateInactiveTabs()
         }
     }

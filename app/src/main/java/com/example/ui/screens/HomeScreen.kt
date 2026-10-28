@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -38,6 +40,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
 import com.example.ui.theme.*
 import com.example.ui.components.DeveloperAiAttributionSection
 import com.example.ui.viewmodel.BrowserViewModel
@@ -65,7 +77,8 @@ private val defaultChromeShortcuts = listOf(
 fun HomeScreen(
     viewModel: BrowserViewModel,
     onNavigate: (String) -> Unit,
-    onSearchSubmit: (String) -> Unit
+    onSearchSubmit: (String) -> Unit,
+    onFocusOmnibox: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var searchInput by remember { mutableStateOf("") }
@@ -106,39 +119,87 @@ fun HomeScreen(
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.TopCenter
     ) {
-        val isWide = maxWidth >= 600.dp
+        val layoutProfile = WindowLayoutProfile(maxWidth, maxHeight)
+        val isWide = layoutProfile.isTabletOrWide
+        val isCompactHeight = maxHeight < 500.dp
         val contentMaxWidth = if (isWide) 660.dp else maxWidth
+
+        var hasEntered by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { hasEntered = true }
+        val entranceAlpha by animateFloatAsState(
+            targetValue = if (hasEntered) 1f else 0f,
+            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+            label = "home_entrance_alpha"
+        )
+        val entranceOffsetY by animateFloatAsState(
+            targetValue = if (hasEntered) 0f else 26f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "home_entrance_y"
+        )
+        val heroPulseTransition = rememberInfiniteTransition(label = "hero_pulse")
+        val heroScale by heroPulseTransition.animateFloat(
+            initialValue = 0.98f,
+            targetValue = 1.03f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2200, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "hero_scale"
+        )
 
         Column(
             modifier = Modifier
                 .widthIn(max = contentMaxWidth)
                 .fillMaxSize()
+                .graphicsLayer {
+                    alpha = entranceAlpha
+                    translationY = entranceOffsetY
+                }
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = if (isWide) 32.dp else 16.dp, vertical = 16.dp),
+                .padding(
+                    horizontal = if (isWide) 32.dp else if (maxWidth < 340.dp) 12.dp else 16.dp,
+                    vertical = if (isCompactHeight) 10.dp else 16.dp
+                ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Chrome NTP Top Header Strip (Search Engine Pill, Mode Toggle & Incognito Quick Switch)
+            // Responsive Top Header Strip (Anti-Clipping on Split-Screen & Floating Window)
             val currentDisplayMode by viewModel.displayMode.collectAsState()
             val extensionsList by viewModel.extensions.collectAsState()
             val enabledExtCount = remember(extensionsList) { extensionsList.count { it.isEnabled } }
+            val dolbyAtmosEnabled by viewModel.dolbyAtmosEnabled.collectAsState()
+            val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
+            val dolbyCapabilities by viewModel.dolbyDeviceCapabilities.collectAsState()
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 var showSearchEngineMenu by remember { mutableStateOf(false) }
+                val engineInteraction = remember { MutableInteractionSource() }
                 Box {
                     Surface(
                         shape = RoundedCornerShape(100.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        color = Color.Transparent,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(100.dp))
-                            .clickable { showSearchEngineMenu = true }
+                            .heightIn(min = 38.dp)
+                            .interactiveLiquidGlass(
+                                interactionSource = engineInteraction,
+                                shape = RoundedCornerShape(100.dp),
+                                elevation = 2.dp
+                            )
+                            .clickable(
+                                interactionSource = engineInteraction,
+                                indication = null
+                            ) { showSearchEngineMenu = true }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -150,7 +211,10 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = selectedEngine,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                ),
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -211,20 +275,29 @@ fun HomeScreen(
                     }
                 }
 
+                Spacer(modifier = Modifier.width(8.dp))
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Quick Mobile / Desktop UI Mode Toggle
+                    val modeInteraction = remember { MutableInteractionSource() }
                     Surface(
                         shape = RoundedCornerShape(100.dp),
-                        color = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP)
-                            MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        color = Color.Transparent,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(100.dp))
-                            .clickable {
+                            .heightIn(min = 38.dp)
+                            .interactiveLiquidGlass(
+                                isActive = currentDisplayMode == com.example.manager.DisplayMode.DESKTOP,
+                                interactionSource = modeInteraction,
+                                shape = RoundedCornerShape(100.dp),
+                                elevation = 2.dp
+                            )
+                            .clickable(
+                                interactionSource = modeInteraction,
+                                indication = null
+                            ) {
                                 val next = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP)
                                     com.example.manager.DisplayMode.MOBILE
                                 else com.example.manager.DisplayMode.DESKTOP
@@ -232,49 +305,104 @@ fun HomeScreen(
                             }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 imageVector = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP)
                                     Icons.Outlined.DesktopWindows else Icons.Outlined.PhoneAndroid,
-                                contentDescription = "Toggle Display Mode",
-                                tint = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP)
-                                    MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+                                contentDescription = "Ganti Mode Tampilan",
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
                                 text = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP) "Desktop" else "Mobile",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                                color = if (currentDisplayMode == com.example.manager.DisplayMode.DESKTOP)
-                                    MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
 
+                    val dolbyPillInteraction = remember { MutableInteractionSource() }
+                    val isAnyDolbyOn = dolbyAtmosEnabled || dolbyVisionEnabled
                     Surface(
                         shape = RoundedCornerShape(100.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        color = Color.Transparent,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(100.dp))
-                            .clickable { viewModel.addNewTab(isPrivate = true) }
+                            .heightIn(min = 38.dp)
+                            .interactiveLiquidGlass(
+                                isActive = isAnyDolbyOn,
+                                interactionSource = dolbyPillInteraction,
+                                shape = RoundedCornerShape(100.dp),
+                                elevation = 2.dp
+                            )
+                            .clickable(
+                                interactionSource = dolbyPillInteraction,
+                                indication = null
+                            ) { viewModel.setDolbyDialogVisible(true) }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.SurroundSound,
+                                contentDescription = "Dolby Atmos & Vision",
+                                tint = if (isAnyDolbyOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = if (dolbyAtmosEnabled && dolbyVisionEnabled) "Dolby Atmos • Vision"
+                                else if (dolbyAtmosEnabled) "Dolby Atmos"
+                                else if (dolbyVisionEnabled) "Dolby Vision"
+                                else "Dolby Off",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+
+                    val incognitoPillInteraction = remember { MutableInteractionSource() }
+                    Surface(
+                        shape = RoundedCornerShape(100.dp),
+                        color = Color.Transparent,
+                        modifier = Modifier
+                            .heightIn(min = 38.dp)
+                            .interactiveLiquidGlass(
+                                interactionSource = incognitoPillInteraction,
+                                shape = RoundedCornerShape(100.dp),
+                                elevation = 2.dp
+                            )
+                            .clickable(
+                                interactionSource = incognitoPillInteraction,
+                                indication = null
+                            ) { viewModel.addNewTab(isPrivate = true) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.VisibilityOff,
-                                contentDescription = "New Incognito Tab",
+                                contentDescription = "Tab Samaran Baru",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Incognito",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                                text = "Samaran",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp
+                                ),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -282,14 +410,18 @@ fun HomeScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(if (isWide) 24.dp else 18.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 8.dp else if (isWide) 24.dp else 18.dp))
 
-            // Alex Browser Singularity Brand Hero Logo
+            // Alex Browser Singularity Brand Hero Logo with Smooth Breathing Animation
             Image(
                 painter = painterResource(id = R.drawable.ic_alex_singularity),
                 contentDescription = "Alex Browser Singularity",
                 modifier = Modifier
-                    .size(if (isWide) 84.dp else 72.dp)
+                    .size(if (isCompactHeight) 52.dp else if (isWide) 84.dp else 72.dp)
+                    .graphicsLayer {
+                        scaleX = heroScale
+                        scaleY = heroScale
+                    }
                     .clip(CircleShape)
                     .shadow(
                         elevation = 8.dp,
@@ -299,7 +431,7 @@ fun HomeScreen(
                     )
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 6.dp else 10.dp))
 
             // Adaptive Search Engine Wordmark Header
             val engineHeader = remember(selectedEngine) {
@@ -342,23 +474,24 @@ fun HomeScreen(
             Text(
                 text = engineHeader,
                 style = MaterialTheme.typography.displayMedium.copy(
-                    fontSize = if (isWide) 52.sp else 42.sp,
+                    fontSize = if (isCompactHeight) 32.sp else if (isWide) 52.sp else 42.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = (-1).sp
                 ),
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 10.dp else 18.dp))
 
-            // Authentic Chrome Fakebox / Omnibox Search Pill
+            // Liquid Glass Search Pill
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .height(56.dp)
+                    .interactiveLiquidGlass(shape = RoundedCornerShape(28.dp), elevation = 6.dp),
                 shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 2.dp
+                color = Color.Transparent,
+                tonalElevation = 0.dp
             ) {
                 Row(
                     modifier = Modifier
@@ -366,23 +499,24 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Google "G" / Search badge on the left of Fakebox
+                    // Search badge on the left of Fakebox
                     Box(
                         modifier = Modifier
-                            .size(28.dp)
+                            .size(32.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surface),
+                            .background(MaterialTheme.colorScheme.surface)
+                            .then(if (onFocusOmnibox != null) Modifier.clickable { onFocusOmnibox() } else Modifier),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Search,
-                            contentDescription = "Search",
+                            contentDescription = "Cari",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(18.dp)
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     Box(
                         modifier = Modifier.weight(1f),
@@ -427,22 +561,22 @@ fun HomeScreen(
                     if (searchInput.isNotEmpty()) {
                         IconButton(
                             onClick = { searchInput = "" },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Clear,
-                                contentDescription = "Clear",
+                                contentDescription = "Bersihkan",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                         IconButton(
                             onClick = { onSearchSubmit(searchInput.trim()) },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
-                                contentDescription = "Go",
+                                contentDescription = "Telusuri",
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -451,19 +585,21 @@ fun HomeScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 12.dp else 20.dp))
 
-            // Chrome Most Visited Circular Shortcuts Grid (2 rows of 4)
+            // Liquid Glass Circular Shortcuts Grid (2 rows of 4)
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .interactiveLiquidGlass(shape = RoundedCornerShape(24.dp), elevation = 4.dp),
                 shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow
+                color = Color.Transparent
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 18.dp, horizontal = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .padding(vertical = if (isCompactHeight) 12.dp else 18.dp, horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 10.dp else 16.dp)
                 ) {
                     val rows = defaultChromeShortcuts.chunked(4)
                     rows.forEach { rowItems ->
@@ -487,7 +623,7 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Chrome Quick Action Hub Row (Extensions, Bookmarks, History, Downloads)
+            // Liquid Glass Quick Action Hub Row (Extensions, Bookmarks, History, Downloads)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -516,15 +652,75 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     onClick = { viewModel.setDownloadsVisible(true) }
                 )
+                ChromeQuickActionButton(
+                    icon = Icons.Outlined.SurroundSound,
+                    label = if (dolbyAtmosEnabled || dolbyVisionEnabled) "Dolby ON" else "Dolby OFF",
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.setDolbyDialogVisible(true) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Dolby Atmos & Dolby Vision Live Hardware & Control Card on Home Screen
+            val dolbyCardInteraction = remember { MutableInteractionSource() }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .interactiveLiquidGlass(
+                        isActive = dolbyAtmosEnabled || dolbyVisionEnabled,
+                        interactionSource = dolbyCardInteraction,
+                        shape = RoundedCornerShape(20.dp),
+                        elevation = 3.dp
+                    )
+                    .clickable(
+                        interactionSource = dolbyCardInteraction,
+                        indication = null
+                    ) { viewModel.setDolbyDialogVisible(true) },
+                shape = RoundedCornerShape(20.dp),
+                color = Color.Transparent
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    com.example.ui.components.DolbyAnimatedWaveBadge(
+                        isActive = dolbyAtmosEnabled || dolbyVisionEnabled
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Dolby Atmos & Dolby Vision",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Atmos: ${if (dolbyAtmosEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.isNativeAtmosSupported) "Native" else "3D DSP"}) • Vision: ${if (dolbyVisionEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.isNativeVisionSupported) "HDR Native" else "PQ Shader"})",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = "Atur",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
 
             // Saved Bookmarks Section (if user has bookmarks)
             if (bookmarks.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .liquidGlass(shape = RoundedCornerShape(20.dp), elevation = 2.dp),
                     shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
+                    color = Color.Transparent
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -541,16 +737,17 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Bookmarks",
+                                    text = "Bookmark Tersimpan",
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                             TextButton(
                                 onClick = { viewModel.setBookmarksVisible(true) },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                modifier = Modifier.heightIn(min = 44.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text(stringResource(R.string.menu_bookmarks), style = MaterialTheme.typography.labelMedium)
+                                Text("Lihat Semua", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -558,6 +755,7 @@ fun HomeScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
                                     .clip(RoundedCornerShape(12.dp))
                                     .clickable { onNavigate(bmark.url) }
                                     .padding(vertical = 8.dp, horizontal = 8.dp),
@@ -588,7 +786,7 @@ fun HomeScreen(
                                     )
                                     Text(
                                         text = bmark.url,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -600,13 +798,15 @@ fun HomeScreen(
                 }
             }
 
-            // Continue Browsing / Recent History Card (like Chrome "Jump back in")
+            // Continue Browsing / Recent History Card
             if (recentHistory.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .liquidGlass(shape = RoundedCornerShape(20.dp), elevation = 2.dp),
                     shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
+                    color = Color.Transparent
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -623,16 +823,17 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Recently visited",
+                                    text = "Baru saja dikunjungi",
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                             TextButton(
                                 onClick = { viewModel.setHistoryVisible(true) },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                modifier = Modifier.heightIn(min = 44.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text(stringResource(R.string.menu_history), style = MaterialTheme.typography.labelMedium)
+                                Text("Lihat Semua", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -640,6 +841,7 @@ fun HomeScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
                                     .clip(RoundedCornerShape(12.dp))
                                     .clickable { onNavigate(item.url) }
                                     .padding(vertical = 8.dp, horizontal = 8.dp),
@@ -670,7 +872,7 @@ fun HomeScreen(
                                     )
                                     Text(
                                         text = item.url,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -684,7 +886,7 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Chrome Safety & Privacy Shield Report Card
+            // AlexShield & Privacy Guard Report Card
             ChromePrivacySummaryCard(
                 adBlockEnabled = adBlockEnabled,
                 adBlockModeName = adBlockMode.name,
@@ -714,18 +916,27 @@ private fun ChromeSiteShortcutTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
+    val tileInteraction = remember { MutableInteractionSource() }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = tileInteraction,
+                indication = null,
+                onClick = onClick
+            )
             .padding(vertical = 6.dp, horizontal = 4.dp)
     ) {
         Box(
             modifier = Modifier
                 .size(50.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceContainer),
+                .interactiveLiquidGlass(
+                    interactionSource = tileInteraction,
+                    shape = CircleShape,
+                    elevation = 3.dp
+                ),
             contentAlignment = Alignment.Center
         ) {
             Box(
@@ -766,14 +977,22 @@ private fun ChromeQuickActionButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
+    val btnInteraction = remember { MutableInteractionSource() }
     Surface(
         modifier = modifier
-            .height(54.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            .height(56.dp)
+            .interactiveLiquidGlass(
+                interactionSource = btnInteraction,
+                shape = RoundedCornerShape(18.dp),
+                elevation = 3.dp
+            )
+            .clickable(
+                interactionSource = btnInteraction,
+                indication = null,
+                onClick = onClick
+            ),
+        shape = RoundedCornerShape(18.dp),
+        color = Color.Transparent
     ) {
         Column(
             modifier = Modifier
@@ -812,10 +1031,9 @@ private fun ChromePrivacySummaryCard(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier,
+        modifier = modifier.interactiveLiquidGlass(shape = RoundedCornerShape(20.dp), elevation = 4.dp),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+        color = Color.Transparent
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -836,14 +1054,14 @@ private fun ChromePrivacySummaryCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Chrome Safety & AdShield",
+                        text = "AlexShield & Privacy Guard",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = if (trackersBlockedCount > 0) "$trackersBlockedCount ads & trackers blocked across sites"
-                        else "Real-time ad & tracker protection active",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = if (trackersBlockedCount > 0) "$trackersBlockedCount iklan & pelacak diblokir lintas situs"
+                        else "Perlindungan iklan & pelacak real-time aktif",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -856,12 +1074,12 @@ private fun ChromePrivacySummaryCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ChromePrivacyChip(
-                    label = "AdShield: ${if (adBlockEnabled) adBlockModeName else "Off"}",
+                    label = "AdShield: ${if (adBlockEnabled) adBlockModeName else "Nonaktif"}",
                     isActive = adBlockEnabled,
                     modifier = Modifier.weight(1f)
                 )
                 ChromePrivacyChip(
-                    label = "Trackers: ${if (trackerBlockEnabled) "Blocked" else "Allowed"}",
+                    label = "Pelacak: ${if (trackerBlockEnabled) "Diblokir" else "Diizinkan"}",
                     isActive = trackerBlockEnabled,
                     modifier = Modifier.weight(1f)
                 )
@@ -895,7 +1113,10 @@ private fun ChromePrivacyChip(
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp
+                ),
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -917,20 +1138,26 @@ private fun ChromeIncognitoNewTabPage(
             .background(ChromeIncognitoBg),
         contentAlignment = Alignment.TopCenter
     ) {
-        val isWide = maxWidth >= 600.dp
+        val layoutProfile = WindowLayoutProfile(maxWidth, maxHeight)
+        val isWide = layoutProfile.isTabletOrWide
+        val isCompactHeight = maxHeight < 500.dp
+
         Column(
             modifier = Modifier
                 .widthIn(max = if (isWide) 620.dp else maxWidth)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 20.dp),
+                .padding(horizontal = if (maxWidth < 340.dp) 14.dp else 24.dp, vertical = if (isCompactHeight) 12.dp else 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                TextButton(onClick = onExitIncognito) {
+                TextButton(
+                    onClick = onExitIncognito,
+                    modifier = Modifier.heightIn(min = 44.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.Public,
                         contentDescription = null,
@@ -938,45 +1165,46 @@ private fun ChromeIncognitoNewTabPage(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.menu_new_tab), color = ChromeIncognitoAccent)
+                    Text("Beralih ke Tab Reguler", color = ChromeIncognitoAccent)
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 4.dp else 8.dp))
 
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(if (isCompactHeight) 56.dp else 72.dp)
                     .clip(CircleShape)
                     .background(ChromeIncognitoOmnibox),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.VisibilityOff,
-                    contentDescription = "Incognito",
+                    contentDescription = "Mode Penyamaran",
                     tint = ChromeIncognitoText,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(if (isCompactHeight) 28.dp else 36.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 10.dp else 16.dp))
 
             Text(
-                text = "You've gone Incognito",
+                text = "Mode Penyamaran (Incognito)",
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Normal),
                 color = ChromeIncognitoText,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 12.dp else 20.dp))
 
-            // Incognito Omnibox Search Pill
+            // Incognito Omnibox Search Pill with Liquid Glass
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .height(52.dp)
+                    .liquidGlass(shape = RoundedCornerShape(26.dp), isIncognito = true, elevation = 3.dp),
                 shape = RoundedCornerShape(26.dp),
-                color = ChromeIncognitoOmnibox
+                color = Color.Transparent
             ) {
                 Row(
                     modifier = Modifier
@@ -986,7 +1214,7 @@ private fun ChromeIncognitoNewTabPage(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
+                        contentDescription = "Cari",
                         tint = ChromeIncognitoSubtext,
                         modifier = Modifier.size(20.dp)
                     )
@@ -997,9 +1225,11 @@ private fun ChromeIncognitoNewTabPage(
                         modifier = Modifier.weight(1f),
                         placeholder = {
                             Text(
-                                "Search or type URL in Incognito",
+                                "Cari atau ketik URL di Mode Samaran",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = ChromeIncognitoSubtext
+                                color = ChromeIncognitoSubtext,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         },
                         colors = TextFieldDefaults.colors(
@@ -1025,10 +1255,10 @@ private fun ChromeIncognitoNewTabPage(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else 24.dp))
 
             Text(
-                text = "Private tabs do not save browsing history, persistent DOM storage (localStorage), or form data, and block third-party cookies. Note: Android WebView shares a single first-party cookie engine across tabs; session cookies are cleared automatically when all private tabs close and no regular web tabs are active.",
+                text = "Tab samaran tidak menyimpan riwayat penjelajahan, penyimpanan DOM persisten (localStorage), maupun data formulir, serta memblokir cookie pihak ketiga. Catatan: Android WebView berbagi satu mesin cookie pihak pertama lintas tab; cookie sesi akan dibersihkan otomatis saat seluruh tab samaran ditutup dan tidak ada tab reguler aktif.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = ChromeIncognitoSubtext,
                 lineHeight = 20.sp
@@ -1042,41 +1272,41 @@ private fun ChromeIncognitoNewTabPage(
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     IncognitoInfoBlock(
-                        title = "Alex Browser won't save:",
+                        title = "AdBlock Browser tidak menyimpan:",
                         bullets = listOf(
-                            "Your browsing history & private downloads list",
-                            "Persistent DOM storage (localStorage) & third-party cookies",
-                            "Information entered in forms or disk HTTP cache"
+                            "Riwayat penjelajahan & daftar unduhan privat Anda",
+                            "Penyimpanan DOM persisten (localStorage) & cookie pihak ketiga",
+                            "Informasi yang dimasukkan pada formulir atau cache HTTP disk"
                         ),
                         modifier = Modifier.weight(1f)
                     )
                     IncognitoInfoBlock(
-                        title = "Activity or cookies may still be shared with:",
+                        title = "Aktivitas mungkin tetap terlihat oleh:",
                         bullets = listOf(
-                            "Active first-party logins in open regular tabs (Android WebView limitation)",
-                            "Websites you visit & your internet service provider",
-                            "Your employer or school network"
+                            "Sesi login pihak pertama aktif di tab reguler (batasan Android WebView)",
+                            "Situs web yang Anda kunjungi & penyedia layanan internet (ISP)",
+                            "Administrator jaringan kantor atau sekolah Anda"
                         ),
                         modifier = Modifier.weight(1f)
                     )
                 }
             } else {
                 IncognitoInfoBlock(
-                    title = "Alex Browser won't save:",
+                    title = "AdBlock Browser tidak menyimpan:",
                     bullets = listOf(
-                        "Your browsing history & private downloads list",
-                        "Persistent DOM storage (localStorage) & third-party cookies",
-                        "Information entered in forms or disk HTTP cache"
+                        "Riwayat penjelajahan & daftar unduhan privat Anda",
+                        "Penyimpanan DOM persisten (localStorage) & cookie pihak ketiga",
+                        "Informasi yang dimasukkan pada formulir atau cache HTTP disk"
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 IncognitoInfoBlock(
-                    title = "Activity or cookies may still be shared with:",
+                    title = "Aktivitas mungkin tetap terlihat oleh:",
                     bullets = listOf(
-                        "Active first-party logins in open regular tabs (Android WebView limitation)",
-                        "Websites you visit & your internet service provider",
-                        "Your employer or school network"
+                        "Sesi login pihak pertama aktif di tab reguler (batasan Android WebView)",
+                        "Situs web yang Anda kunjungi & penyedia layanan internet (ISP)",
+                        "Administrator jaringan kantor atau sekolah Anda"
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1092,9 +1322,9 @@ private fun IncognitoInfoBlock(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier,
+        modifier = modifier.liquidGlass(shape = RoundedCornerShape(16.dp), isIncognito = true, elevation = 2.dp),
         shape = RoundedCornerShape(16.dp),
-        color = ChromeIncognitoSurface
+        color = Color.Transparent
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -1106,7 +1336,7 @@ private fun IncognitoInfoBlock(
             bullets.forEach { item ->
                 Text(
                     text = "•  $item",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                     color = ChromeIncognitoSubtext,
                     modifier = Modifier.padding(vertical = 2.dp)
                 )
@@ -1114,3 +1344,4 @@ private fun IncognitoInfoBlock(
         }
     }
 }
+

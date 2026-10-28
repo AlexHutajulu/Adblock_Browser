@@ -2,7 +2,6 @@ package com.example.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +16,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.ui.theme.isAppInDarkTheme
+import com.example.ui.theme.isLiquidGlassEnabled
 
 /**
  * Permukaan kaca cair yang ringan. enabled=false memakai surface solid.
@@ -26,11 +27,11 @@ import androidx.compose.ui.unit.dp
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(22.dp),
-    enabled: Boolean = true,
+    enabled: Boolean = isLiquidGlassEnabled(),
     elevation: Dp = 6.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = isAppInDarkTheme()
     val surface = MaterialTheme.colorScheme.surface
     val fill = remember(dark) {
         if (dark) {
