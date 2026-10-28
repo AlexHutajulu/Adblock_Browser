@@ -13,17 +13,17 @@ object AdBlockServiceWorker {
     private val adBlockClient = AdBlockWebViewClient(PrivacyMode.BALANCED)
 
     fun install() {
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)) {
-            try {
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)) {
                 val controller = ServiceWorkerControllerCompat.getInstance()
                 controller.setServiceWorkerClient(object : ServiceWorkerClientCompat() {
                     override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
                         return adBlockClient.shouldInterceptRequest(null, request)
                     }
                 })
-            } catch (_: Exception) {
-                // Silently fallback if device OS disables service worker customization
             }
+        } catch (_: Throwable) {
+            // Silently fallback if device OS / WebView provider disables service worker customization
         }
     }
 

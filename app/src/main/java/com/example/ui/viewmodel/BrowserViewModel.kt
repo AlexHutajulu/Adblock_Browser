@@ -55,7 +55,58 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val settings = SettingsManager(application)
     val permissionManager = PermissionManager(application)
 
-    var isColdStartCompleted = false
+    var isColdStartCompleted: Boolean
+        get() = sharedColdStartCompleted
+        set(value) {
+            sharedColdStartCompleted = value
+        }
+
+    val webViewPool: MutableMap<String, WebView>
+        get() = sharedWebViewPool
+
+    private val _isVideoFullscreen = MutableStateFlow(false)
+    val isVideoFullscreen = _isVideoFullscreen.asStateFlow()
+
+    @Volatile
+    private var exitVideoFullscreenCallback: (() -> Unit)? = null
+
+    fun onEnterVideoFullscreen(exitCallback: () -> Unit) {
+        exitVideoFullscreenCallback = exitCallback
+        _isVideoFullscreen.value = true
+    }
+
+    fun onExitVideoFullscreen() {
+        exitVideoFullscreenCallback = null
+        _isVideoFullscreen.value = false
+    }
+
+    fun exitVideoFullscreen(): Boolean {
+        val cb = exitVideoFullscreenCallback
+        if (cb != null) {
+            exitVideoFullscreenCallback = null
+            _isVideoFullscreen.value = false
+            cb.invoke()
+            return true
+        }
+        if (_isVideoFullscreen.value) {
+            _isVideoFullscreen.value = false
+            return true
+        }
+        return false
+    }
+
+    fun destroyAndRemoveWebView(tabId: String) {
+        val wv = sharedWebViewPool.remove(tabId) ?: return
+        try {
+            (wv.parent as? android.view.ViewGroup)?.removeView(wv)
+            wv.stopLoading()
+            wv.onPause()
+            wv.loadUrl("about:blank")
+            wv.clearHistory()
+            wv.removeAllViews()
+            wv.destroy()
+        } catch (_: Throwable) {}
+    }
 
     data class PendingPermissionRequest(
         val url: String,
@@ -950,6 +1001,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _closedTabs = mutableListOf<BrowserTab>()
     
     private fun cleanupClosedTabState(tabId: String) {
+        destroyAndRemoveWebView(tabId)
         clearDevToolsState(tabId)
         clearTabActivePermissions(tabId)
         _tabHistoryStacks.update { it - tabId }
@@ -1953,6 +2005,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+        @Volatile
+        var sharedColdStartCompleted: Boolean = false
+
+        val sharedWebViewPool: MutableMap<String, WebView> = java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, WebView>(16, 0.75f, true) {}
+        )
+
         const val MAX_CONSOLE_MESSAGE_LENGTH = 2000
         const val MAX_CONSOLE_SOURCE_LENGTH = 256
         const val MAX_CONSOLE_ENTRIES_PER_TAB = 200

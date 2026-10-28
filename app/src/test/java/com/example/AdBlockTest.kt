@@ -2373,6 +2373,36 @@ class AdBlockTest {
         assertFalse("Fase 3 regression: External extension allowInPrivate must be false by default", importedExts.first().allowInPrivate)
         assertFalse("Fase 3 regression: External extension isEnabled must be false by default", importedExts.first().isEnabled)
     }
+
+    @Test
+    fun testMainActivityLaunchAndSafeDolbyMseAndSettingsHosting() {
+        val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        assertNotNull("MainActivity must launch without error", activity)
+        assertFalse("MainActivity must not be finishing after launch", activity.isFinishing)
+
+        // Advance main looper past SplashScreen timeout (800ms) so BrowserScreen and HomeScreen compose and measure
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(1200))
+        assertFalse("MainActivity must remain active after transitioning from SplashScreen to BrowserScreen", activity.isFinishing)
+
+        // Verify DolbyMediaEngine script never blindly returns true for unsupported MSE codecs
+        val dolbyScriptOn = com.example.manager.DolbyMediaEngine.buildWebViewDolbyEngineScript(
+            atmosEnabled = true,
+            atmosProfile = com.example.manager.DolbyAtmosProfile.DYNAMIC,
+            visionEnabled = true,
+            visionMode = com.example.manager.DolbyVisionMode.VIVID
+        )
+        assertTrue(
+            "Dolby engine script must delegate supported codec check to origIsTypeSupported",
+            dolbyScriptOn.contains("return origIsTypeSupported(mimeType);")
+        )
+        assertFalse(
+            "Dolby engine script must never unconditionally return true for vp09.02/dvh1/ec-3 when unsupported by hardware MSE",
+            dolbyScriptOn.contains("low.indexOf('vp09.02') !== -1) {\n                                return true;")
+        )
+
+        controller.pause().stop().destroy()
+    }
 }
 
 

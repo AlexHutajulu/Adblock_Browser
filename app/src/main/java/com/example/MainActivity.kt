@@ -14,12 +14,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -106,15 +105,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun attachBaseContext(newBase: Context) {
-        val settingsManager = com.example.manager.SettingsManager(newBase)
-        val localizedContext = com.example.manager.AppLanguageManager.createLocalizedContext(newBase, settingsManager.appLanguage)
-        super.attachBaseContext(localizedContext)
+        val contextToAttach = try {
+            val settingsManager = com.example.manager.SettingsManager(newBase)
+            com.example.manager.AppLanguageManager.createLocalizedContext(newBase, settingsManager.appLanguage)
+        } catch (_: Throwable) {
+            newBase
+        }
+        super.attachBaseContext(contextToAttach)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = androidx.activity.SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
 
         // Initialize local Favicon disk & memory cache (no third-party network calls)
         com.example.manager.FaviconStore.init(applicationContext)
@@ -158,13 +174,27 @@ class MainActivity : AppCompatActivity() {
             val currentTheme by viewModel.appTheme.collectAsState()
             val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsState()
             val allowScreenRecording by viewModel.allowScreenRecording.collectAsState()
+            val tabs by viewModel.tabs.collectAsState()
+            val activeTabId by viewModel.activeTabId.collectAsState()
+            val isIncognitoActive = remember(tabs, activeTabId) {
+                tabs.find { it.id == activeTabId }?.isPrivate == true
+            }
             val systemDark = isSystemInDarkTheme()
             
-            LaunchedEffect(allowScreenRecording) {
-                if (allowScreenRecording) {
-                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+            LaunchedEffect(allowScreenRecording, isIncognitoActive) {
+                // Pastikan FLAG_SECURE selalu dibersihkan pada build debug / AI Studio Streaming Preview
+                // dan pada tab reguler agar stream VirtualDisplay tidak pernah menjadi blackscreen.
+                val shouldBlockCapture = !BuildConfig.DEBUG &&
+                    isIncognitoActive &&
+                    !allowScreenRecording &&
+                    !com.example.manager.DolbyMediaEngine.isRunningOnVirtualOrStreamingDevice()
+                if (shouldBlockCapture) {
+                    window.setFlags(
+                        android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                        android.view.WindowManager.LayoutParams.FLAG_SECURE
+                    )
                 } else {
-                    window.setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
                 }
             }
 
@@ -200,28 +230,35 @@ class MainActivity : AppCompatActivity() {
                                 )
                             }
                             NavigationRoute.BROWSER, NavigationRoute.SETTINGS -> {
+                                val isSettingsOpen = (currentRoute == NavigationRoute.SETTINGS)
                                 androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
                                     androidx.compose.foundation.layout.Box(
-                                        modifier = if (currentRoute == NavigationRoute.SETTINGS) {
-                                            Modifier.size(1.dp).alpha(0f)
-                                        } else {
-                                            Modifier.fillMaxSize()
-                                        }
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .zIndex(if (isSettingsOpen) 0f else 1f)
+                                            .alpha(if (isSettingsOpen) 0f else 1f)
                                     ) {
                                         BrowserScreen(
                                             viewModel = viewModel,
                                             onFileChooser = { filePathCallback, fileChooserParams ->
                                                 handleWebViewFileChooser(filePathCallback, fileChooserParams)
                                             },
-                                            onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS }
+                                            onNavigateToSettings = { currentRoute = NavigationRoute.SETTINGS },
+                                            isSettingsOpen = isSettingsOpen
                                         )
                                     }
 
-                                    if (currentRoute == NavigationRoute.SETTINGS) {
-                                        SettingsScreen(
-                                            viewModel = viewModel,
-                                            onBack = { currentRoute = NavigationRoute.BROWSER }
-                                        )
+                                    if (isSettingsOpen) {
+                                        androidx.compose.foundation.layout.Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .zIndex(2f)
+                                        ) {
+                                            SettingsScreen(
+                                                viewModel = viewModel,
+                                                onBack = { currentRoute = NavigationRoute.BROWSER }
+                                            )
+                                        }
                                     }
                                 }
                             }

@@ -59,6 +59,7 @@ fun CustomWebView(
     trackerBlockEnabled: Boolean,
     webViewPool: MutableMap<String, WebView>,
     onFileChooser: (ValueCallback<Array<Uri>>?, WebChromeClient.FileChooserParams?) -> Unit,
+    isVisibleTab: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -267,7 +268,8 @@ fun CustomWebView(
                 com.example.manager.FrameMetricsTelemetrySync.validateRenderToken(context)
 
                 val webView = webViewPool.getOrPut(tab.id) {
-                    object : WebView(context) {
+                    val mutableContext = android.content.MutableContextWrapper(context)
+                    object : WebView(mutableContext) {
                         private var touchDownY = 0f
                         private var isPullingFromTop = false
 
@@ -280,6 +282,18 @@ fun CustomWebView(
                                 super.onWindowVisibilityChanged(android.view.View.VISIBLE)
                             } else {
                                 super.onWindowVisibilityChanged(visibility)
+                            }
+                        }
+
+                        override fun onVisibilityChanged(changedView: android.view.View, visibility: Int) {
+                            val currentTabState = viewModel.tabs.value.find { it.id == tab.id }
+                            if (visibility != android.view.View.VISIBLE &&
+                                (viewModel.backgroundPlaybackEnabled.value || currentTabState?.isPlayingAudio == true)
+                            ) {
+                                // Keep Chromium renderer active for background/multi-tab audio while Android ViewGroup hides the surface
+                                super.onVisibilityChanged(changedView, android.view.View.VISIBLE)
+                            } else {
+                                super.onVisibilityChanged(changedView, visibility)
                             }
                         }
 
@@ -323,7 +337,7 @@ fun CustomWebView(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
-                        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                        setLayerType(android.view.View.LAYER_TYPE_NONE, null)
                         com.example.manager.DocumentStartCosmetics.install(this)
                         isFocusable = true
                         isFocusableInTouchMode = true
@@ -776,6 +790,28 @@ fun CustomWebView(
                                 canBack = view?.canGoBack() ?: false,
                                 canForward = view?.canGoForward() ?: false
                             )
+                            if (view != null) {
+                                com.example.manager.DolbyMediaEngine.syncWebViewDolbyState(
+                                    webView = view,
+                                    atmosEnabled = viewModel.dolbyAtmosEnabled.value,
+                                    atmosProfile = viewModel.dolbyAtmosProfile.value,
+                                    visionEnabled = viewModel.dolbyVisionEnabled.value,
+                                    visionMode = viewModel.dolbyVisionMode.value
+                                )
+                            }
+                        }
+
+                        override fun onPageCommitVisible(view: WebView?, url: String?) {
+                            super.onPageCommitVisible(view, url)
+                            if (view != null) {
+                                com.example.manager.DolbyMediaEngine.syncWebViewDolbyState(
+                                    webView = view,
+                                    atmosEnabled = viewModel.dolbyAtmosEnabled.value,
+                                    atmosProfile = viewModel.dolbyAtmosProfile.value,
+                                    visionEnabled = viewModel.dolbyVisionEnabled.value,
+                                    visionMode = viewModel.dolbyVisionMode.value
+                                )
+                            }
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
@@ -1458,12 +1494,94 @@ fun CustomWebView(
                             return true
                         }
 
+                        private var customFullscreenView: android.view.View? = null
+                        private var customFullscreenContainer: android.widget.FrameLayout? = null
+                        private var customViewCallback: CustomViewCallback? = null
+
                         override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
-                            // Full screen feature disabled: immediately release custom view callback so video continues inline
-                            callback?.onCustomViewHidden()
+                            if (view == null) {
+                                callback?.onCustomViewHidden()
+                                return
+                            }
+                            if (customFullscreenView != null) {
+                                onHideCustomView()
+                            }
+                            val hostActivity = this@apply.context.findHostActivity() ?: context.findHostActivity()
+                            val decorView = hostActivity?.window?.decorView as? ViewGroup
+                            if (decorView == null) {
+                                callback?.onCustomViewHidden()
+                                return
+                            }
+
+                            customFullscreenView = view
+                            customViewCallback = callback
+
+                            val container = android.widget.FrameLayout(hostActivity).apply {
+                                setBackgroundColor(android.graphics.Color.BLACK)
+                                isClickable = true
+                                isFocusable = true
+                                isFocusableInTouchMode = true
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                            (view.parent as? ViewGroup)?.removeView(view)
+                            container.addView(
+                                view,
+                                android.widget.FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.Gravity.CENTER
+                                )
+                            )
+                            decorView.addView(container)
+                            customFullscreenContainer = container
+
+                            try {
+                                val window = hostActivity.window
+                                val controller = androidx.core.view.WindowCompat.getInsetsController(window, decorView)
+                                controller.systemBarsBehavior =
+                                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                                controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                            } catch (_: Throwable) {}
+
+                            viewModel.onEnterVideoFullscreen {
+                                onHideCustomView()
+                            }
                         }
 
                         override fun onHideCustomView() {
+                            val hostActivity = this@apply.context.findHostActivity() ?: context.findHostActivity()
+                            val decorView = hostActivity?.window?.decorView as? ViewGroup
+                            try {
+                                customFullscreenContainer?.let { container ->
+                                    container.removeAllViews()
+                                    (container.parent as? ViewGroup)?.removeView(container)
+                                    decorView?.removeView(container)
+                                }
+                                customFullscreenView?.let { v ->
+                                    (v.parent as? ViewGroup)?.removeView(v)
+                                }
+                            } catch (_: Throwable) {}
+
+                            customFullscreenContainer = null
+                            customFullscreenView = null
+
+                            try {
+                                if (hostActivity != null && decorView != null) {
+                                    val controller = androidx.core.view.WindowCompat.getInsetsController(hostActivity.window, decorView)
+                                    controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                                }
+                            } catch (_: Throwable) {}
+
+                            val cb = customViewCallback
+                            customViewCallback = null
+                            try {
+                                cb?.onCustomViewHidden()
+                            } catch (_: Throwable) {}
+
+                            viewModel.onExitVideoFullscreen()
                             super.onHideCustomView()
                         }
                     }
@@ -1583,6 +1701,7 @@ fun CustomWebView(
                     }
                 }
             }.apply {
+                (this.context as? android.content.MutableContextWrapper)?.baseContext = context
                 // Detach from prior parent if reused
                 (parent as? ViewGroup)?.removeView(this)
             }
@@ -1591,6 +1710,11 @@ fun CustomWebView(
         },
         update = { view ->
             val webView = (view as? WebView) ?: webViewPool[tab.id] ?: return@AndroidView
+            (webView.context as? android.content.MutableContextWrapper)?.baseContext = context
+            val expectedVisibility = if (isVisibleTab) android.view.View.VISIBLE else android.view.View.INVISIBLE
+            if (webView.visibility != expectedVisibility) {
+                webView.visibility = expectedVisibility
+            }
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
                 val expectedDark = if (forceWebPageDarkMode) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
@@ -1828,4 +1952,11 @@ private fun createDevToolsJsBridge(
         }
     )
 }
+
+private tailrec fun android.content.Context.findHostActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext?.findHostActivity()
+    else -> null
+}
+
 

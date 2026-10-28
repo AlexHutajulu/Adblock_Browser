@@ -88,7 +88,8 @@ import java.util.Locale
 fun BrowserScreen(
     viewModel: BrowserViewModel,
     onFileChooser: (ValueCallback<Array<Uri>>?, WebChromeClient.FileChooserParams?) -> Unit,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    isSettingsOpen: Boolean = false
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -116,11 +117,8 @@ fun BrowserScreen(
     val activeTab = tabs.find { it.id == activeTabId } ?: tabs.firstOrNull() ?: BrowserTab()
     val isIncognito = activeTab.isPrivate
 
-    val webViewPool = remember {
-        java.util.Collections.synchronizedMap(
-            object : java.util.LinkedHashMap<String, android.webkit.WebView>(16, 0.75f, true) {}
-        )
-    }
+    val webViewPool = viewModel.webViewPool
+    val isVideoFullscreen by viewModel.isVideoFullscreen.collectAsState()
 
     val inspectToolsEnabled by viewModel.inspectToolsEnabled.collectAsState()
     val devToolsStates by viewModel.devToolsStates.collectAsState()
@@ -171,10 +169,12 @@ fun BrowserScreen(
     }
 
     // Unified BackHandler - Steps back one page at a time in WebView history before returning to Home
-    androidx.activity.compose.BackHandler(enabled = true) {
+    androidx.activity.compose.BackHandler(enabled = !isSettingsOpen) {
         val webView = webViewPool[activeTabId]
 
-        if (isElementZapperActive) {
+        if (isVideoFullscreen || viewModel.exitVideoFullscreen()) {
+            viewModel.exitVideoFullscreen()
+        } else if (isElementZapperActive) {
             viewModel.setElementZapperActive(false)
         } else if (showExtensionsHub) {
             viewModel.setExtensionsHubVisible(false)
@@ -207,7 +207,7 @@ fun BrowserScreen(
         } else {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastBackPressTime < 2000) {
-                (context as? android.app.Activity)?.finish()
+                (context as? android.app.Activity)?.moveTaskToBack(true)
             } else {
                 Toast.makeText(context, "Tekan sekali lagi untuk keluar", Toast.LENGTH_SHORT).show()
                 lastBackPressTime = currentTime
@@ -294,15 +294,7 @@ fun BrowserScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            val allViews = synchronized(webViewPool) { webViewPool.values.toList() }
-            allViews.forEach { webView ->
-                safeDestroyWebView(webView)
-            }
-            webViewPool.clear()
-        }
-    }
+    // WebViews are managed in viewModel.webViewPool across the app process lifetime so exiting/re-entering never refreshes tabs
 
     var addressInput by remember { mutableStateOf(activeTab.url) }
     var isAddressBarFocused by remember { mutableStateOf(false) }
@@ -563,7 +555,8 @@ fun BrowserScreen(
                     showFindInPage = false
                 },
                 addressBarFocusRequester = addressBarFocusRequester,
-                onAddressFocusChanged = { isAddressBarFocused = it }
+                onAddressFocusChanged = { isAddressBarFocused = it },
+                isSettingsOpen = isSettingsOpen
             )
         } else {
             Scaffold(
@@ -775,14 +768,13 @@ fun BrowserScreen(
                             }
 
                             mountedWebTabs.forEach { tabItem ->
-                                val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveWeb
+                                val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveWeb && !isSettingsOpen
                                 key(tabItem.id) {
                                     Box(
-                                        modifier = if (isCurrentVisibleTab) {
-                                            Modifier.fillMaxSize().zIndex(1f)
-                                        } else {
-                                            Modifier.size(1.dp).alpha(0f).zIndex(0f)
-                                        }
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .zIndex(if (isCurrentVisibleTab) 1f else 0f)
+                                            .alpha(if (isCurrentVisibleTab) 1f else 0f)
                                     ) {
                                         CustomWebView(
                                             tab = tabItem,
@@ -790,7 +782,8 @@ fun BrowserScreen(
                                             adBlockEnabled = adBlockEnabled,
                                             trackerBlockEnabled = trackerBlockEnabled,
                                             webViewPool = webViewPool,
-                                            onFileChooser = onFileChooser
+                                            onFileChooser = onFileChooser,
+                                            isVisibleTab = isCurrentVisibleTab
                                         )
                                     }
                                 }
@@ -830,21 +823,29 @@ fun BrowserScreen(
                             }
                         }
 
-                        // Tablet Bottom Position: Chrome Scrollable Shortcut & Custom JS Bar (Mobile renders it inside ChromeMobileBottomBar)
+                        // Tablet Bottom Position: Docked Dynamic Island Liquid Glass Shortcut & Custom JS Bar (Below WebView so it never covers web content)
                         if (isTablet && shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM) {
-                            HorizontalDivider(
-                                thickness = 0.5.dp,
-                                color = if (isIncognito) Color.White.copy(alpha = 0.1f)
-                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-                            )
-                            ChromeShortcutAndJsBar(
-                                viewModel = viewModel,
-                                activeTab = activeTab,
-                                activeWebView = webViewPool[activeTab.id],
-                                isIncognito = isIncognito,
-                                onOpenFindInPage = { showFindInPage = true },
-                                onOpenSecurityShield = { showSecurityDashboard = true }
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .windowInsetsPadding(WindowInsets.navigationBars)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .interactiveLiquidGlass(
+                                        isDark = isAppInDarkTheme(),
+                                        isIncognito = isIncognito,
+                                        shape = RoundedCornerShape(28.dp),
+                                        elevation = 0.dp
+                                    )
+                            ) {
+                                ChromeShortcutAndJsBar(
+                                    viewModel = viewModel,
+                                    activeTab = activeTab,
+                                    activeWebView = webViewPool[activeTab.id],
+                                    isIncognito = isIncognito,
+                                    onOpenFindInPage = { showFindInPage = true },
+                                    onOpenSecurityShield = { showSecurityDashboard = true }
+                                )
+                            }
                         }
 
                         // Mobile & Tablet bottom docked Developer Tools Inspector
@@ -3664,6 +3665,7 @@ fun DesktopBrowserLayout(
     onCloseFindInPage: () -> Unit,
     addressBarFocusRequester: FocusRequester,
     onAddressFocusChanged: (Boolean) -> Unit = {},
+    isSettingsOpen: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -3888,14 +3890,13 @@ fun DesktopBrowserLayout(
                     }
 
                     mountedDesktopWebTabs.forEach { tabItem ->
-                        val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveDesktopWeb
+                        val isCurrentVisibleTab = (tabItem.id == activeTab.id) && isShowingActiveDesktopWeb && !isSettingsOpen
                         key(tabItem.id) {
                             Box(
-                                modifier = if (isCurrentVisibleTab) {
-                                    Modifier.fillMaxSize().zIndex(1f)
-                                } else {
-                                    Modifier.size(1.dp).alpha(0f).zIndex(0f)
-                                }
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .zIndex(if (isCurrentVisibleTab) 1f else 0f)
+                                    .alpha(if (isCurrentVisibleTab) 1f else 0f)
                             ) {
                                 CustomWebView(
                                     tab = tabItem,
@@ -3903,7 +3904,8 @@ fun DesktopBrowserLayout(
                                     adBlockEnabled = adBlockEnabled,
                                     trackerBlockEnabled = trackerBlockEnabled,
                                     webViewPool = webViewPool,
-                                    onFileChooser = onFileChooser
+                                    onFileChooser = onFileChooser,
+                                    isVisibleTab = isCurrentVisibleTab
                                 )
                             }
                         }
@@ -4046,17 +4048,25 @@ fun DesktopBrowserLayout(
             }
         }
 
-        AnimatedVisibility(
+        // Desktop Bottom Position: Docked Dynamic Island Liquid Glass Shortcut & Custom JS Bar (Below WebView so it never covers web content)
+        androidx.compose.animation.AnimatedVisibility(
             visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
             enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-            exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
+            exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .interactiveLiquidGlass(
+                        isDark = isAppInDarkTheme(),
+                        isIncognito = activeTab.isPrivate,
+                        shape = RoundedCornerShape(28.dp),
+                        elevation = 0.dp
+                    )
             ) {
-                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 ChromeShortcutAndJsBar(
                     viewModel = viewModel,
                     activeTab = activeTab,

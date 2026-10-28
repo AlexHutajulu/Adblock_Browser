@@ -55,7 +55,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 val LocalIsDarkTheme = compositionLocalOf { false }
-val LocalLiquidGlassEnabled = compositionLocalOf { true }
+val LocalLiquidGlassEnabled = compositionLocalOf { false }
 
 @Composable
 fun isAppInDarkTheme(): Boolean {
@@ -218,12 +218,6 @@ fun Modifier.interactiveLiquidGlass(
         )
     }
 
-    val hardwareShadowColor = when {
-        effectiveDark -> Color(0x66000000)
-        isActive -> Color(0x280B57D0)
-        else -> Color(0x1F334155)
-    }
-
     val touchGlowColor = if (effectiveDark) LiquidTouchGlow else LiquidTouchGlowLight
 
     return this
@@ -231,28 +225,18 @@ fun Modifier.interactiveLiquidGlass(
             scaleX = scale
             scaleY = scale
         }
-        .shadow(
-            elevation = if (isPressed) 1.dp else elevation,
-            shape = shape,
-            spotColor = hardwareShadowColor,
-            ambientColor = hardwareShadowColor
-        )
         .clip(shape)
-        .then(
-            if (!effectiveDark) Modifier.background(color = Color(0xFFF8FAFF), shape = shape)
-            else Modifier
-        )
         .background(brush = glassSurfaceBrush, shape = shape)
         .drawWithContent {
             // 1. Gambar pantulan kubah kaca bagian atas (Inner Dome Specular Refraction)
             drawRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = if (effectiveDark) (if (isActive) 0.22f else 0.15f) else 0.72f),
+                        Color.White.copy(alpha = if (effectiveDark) (if (isActive) 0.28f else 0.20f) else 0.55f),
                         Color.Transparent
                     ),
                     startY = 0f,
-                    endY = size.height * 0.50f
+                    endY = size.height * 0.52f
                 )
             )
             // 2. Bias cahaya kristal halus di tepi bawah kaca (Bottom-Edge Crystal Sheen)
@@ -261,13 +245,13 @@ fun Modifier.interactiveLiquidGlass(
                     colors = listOf(
                         Color.Transparent,
                         if (effectiveDark) {
-                            if (isActive) Color(0xFF8AB4F8).copy(alpha = 0.12f)
-                            else Color.White.copy(alpha = 0.05f)
+                            if (isActive) Color(0xFF8AB4F8).copy(alpha = 0.18f)
+                            else Color.White.copy(alpha = 0.09f)
                         } else {
-                            Color(0xFF0B57D0).copy(alpha = if (isActive) 0.10f else 0.04f)
+                            Color(0xFF0B57D0).copy(alpha = if (isActive) 0.14f else 0.06f)
                         }
                     ),
-                    startY = size.height * 0.60f,
+                    startY = size.height * 0.58f,
                     endY = size.height
                 )
             )
@@ -661,7 +645,7 @@ private val ChromeLightColorScheme = lightColorScheme(
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    liquidGlassEnabled: Boolean = true,
+    liquidGlassEnabled: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
