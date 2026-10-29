@@ -382,14 +382,24 @@ fun SettingsScreen(
                 )
                 com.example.ui.components.DolbyAtmosControlCard(
                     enabled = dolbyAtmosEnabled,
+                    canEnable = dolbyCapabilities.canEnableAtmos,
+                    disabledReason = dolbyCapabilities.atmosDisabledReason,
                     selectedProfile = dolbyAtmosProfile,
-                    onToggle = { viewModel.setDolbyAtmosEnabled(it) },
+                    onToggle = {
+                        val decision = viewModel.setDolbyAtmosEnabled(it)
+                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
+                    },
                     onSelectProfile = { viewModel.setDolbyAtmosProfile(it) }
                 )
                 com.example.ui.components.DolbyVisionControlCard(
                     enabled = dolbyVisionEnabled,
+                    canEnable = dolbyCapabilities.canEnableDolbyVision,
+                    disabledReason = dolbyCapabilities.visionDisabledReason,
                     selectedMode = dolbyVisionMode,
-                    onToggle = { viewModel.setDolbyVisionEnabled(it) },
+                    onToggle = {
+                        val decision = viewModel.setDolbyVisionEnabled(it)
+                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
+                    },
                     onSelectMode = { viewModel.setDolbyVisionMode(it) }
                 )
             }

@@ -695,7 +695,7 @@ fun HomeScreen(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Atmos: ${if (dolbyAtmosEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.isNativeAtmosSupported) "Native" else "3D DSP"}) • Vision: ${if (dolbyVisionEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.isNativeVisionSupported) "HDR Native" else "PQ Shader"})",
+                            text = "Atmos: ${if (dolbyAtmosEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.canEnableAtmos) "Tersedia" else "Tidak Tersedia"}) • Vision: ${if (dolbyVisionEnabled) "ON" else "OFF"} (${if (dolbyCapabilities.canEnableDolbyVision) "Tersedia" else "Tidak Tersedia"})",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,

@@ -18,37 +18,190 @@ import android.webkit.WebView
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 
+enum class DolbyFeature {
+    ATMOS,
+    VISION
+}
+
+data class DolbyActivationDecision(
+    val allowed: Boolean,
+    val reason: String
+)
+
+data class DolbyCapabilityAssessment(
+    // Informasi codec: bukan bukti tunggal output Dolby yang berfungsi.
+    val hasAtmosCodec: Boolean = false,
+    val hasAc3OrEac3Codec: Boolean = false,
+
+    // Harus berdasarkan integrasi native yang benar-benar terverifikasi.
+    val hasVerifiedAtmosProcessing: Boolean = false,
+    val canControlNativeAtmos: Boolean = false,
+    val hasVerifiedAtmosPlaybackPath: Boolean = false,
+
+    // Informasi efek audio generik Android (bukan bukti Dolby Atmos).
+    val hasSystemSpatializer: Boolean = false,
+    val isSystemSpatializerAvailable: Boolean = false,
+    val hasSystemDolbyDspDescriptor: Boolean = false,
+    val hasDynamicsProcessingDescriptor: Boolean = false,
+
+    // Dolby Vision memerlukan decoder, display, dan jalur playback yang sesuai.
+    val hasDolbyVisionDecoder: Boolean = false,
+    val hasDolbyVisionDisplay: Boolean = false,
+    val hasVerifiedDolbyVisionPlaybackPath: Boolean = false,
+    val canControlNativeDolbyVision: Boolean = false,
+
+    // Informasi HDR/WCG non-Dolby Vision (tidak boleh dianggap sebagai Dolby Vision).
+    val hasHdr10Decoder: Boolean = false,
+    val hasHdr10OrHlgDisplay: Boolean = false,
+    val hasWideColorGamutDisplay: Boolean = false,
+
+    val detectionError: String? = null
+) {
+    val canEnableAtmos: Boolean
+        get() = detectionError == null &&
+            hasVerifiedAtmosProcessing &&
+            hasVerifiedAtmosPlaybackPath &&
+            canControlNativeAtmos
+
+    val canEnableDolbyVision: Boolean
+        get() = detectionError == null &&
+            hasDolbyVisionDecoder &&
+            hasDolbyVisionDisplay &&
+            hasVerifiedDolbyVisionPlaybackPath &&
+            canControlNativeDolbyVision
+}
+
+fun evaluateDolbyActivation(
+    feature: DolbyFeature,
+    capabilities: DolbyCapabilityAssessment
+): DolbyActivationDecision {
+    if (capabilities.detectionError != null) {
+        return DolbyActivationDecision(
+            allowed = false,
+            reason = "Kemampuan perangkat belum dapat diverifikasi."
+        )
+    }
+
+    return when (feature) {
+        DolbyFeature.ATMOS -> {
+            when {
+                capabilities.canEnableAtmos -> DolbyActivationDecision(
+                    allowed = true,
+                    reason = "Jalur Dolby Atmos native terverifikasi."
+                )
+                capabilities.hasAtmosCodec && !capabilities.hasVerifiedAtmosProcessing -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Codec Dolby Atmos terdeteksi, tetapi pemrosesan output Dolby Atmos native/OEM belum dapat diverifikasi."
+                )
+                capabilities.hasSystemSpatializer && !capabilities.hasVerifiedAtmosProcessing -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Dolby Atmos native tidak tersedia: hanya Android Spatializer generik yang terdeteksi tanpa bukti pemrosesan Dolby Atmos OEM."
+                )
+                !capabilities.hasAtmosCodec && !capabilities.hasVerifiedAtmosProcessing -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Dolby Atmos native tidak tersedia: dekoder dan pemrosesan Dolby Atmos tidak ditemukan pada perangkat ini."
+                )
+                !capabilities.hasVerifiedAtmosPlaybackPath -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Tidak tersedia pada jalur pemutaran ini: WebView tidak menyediakan jalur audio Dolby Atmos native yang terverifikasi."
+                )
+                else -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Dolby Atmos native tidak dapat diaktifkan: kontrol OEM/native tidak tersedia melalui Android SDK standar."
+                )
+            }
+        }
+
+        DolbyFeature.VISION -> {
+            when {
+                capabilities.canEnableDolbyVision -> DolbyActivationDecision(
+                    allowed = true,
+                    reason = "Jalur Dolby Vision native terverifikasi."
+                )
+                !capabilities.hasDolbyVisionDecoder && !capabilities.hasDolbyVisionDisplay -> {
+                    val hdrNote = if (capabilities.hasHdr10OrHlgDisplay || capabilities.hasWideColorGamutDisplay) {
+                        " (Layar mendukung HDR10/WCG, bukan Dolby Vision)."
+                    } else {
+                        "."
+                    }
+                    DolbyActivationDecision(
+                        allowed = false,
+                        reason = "Dolby Vision native tidak tersedia: dekoder dan layar Dolby Vision tidak ditemukan$hdrNote"
+                    )
+                }
+                capabilities.hasDolbyVisionDecoder && !capabilities.hasDolbyVisionDisplay -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Dekoder Dolby Vision terdeteksi, tetapi layar perangkat tidak mendukung tampilan Dolby Vision."
+                )
+                !capabilities.hasDolbyVisionDecoder && capabilities.hasDolbyVisionDisplay -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Layar mendukung Dolby Vision, tetapi dekoder hardware Dolby Vision tidak ditemukan."
+                )
+                !capabilities.hasVerifiedDolbyVisionPlaybackPath -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Tidak tersedia pada jalur pemutaran ini: jalur pemutaran WebView belum dapat diverifikasi untuk Dolby Vision native."
+                )
+                else -> DolbyActivationDecision(
+                    allowed = false,
+                    reason = "Dolby Vision native tidak dapat diaktifkan: kontrol native tidak tersedia melalui API publik."
+                )
+            }
+        }
+    }
+}
+
+fun hasDolbyVisionDisplay(display: Display): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+        return false
+    }
+
+    return try {
+        @Suppress("DEPRECATION")
+        val hdrCapabilities = display.hdrCapabilities
+
+        hdrCapabilities?.supportedHdrTypes?.contains(
+            Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION
+        ) == true
+    } catch (_: RuntimeException) {
+        false
+    }
+}
+
+fun interface DolbyCapabilityProvider {
+    fun detect(context: Context, forceRefresh: Boolean): DolbyDeviceCapabilities
+}
+
 enum class DolbyAtmosProfile(val title: String, val subtitle: String) {
     DYNAMIC(
         title = "Dinamis (Adaptif)",
-        subtitle = "Menyesuaikan panggung suara 3D, sub-bass, dan vokal secara otomatis"
+        subtitle = "Profil frekuensi adaptif (Audio Enhancement generik)"
     ),
     MOVIE(
         title = "Sinema & Film",
-        subtitle = "Surround 3D lebar, dentuman sub-bass sinematik, dan dialog tengah jernih"
+        subtitle = "Profil penekanan sub-bass dan dialog tengah"
     ),
     MUSIC(
         title = "Musik & Studio",
-        subtitle = "Separasi instrumen kristal, panggung akustik luas, dan keseimbangan harmonik"
+        subtitle = "Profil keseimbangan instrumen dan frekuensi tinggi"
     ),
     VOICE(
         title = "Suara & Podcast",
-        subtitle = "Fokus kejernihan frekuensi vokal manusia dan peredaman derau latar"
+        subtitle = "Profil fokus kejernihan frekuensi vokal manusia"
     )
 }
 
 enum class DolbyVisionMode(val title: String, val subtitle: String) {
     VIVID(
-        title = "Dolby Vision Vivid",
-        subtitle = "Kecerahan puncak tinggi, warna Wide Color Gamut P3 hidup, dan kontras mikro tajam"
+        title = "Mode Visual Vivid",
+        subtitle = "Penyesuaian kontras dan saturasi visual"
     ),
     CINEMA(
-        title = "Dolby Vision Cinema",
-        subtitle = "Kurva gamma PQ akurat, detail bayangan gelap dalam, dan warna hangat bioskop"
+        title = "Mode Visual Cinema",
+        subtitle = "Penyesuaian kontras hangat untuk pemutaran video"
     ),
     BRIGHT(
-        title = "Dolby Vision Bright",
-        subtitle = "Mengangkat detail adegan gelap dan sorotan spekular untuk ruangan terang"
+        title = "Mode Visual Bright",
+        subtitle = "Penyesuaian kecerahan visual untuk ruangan terang"
     )
 }
 
@@ -62,33 +215,69 @@ data class DolbyDeviceCapabilities(
     val hasHdr10OrWcgDisplay: Boolean,
     val maxDisplayLuminanceNits: Int,
     val detectedAudioCapabilities: List<String>,
-    val detectedVideoCapabilities: List<String>
+    val detectedVideoCapabilities: List<String>,
+    val assessment: DolbyCapabilityAssessment = DolbyCapabilityAssessment(
+        hasAtmosCodec = hasHardwareDolbyAtmosCodec,
+        hasSystemSpatializer = hasSystemSpatializer,
+        hasSystemDolbyDspDescriptor = hasSystemDolbyDspEffect,
+        hasDynamicsProcessingDescriptor = hasAndroidDynamicsProcessing,
+        hasDolbyVisionDecoder = hasHardwareDolbyVisionDecoder,
+        hasDolbyVisionDisplay = hasDolbyVisionDisplay,
+        hasHdr10OrHlgDisplay = hasHdr10OrWcgDisplay
+    )
 ) {
-    /** True jika perangkat memiliki dekoder Dolby Atmos native, DSP Dolby, atau Spatializer sistem */
-    val isNativeAtmosSupported: Boolean
-        get() = hasHardwareDolbyAtmosCodec || hasSystemSpatializer || hasSystemDolbyDspEffect
+    val canEnableAtmos: Boolean
+        get() = assessment.canEnableAtmos
 
-    /** True jika perangkat memiliki dekoder Dolby Vision / layar HDR10 / Wide Color Gamut */
+    val canEnableDolbyVision: Boolean
+        get() = assessment.canEnableDolbyVision
+
+    /** True HANYA jika jalur Dolby Atmos native benar-benar terverifikasi dan dapat dikendalikan */
+    val isNativeAtmosSupported: Boolean
+        get() = assessment.canEnableAtmos
+
+    /** True HANYA jika decoder, layar, jalur playback, dan kontrol Dolby Vision native terverifikasi */
     val isNativeVisionSupported: Boolean
-        get() = hasHardwareDolbyVisionDecoder || hasDolbyVisionDisplay || hasHdr10OrWcgDisplay
+        get() = assessment.canEnableDolbyVision
+
+    val atmosDisabledReason: String
+        get() = evaluateDolbyActivation(DolbyFeature.ATMOS, assessment).reason
+
+    val visionDisabledReason: String
+        get() = evaluateDolbyActivation(DolbyFeature.VISION, assessment).reason
 
     val atmosHardwareBadge: String
         get() = when {
-            hasHardwareDolbyAtmosCodec && hasSystemSpatializer -> "Didukung Penuh (Hardware Dolby Atmos + 3D Spatializer)"
-            hasHardwareDolbyAtmosCodec -> "Didukung (Hardware Decoder Dolby E-AC3-JOC / AC-4)"
-            hasSystemDolbyDspEffect -> "Didukung (System Dolby Audio DSP)"
-            hasSystemSpatializer -> "Didukung (Android Native 3D Spatializer)"
-            hasAndroidDynamicsProcessing -> "Didukung via Hardware DSP Multi-Band Android"
-            else -> "Mode Audio Hardware Offload Stabil Aktif"
+            assessment.detectionError != null ->
+                "Belum dapat diverifikasi (${assessment.detectionError})"
+            assessment.canEnableAtmos ->
+                "Terverifikasi (Jalur Dolby Atmos Native Tersedia)"
+            assessment.hasAtmosCodec && !assessment.hasVerifiedAtmosPlaybackPath ->
+                "Tidak tersedia pada jalur pemutaran ini (Codec E-AC3-JOC/AC-4 ada, jalur Atmos WebView belum terverifikasi)"
+            assessment.hasSystemDolbyDspDescriptor && !assessment.canControlNativeAtmos ->
+                "Belum dapat diverifikasi (Deskriptor DSP ditemukan, kontrol OEM tidak tersedia)"
+            assessment.hasSystemSpatializer ->
+                "Dolby Atmos Tidak Terverifikasi (Hanya Android Spatializer generik yang terdeteksi)"
+            else ->
+                "Tidak Didukung (Dekoder & pemrosesan Dolby Atmos native tidak ditemukan)"
         }
 
     val visionHardwareBadge: String
         get() = when {
-            hasDolbyVisionDisplay && hasHardwareDolbyVisionDecoder -> "Didukung Penuh (Layar & Decoder Dolby Vision Native)"
-            hasHardwareDolbyVisionDecoder && hasHdr10OrWcgDisplay -> "Didukung (Decoder Dolby Vision + Layar HDR10/P3)"
-            hasHardwareDolbyVisionDecoder -> "Didukung (Hardware Decoder Dolby Vision + PQ Tone-Mapping)"
-            hasHdr10OrWcgDisplay -> "Didukung (Layar HDR10 / Wide Color Gamut + Shader Dolby Vision)"
-            else -> "Layar SDR (Menggunakan Mesin Tone-Mapping Dolby Vision PQ)"
+            assessment.detectionError != null ->
+                "Belum dapat diverifikasi (${assessment.detectionError})"
+            assessment.canEnableDolbyVision ->
+                "Terverifikasi (Layar, Dekoder & Jalur Dolby Vision Native Tersedia)"
+            assessment.hasDolbyVisionDecoder && assessment.hasDolbyVisionDisplay && !assessment.hasVerifiedDolbyVisionPlaybackPath ->
+                "Tidak tersedia pada jalur pemutaran ini (Dekoder & layar Dolby Vision ada, jalur WebView belum terverifikasi)"
+            assessment.hasDolbyVisionDecoder && !assessment.hasDolbyVisionDisplay ->
+                "Tidak Didukung Penuh (Dekoder Dolby Vision ada, tetapi layar bukan Dolby Vision)"
+            !assessment.hasDolbyVisionDecoder && assessment.hasDolbyVisionDisplay ->
+                "Tidak Didukung Penuh (Layar Dolby Vision ada, tetapi dekoder tidak ditemukan)"
+            hasHdr10OrWcgDisplay ->
+                "Dolby Vision Tidak Didukung (Layar hanya mendukung HDR10 / Wide Color Gamut)"
+            else ->
+                "Tidak Didukung (Layar SDR standar, tanpa dukungan Dolby Vision)"
         }
 }
 
@@ -97,6 +286,44 @@ object DolbyMediaEngine {
 
     @Volatile
     private var cachedCapabilities: DolbyDeviceCapabilities? = null
+
+    @Volatile
+    private var testCapabilityProvider: DolbyCapabilityProvider? = null
+
+    fun setCapabilityProviderForTesting(provider: DolbyCapabilityProvider?) {
+        testCapabilityProvider = provider
+        cachedCapabilities = null
+    }
+
+    fun fromAssessment(
+        assessment: DolbyCapabilityAssessment,
+        maxDisplayLuminanceNits: Int = 0,
+        detectedAudioCapabilities: List<String> = emptyList(),
+        detectedVideoCapabilities: List<String> = emptyList()
+    ): DolbyDeviceCapabilities {
+        return DolbyDeviceCapabilities(
+            hasHardwareDolbyAtmosCodec = assessment.hasAtmosCodec,
+            hasSystemSpatializer = assessment.hasSystemSpatializer,
+            hasSystemDolbyDspEffect = assessment.hasSystemDolbyDspDescriptor,
+            hasAndroidDynamicsProcessing = assessment.hasDynamicsProcessingDescriptor,
+            hasHardwareDolbyVisionDecoder = assessment.hasDolbyVisionDecoder,
+            hasDolbyVisionDisplay = assessment.hasDolbyVisionDisplay,
+            hasHdr10OrWcgDisplay = assessment.hasHdr10OrHlgDisplay || assessment.hasWideColorGamutDisplay,
+            maxDisplayLuminanceNits = maxDisplayLuminanceNits,
+            detectedAudioCapabilities = detectedAudioCapabilities,
+            detectedVideoCapabilities = detectedVideoCapabilities,
+            assessment = assessment
+        )
+    }
+
+    fun getCachedOrInitialCapabilities(): DolbyDeviceCapabilities {
+        cachedCapabilities?.let { return it }
+        return fromAssessment(
+            assessment = DolbyCapabilityAssessment(),
+            detectedAudioCapabilities = listOf("Pemeriksaan kemampuan audio sedang berlangsung atau belum diverifikasi"),
+            detectedVideoCapabilities = listOf("Pemeriksaan kemampuan layar sedang berlangsung atau belum diverifikasi")
+        )
+    }
 
     private val dspExecutor = Executors.newSingleThreadExecutor()
 
@@ -115,8 +342,16 @@ object DolbyMediaEngine {
     /**
      * Mendeteksi kemampuan hardware perangkat secara nyata melalui MediaCodecList,
      * AudioEffect DSP descriptors, Android Spatializer, dan Display HDR Capabilities.
+     * Tidak pernah menyamakan codec tunggal, Spatializer generik, atau HDR10/WCG
+     * dengan dukungan Dolby Atmos / Dolby Vision native yang terverifikasi.
      */
     fun detectDeviceCapabilities(context: Context, forceRefresh: Boolean = false): DolbyDeviceCapabilities {
+        testCapabilityProvider?.let { provider ->
+            val provided = provider.detect(context, forceRefresh)
+            cachedCapabilities = provided
+            return provided
+        }
+
         if (!forceRefresh) {
             cachedCapabilities?.let { return it }
         }
@@ -125,8 +360,10 @@ object DolbyMediaEngine {
         val videoCaps = mutableListOf<String>()
 
         var hasAtmosCodec = false
+        var hasAc3OrEac3Codec = false
         var hasDolbyVisionCodec = false
         var hasHdr10Codec = false
+        var detectionError: String? = null
 
         // 1. Periksa MediaCodecList untuk dekoder Dolby Atmos & Dolby Vision / HDR10
         try {
@@ -138,32 +375,34 @@ object DolbyMediaEngine {
                     when (lower) {
                         "audio/eac3-joc" -> {
                             hasAtmosCodec = true
-                            val label = "Dolby Atmos (E-AC3-JOC: ${info.name})"
-                            if (audioCaps.none { it.startsWith("Dolby Atmos (E-AC3-JOC") }) {
+                            val label = "Codec E-AC3-JOC Terdeteksi (${info.name})"
+                            if (audioCaps.none { it.startsWith("Codec E-AC3-JOC") }) {
                                 audioCaps.add(label)
                             }
                         }
                         "audio/ac4" -> {
                             hasAtmosCodec = true
-                            val label = "Dolby AC-4 Immersive (${info.name})"
-                            if (audioCaps.none { it.startsWith("Dolby AC-4") }) {
+                            val label = "Codec AC-4 Terdeteksi (${info.name})"
+                            if (audioCaps.none { it.startsWith("Codec AC-4") }) {
                                 audioCaps.add(label)
                             }
                         }
                         "audio/eac3" -> {
-                            if (audioCaps.none { it.startsWith("Dolby Digital Plus") }) {
-                                audioCaps.add("Dolby Digital Plus (E-AC3)")
+                            hasAc3OrEac3Codec = true
+                            if (audioCaps.none { it.startsWith("Codec Dolby Digital Plus") }) {
+                                audioCaps.add("Codec Dolby Digital Plus (E-AC3)")
                             }
                         }
                         "audio/ac3" -> {
-                            if (audioCaps.none { it.startsWith("Dolby Digital (AC-3)") }) {
-                                audioCaps.add("Dolby Digital (AC-3)")
+                            hasAc3OrEac3Codec = true
+                            if (audioCaps.none { it.startsWith("Codec Dolby Digital (AC-3)") }) {
+                                audioCaps.add("Codec Dolby Digital (AC-3)")
                             }
                         }
                         "video/dolby-vision" -> {
                             hasDolbyVisionCodec = true
-                            val label = "Dolby Vision Decoder (${info.name})"
-                            if (videoCaps.none { it.startsWith("Dolby Vision Decoder") }) {
+                            val label = "Dekoder Video Dolby Vision (${info.name})"
+                            if (videoCaps.none { it.startsWith("Dekoder Video Dolby Vision") }) {
                                 videoCaps.add(label)
                             }
                         }
@@ -177,64 +416,92 @@ object DolbyMediaEngine {
                                 } == true
                                 if (hasMain10Hdr && !hasHdr10Codec) {
                                     hasHdr10Codec = true
-                                    videoCaps.add("HEVC Main10 HDR10/HDR10+ Decoder")
+                                    videoCaps.add("Dekoder HEVC Main10 (Bukan bukti Dolby Vision)")
                                 }
-                            } catch (_: Exception) {}
+                            } catch (e: Exception) {
+                                Log.w(TAG, "HEVC profile inspection warning on ${info.name}: ${e.message}")
+                            }
                         }
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "MediaCodec inspection warning: ${e.message}")
+            detectionError = "Gagal memeriksa MediaCodecList: ${e.javaClass.simpleName}"
         }
 
-        // 2. Periksa efek DSP Audio bawaan sistem (Dolby DAP / Spatial / DynamicsProcessing)
-        var hasDolbyDsp = false
-        val hasDynamicsProc = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        // 2. Periksa deskriptor AudioEffect sistem secara ketat
+        var hasDolbyDspDescriptor = false
+        var hasDynamicsProcDescriptor = false
         try {
             val descriptors = AudioEffect.queryEffects()
             if (descriptors != null) {
                 for (desc in descriptors) {
-                    val combined = "${desc.name} ${desc.implementor}".lowercase()
-                    if (combined.contains("dolby") || combined.contains("atmos") || combined.contains("dap")) {
-                        hasDolbyDsp = true
-                        val dspLabel = "DSP: ${desc.name}"
+                    val nameLower = (desc.name ?: "").lowercase()
+                    val implLower = (desc.implementor ?: "").lowercase()
+                    val combined = "$nameLower $implLower"
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                        desc.type == AudioEffect.EFFECT_TYPE_DYNAMICS_PROCESSING
+                    ) {
+                        hasDynamicsProcDescriptor = true
+                    }
+                    val isExplicitDolbyAtmosEffect = combined.contains("dolby atmos") ||
+                        (combined.contains("dolby") && combined.contains("atmos"))
+                    if (isExplicitDolbyAtmosEffect) {
+                        hasDolbyDspDescriptor = true
+                        val dspLabel = "Deskriptor Efek Sistem: ${desc.name} (Kontrol OEM tidak terverifikasi)"
                         if (!audioCaps.contains(dspLabel)) audioCaps.add(dspLabel)
+                    } else if (combined.contains("dolby")) {
+                        val nonAtmosLabel = "Deskriptor Efek Dolby Non-Atmos: ${desc.name}"
+                        if (!audioCaps.contains(nonAtmosLabel)) audioCaps.add(nonAtmosLabel)
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioEffect query warning: ${e.message}")
+        }
 
-        // 3. Periksa Android 12L/13+ Spatializer API
+        // 3. Periksa Android 12L/13+ Spatializer API (Fitur generik Android, bukan bukti Dolby Atmos)
         var hasSpatializer = false
+        var isSpatializerAvailable = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2) {
             try {
                 val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
                 val spatializer = am?.spatializer
-                if (spatializer != null && spatializer.immersiveAudioLevel != android.media.Spatializer.SPATIALIZER_IMMERSIVE_LEVEL_NONE) {
+                if (spatializer != null &&
+                    spatializer.immersiveAudioLevel != android.media.Spatializer.SPATIALIZER_IMMERSIVE_LEVEL_NONE
+                ) {
                     hasSpatializer = true
-                    val stateStr = if (spatializer.isAvailable) "Tersedia & Aktif" else "Didukung Hardware"
-                    audioCaps.add("Android 3D Spatializer ($stateStr)")
+                    isSpatializerAvailable = spatializer.isAvailable
+                    val stateStr = if (isSpatializerAvailable) "Tersedia" else "Tidak Aktif"
+                    audioCaps.add("Android Spatializer Generik ($stateStr • Bukan Dolby Atmos)")
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "Spatializer inspection warning: ${e.message}")
+            }
         }
 
-        if (hasDynamicsProc) {
-            audioCaps.add("Android Hardware DynamicsProcessing DSP (Zero-Glitch Offload)")
+        if (hasDynamicsProcDescriptor) {
+            audioCaps.add("Android DynamicsProcessing AudioEffect (Efek generik, bukan Dolby Atmos)")
+        }
+        if (audioCaps.isEmpty()) {
+            audioCaps.add("Tidak ada dekoder atau modul Dolby Atmos yang terdeteksi")
         }
 
-        // 4. Periksa kemampuan layar HDR / Dolby Vision / Wide Color Gamut
-        var hasDolbyVisionDisplay = false
-        var hasHdr10OrWcgDisplay = false
-        var maxNits = 400
+        // 4. Periksa kemampuan layar fisik (Display HDR Capabilities & Wide Color Gamut)
+        var hasDolbyVisionDisplayFlag = false
+        var hasHdr10OrHlgDisplayFlag = false
+        var hasWideColorGamutFlag = false
+        var maxNits = 0
         try {
             val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
             val display = dm?.getDisplay(Display.DEFAULT_DISPLAY)
             if (display != null) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && display.isWideColorGamut) {
-                    hasHdr10OrWcgDisplay = true
-                    videoCaps.add("Layar Wide Color Gamut (DCI-P3)")
+                    hasWideColorGamutFlag = true
+                    videoCaps.add("Layar Wide Color Gamut (Bukan bukti Dolby Vision)")
                 }
+                hasDolbyVisionDisplayFlag = hasDolbyVisionDisplay(display)
                 @Suppress("DEPRECATION")
                 val hdrCaps = display.hdrCapabilities
                 if (hdrCaps != null) {
@@ -242,50 +509,78 @@ object DolbyMediaEngine {
                     for (t in types) {
                         when (t) {
                             Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION -> {
-                                hasDolbyVisionDisplay = true
-                                videoCaps.add("Layar Native Dolby Vision HDR")
+                                hasDolbyVisionDisplayFlag = true
+                                videoCaps.add("Layar Melaporkan Dukungan HDR_TYPE_DOLBY_VISION")
                             }
                             Display.HdrCapabilities.HDR_TYPE_HDR10 -> {
-                                hasHdr10OrWcgDisplay = true
-                                videoCaps.add("Layar HDR10")
+                                hasHdr10OrHlgDisplayFlag = true
+                                videoCaps.add("Layar HDR10 (Bukan Dolby Vision)")
                             }
                             Display.HdrCapabilities.HDR_TYPE_HDR10_PLUS -> {
-                                hasHdr10OrWcgDisplay = true
-                                videoCaps.add("Layar HDR10+")
+                                hasHdr10OrHlgDisplayFlag = true
+                                videoCaps.add("Layar HDR10+ (Bukan Dolby Vision)")
                             }
                             Display.HdrCapabilities.HDR_TYPE_HLG -> {
-                                hasHdr10OrWcgDisplay = true
-                                videoCaps.add("Layar HLG HDR")
+                                hasHdr10OrHlgDisplayFlag = true
+                                videoCaps.add("Layar HLG HDR (Bukan Dolby Vision)")
                             }
                         }
                     }
                     val desiredMax = hdrCaps.desiredMaxLuminance.toInt()
-                    if (desiredMax > 100) {
+                    if (desiredMax > 0) {
                         maxNits = desiredMax
-                        videoCaps.add("Puncak Luminansi Layar: ${desiredMax} nits")
+                        videoCaps.add("Luminansi Maksimum Dilaporkan Layar: ${desiredMax} nits")
                     }
                 }
+            } else if (detectionError == null) {
+                detectionError = "Display utama tidak tersedia"
             }
         } catch (e: Exception) {
             Log.w(TAG, "Display HDR inspection warning: ${e.message}")
+            if (detectionError == null) {
+                detectionError = "Gagal memeriksa kapabilitas layar: ${e.javaClass.simpleName}"
+            }
         }
 
-        if (hasHdr10Codec) {
-            hasHdr10OrWcgDisplay = true
+        if (videoCaps.isEmpty()) {
+            videoCaps.add("Layar SDR standar (Tidak ada dukungan HDR / Dolby Vision yang dilaporkan)")
         }
-        videoCaps.add("Dolby Vision PQ Tone-Mapping Hardware Compositor")
+
+        // Catatan arsitektur jujur: Android SDK publik & WebView standar tidak menyediakan API
+        // untuk memverifikasi ataupun mengendalikan pipeline Dolby Atmos OEM / Dolby Vision native
+        // secara langsung pada elemen media WebView.
+        val assessment = DolbyCapabilityAssessment(
+            hasAtmosCodec = hasAtmosCodec,
+            hasAc3OrEac3Codec = hasAc3OrEac3Codec,
+            hasVerifiedAtmosProcessing = false,
+            canControlNativeAtmos = false,
+            hasVerifiedAtmosPlaybackPath = false,
+            hasSystemSpatializer = hasSpatializer,
+            isSystemSpatializerAvailable = isSpatializerAvailable,
+            hasSystemDolbyDspDescriptor = hasDolbyDspDescriptor,
+            hasDynamicsProcessingDescriptor = hasDynamicsProcDescriptor,
+            hasDolbyVisionDecoder = hasDolbyVisionCodec,
+            hasDolbyVisionDisplay = hasDolbyVisionDisplayFlag,
+            hasVerifiedDolbyVisionPlaybackPath = false,
+            canControlNativeDolbyVision = false,
+            hasHdr10Decoder = hasHdr10Codec,
+            hasHdr10OrHlgDisplay = hasHdr10OrHlgDisplayFlag,
+            hasWideColorGamutDisplay = hasWideColorGamutFlag,
+            detectionError = detectionError
+        )
 
         val result = DolbyDeviceCapabilities(
             hasHardwareDolbyAtmosCodec = hasAtmosCodec,
             hasSystemSpatializer = hasSpatializer,
-            hasSystemDolbyDspEffect = hasDolbyDsp,
-            hasAndroidDynamicsProcessing = hasDynamicsProc,
+            hasSystemDolbyDspEffect = hasDolbyDspDescriptor,
+            hasAndroidDynamicsProcessing = hasDynamicsProcDescriptor,
             hasHardwareDolbyVisionDecoder = hasDolbyVisionCodec,
-            hasDolbyVisionDisplay = hasDolbyVisionDisplay,
-            hasHdr10OrWcgDisplay = hasHdr10OrWcgDisplay,
+            hasDolbyVisionDisplay = hasDolbyVisionDisplayFlag,
+            hasHdr10OrWcgDisplay = hasHdr10OrHlgDisplayFlag || hasWideColorGamutFlag,
             maxDisplayLuminanceNits = maxNits,
             detectedAudioCapabilities = audioCaps,
-            detectedVideoCapabilities = videoCaps
+            detectedVideoCapabilities = videoCaps,
+            assessment = assessment
         )
         cachedCapabilities = result
         return result

@@ -326,22 +326,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _liquidGlassEnabled = MutableStateFlow(settings.liquidGlassEnabled)
     val liquidGlassEnabled = _liquidGlassEnabled.asStateFlow()
 
-    private val _dolbyAtmosEnabled = MutableStateFlow(settings.dolbyAtmosEnabled)
+    private val _dolbyDeviceCapabilities = MutableStateFlow(
+        com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(application)
+    )
+    val dolbyDeviceCapabilities = _dolbyDeviceCapabilities.asStateFlow()
+
+    private val _dolbyAtmosEnabled = MutableStateFlow(
+        settings.dolbyAtmosEnabled && _dolbyDeviceCapabilities.value.canEnableAtmos
+    )
     val dolbyAtmosEnabled = _dolbyAtmosEnabled.asStateFlow()
 
     private val _dolbyAtmosProfile = MutableStateFlow(settings.dolbyAtmosProfile)
     val dolbyAtmosProfile = _dolbyAtmosProfile.asStateFlow()
 
-    private val _dolbyVisionEnabled = MutableStateFlow(settings.dolbyVisionEnabled)
+    private val _dolbyVisionEnabled = MutableStateFlow(
+        settings.dolbyVisionEnabled && _dolbyDeviceCapabilities.value.canEnableDolbyVision
+    )
     val dolbyVisionEnabled = _dolbyVisionEnabled.asStateFlow()
 
     private val _dolbyVisionMode = MutableStateFlow(settings.dolbyVisionMode)
     val dolbyVisionMode = _dolbyVisionMode.asStateFlow()
 
-    private val _dolbyDeviceCapabilities = MutableStateFlow(
-        com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(application)
-    )
-    val dolbyDeviceCapabilities = _dolbyDeviceCapabilities.asStateFlow()
+    private val _lastDolbyActivationMessage = MutableStateFlow<String?>(null)
+    val lastDolbyActivationMessage = _lastDolbyActivationMessage.asStateFlow()
+
+    fun clearDolbyActivationMessage() {
+        _lastDolbyActivationMessage.value = null
+    }
 
     private val _showDolbyDialog = MutableStateFlow(false)
     val showDolbyDialog = _showDolbyDialog.asStateFlow()
@@ -392,6 +403,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val devToolsStates = _devToolsStates.asStateFlow()
 
     init {
+        if (settings.dolbyAtmosEnabled && !_dolbyAtmosEnabled.value) {
+            settings.dolbyAtmosEnabled = false
+        }
+        if (settings.dolbyVisionEnabled && !_dolbyVisionEnabled.value) {
+            settings.dolbyVisionEnabled = false
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 com.example.manager.FilterListManager.loadRules(getApplication())
@@ -400,12 +417,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 Log.w(TAG, "Filter list load failed: ${e.message}")
             }
             try {
+                val refreshed = com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(getApplication())
+                onDolbyCapabilitiesChanged(refreshed)
                 com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
                     context = getApplication(),
                     enabled = _dolbyAtmosEnabled.value,
                     profile = _dolbyAtmosProfile.value
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "Initial Dolby capability sync warning: ${e.message}")
+            }
         }
     }
 
@@ -1446,20 +1467,50 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _liquidGlassEnabled.value = enabled
     }
 
-    fun setDolbyAtmosEnabled(enabled: Boolean) {
-        settings.dolbyAtmosEnabled = enabled
-        _dolbyAtmosEnabled.value = enabled
+    fun setDolbyAtmosEnabled(enabled: Boolean): com.example.manager.DolbyActivationDecision {
+        if (!enabled) {
+            settings.dolbyAtmosEnabled = false
+            _dolbyAtmosEnabled.value = false
+            com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
+                context = getApplication(),
+                enabled = false,
+                profile = _dolbyAtmosProfile.value
+            )
+            val decision = com.example.manager.DolbyActivationDecision(
+                allowed = true,
+                reason = "Dolby Atmos dimatikan."
+            )
+            _lastDolbyActivationMessage.value = decision.reason
+            return decision
+        }
+
+        val currentCapabilities = _dolbyDeviceCapabilities.value.assessment
+        val decision = com.example.manager.evaluateDolbyActivation(
+            feature = com.example.manager.DolbyFeature.ATMOS,
+            capabilities = currentCapabilities
+        )
+        if (!decision.allowed) {
+            settings.dolbyAtmosEnabled = false
+            _dolbyAtmosEnabled.value = false
+            _lastDolbyActivationMessage.value = decision.reason
+            return decision
+        }
+
+        settings.dolbyAtmosEnabled = true
+        _dolbyAtmosEnabled.value = true
         com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
             context = getApplication(),
-            enabled = enabled,
+            enabled = true,
             profile = _dolbyAtmosProfile.value
         )
+        _lastDolbyActivationMessage.value = decision.reason
+        return decision
     }
 
     fun setDolbyAtmosProfile(profile: com.example.manager.DolbyAtmosProfile) {
         settings.dolbyAtmosProfile = profile
         _dolbyAtmosProfile.value = profile
-        if (_dolbyAtmosEnabled.value) {
+        if (_dolbyAtmosEnabled.value && _dolbyDeviceCapabilities.value.canEnableAtmos) {
             com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
                 context = getApplication(),
                 enabled = true,
@@ -1468,9 +1519,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun setDolbyVisionEnabled(enabled: Boolean) {
-        settings.dolbyVisionEnabled = enabled
-        _dolbyVisionEnabled.value = enabled
+    fun setDolbyVisionEnabled(enabled: Boolean): com.example.manager.DolbyActivationDecision {
+        if (!enabled) {
+            settings.dolbyVisionEnabled = false
+            _dolbyVisionEnabled.value = false
+            val decision = com.example.manager.DolbyActivationDecision(
+                allowed = true,
+                reason = "Dolby Vision dimatikan."
+            )
+            _lastDolbyActivationMessage.value = decision.reason
+            return decision
+        }
+
+        val currentCapabilities = _dolbyDeviceCapabilities.value.assessment
+        val decision = com.example.manager.evaluateDolbyActivation(
+            feature = com.example.manager.DolbyFeature.VISION,
+            capabilities = currentCapabilities
+        )
+        if (!decision.allowed) {
+            settings.dolbyVisionEnabled = false
+            _dolbyVisionEnabled.value = false
+            _lastDolbyActivationMessage.value = decision.reason
+            return decision
+        }
+
+        settings.dolbyVisionEnabled = true
+        _dolbyVisionEnabled.value = true
+        _lastDolbyActivationMessage.value = decision.reason
+        return decision
     }
 
     fun setDolbyVisionMode(mode: com.example.manager.DolbyVisionMode) {
@@ -1478,11 +1554,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _dolbyVisionMode.value = mode
     }
 
+    fun onDolbyCapabilitiesChanged(updated: com.example.manager.DolbyDeviceCapabilities) {
+        _dolbyDeviceCapabilities.value = updated
+        if (_dolbyAtmosEnabled.value && !updated.canEnableAtmos) {
+            settings.dolbyAtmosEnabled = false
+            _dolbyAtmosEnabled.value = false
+            com.example.manager.DolbyMediaEngine.applyNativeDolbyAtmosState(
+                context = getApplication(),
+                enabled = false,
+                profile = _dolbyAtmosProfile.value
+            )
+            _lastDolbyActivationMessage.value = updated.atmosDisabledReason
+        }
+        if (_dolbyVisionEnabled.value && !updated.canEnableDolbyVision) {
+            settings.dolbyVisionEnabled = false
+            _dolbyVisionEnabled.value = false
+            _lastDolbyActivationMessage.value = updated.visionDisabledReason
+        }
+    }
+
     fun refreshDolbyDeviceCapabilities() {
-        _dolbyDeviceCapabilities.value = com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(
+        val updated = com.example.manager.DolbyMediaEngine.detectDeviceCapabilities(
             context = getApplication(),
             forceRefresh = true
         )
+        onDolbyCapabilitiesChanged(updated)
     }
 
     fun addQuickLink(title: String, rawUrl: String): Boolean {

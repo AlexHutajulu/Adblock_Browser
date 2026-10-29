@@ -108,7 +108,9 @@ fun DolbyControlDialog(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        DolbyAnimatedWaveBadge(isActive = atmosEnabled || visionEnabled)
+                        val isAnyVerifiedActive = (atmosEnabled && capabilities.canEnableAtmos) ||
+                            (visionEnabled && capabilities.canEnableDolbyVision)
+                        DolbyAnimatedWaveBadge(isActive = isAnyVerifiedActive)
                         Column {
                             Text(
                                 text = "Dolby Atmos & Dolby Vision",
@@ -119,10 +121,14 @@ fun DolbyControlDialog(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (atmosEnabled || visionEnabled)
-                                    "Mesin Audio 3D Spatial & HDR Sinematik Aktif"
-                                else
-                                    "Pemrosesan Dolby Dinonaktifkan (Mode Bypass Standar)",
+                                text = when {
+                                    isAnyVerifiedActive ->
+                                        "Jalur Dolby Native Terverifikasi Aktif"
+                                    !capabilities.canEnableAtmos && !capabilities.canEnableDolbyVision ->
+                                        "Fitur Native Tidak Tersedia pada Perangkat / Jalur Pemutaran Ini"
+                                    else ->
+                                        "Pemrosesan Dolby Native Nonaktif"
+                                },
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -161,7 +167,7 @@ fun DolbyControlDialog(
                         viewModel.refreshDolbyDeviceCapabilities()
                         Toast.makeText(
                             context,
-                            "Deteksi ulang perangkat selesai",
+                            "Deteksi ulang kapabilitas perangkat selesai",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -169,13 +175,15 @@ fun DolbyControlDialog(
 
                 // Dolby Atmos Card
                 DolbyAtmosControlCard(
-                    enabled = atmosEnabled,
+                    enabled = atmosEnabled && capabilities.canEnableAtmos,
+                    canEnable = capabilities.canEnableAtmos,
+                    disabledReason = capabilities.atmosDisabledReason,
                     selectedProfile = atmosProfile,
-                    onToggle = { enabled ->
-                        viewModel.setDolbyAtmosEnabled(enabled)
+                    onToggle = { requested ->
+                        val decision = viewModel.setDolbyAtmosEnabled(requested)
                         Toast.makeText(
                             context,
-                            if (enabled) "Dolby Atmos Diaktifkan" else "Dolby Atmos Dimatikan",
+                            decision.reason,
                             Toast.LENGTH_SHORT
                         ).show()
                     },
@@ -186,13 +194,15 @@ fun DolbyControlDialog(
 
                 // Dolby Vision Card
                 DolbyVisionControlCard(
-                    enabled = visionEnabled,
+                    enabled = visionEnabled && capabilities.canEnableDolbyVision,
+                    canEnable = capabilities.canEnableDolbyVision,
+                    disabledReason = capabilities.visionDisabledReason,
                     selectedMode = visionMode,
-                    onToggle = { enabled ->
-                        viewModel.setDolbyVisionEnabled(enabled)
+                    onToggle = { requested ->
+                        val decision = viewModel.setDolbyVisionEnabled(requested)
                         Toast.makeText(
                             context,
-                            if (enabled) "Dolby Vision HDR Diaktifkan" else "Dolby Vision HDR Dimatikan",
+                            decision.reason,
                             Toast.LENGTH_SHORT
                         ).show()
                     },
@@ -445,13 +455,16 @@ fun DolbyAtmosControlCard(
     selectedProfile: DolbyAtmosProfile,
     onToggle: (Boolean) -> Unit,
     onSelectProfile: (DolbyAtmosProfile) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    canEnable: Boolean = false,
+    disabledReason: String = "Dolby Atmos native tidak tersedia atau belum terverifikasi."
 ) {
+    val effectiveEnabled = enabled && canEnable
     Column(
         modifier = modifier
             .fillMaxWidth()
             .interactiveLiquidGlass(
-                isActive = enabled,
+                isActive = effectiveEnabled,
                 shape = RoundedCornerShape(22.dp),
                 elevation = 4.dp
             )
@@ -471,36 +484,41 @@ fun DolbyAtmosControlCard(
                 Icon(
                     imageVector = Icons.Default.SurroundSound,
                     contentDescription = null,
-                    tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (effectiveEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
                 Column {
                     Text(
-                        text = "Dolby Atmos Spatial Audio",
+                        text = "Dolby Atmos (Native)",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = if (canEnable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                     )
                     Text(
-                        text = if (enabled) "Aktif • ${selectedProfile.title}" else "Nonaktif (Suara Standar 0 dB)",
+                        text = when {
+                            effectiveEnabled -> "Aktif • ${selectedProfile.title}"
+                            canEnable -> "Tersedia • Nonaktif (Klik untuk mengaktifkan)"
+                            else -> disabledReason
+                        },
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
             LiquidGlassSwitch(
-                checked = enabled,
-                onCheckedChange = onToggle
+                checked = effectiveEnabled,
+                onCheckedChange = onToggle,
+                enabled = canEnable || enabled
             )
         }
 
         AnimatedVisibility(
-            visible = enabled,
+            visible = effectiveEnabled,
             enter = expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Pilih Profil Akustik Dolby Atmos:",
+                    text = "Pilih Profil Dolby Atmos:",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -518,7 +536,8 @@ fun DolbyAtmosControlCard(
                             )
                             .clickable(
                                 interactionSource = rowInteraction,
-                                indication = null
+                                indication = null,
+                                enabled = canEnable
                             ) { onSelectProfile(profile) }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -526,7 +545,8 @@ fun DolbyAtmosControlCard(
                     ) {
                         LiquidGlassRadioButton(
                             selected = isSelected,
-                            onClick = { onSelectProfile(profile) }
+                            onClick = { onSelectProfile(profile) },
+                            enabled = canEnable
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -555,13 +575,16 @@ fun DolbyVisionControlCard(
     selectedMode: DolbyVisionMode,
     onToggle: (Boolean) -> Unit,
     onSelectMode: (DolbyVisionMode) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    canEnable: Boolean = false,
+    disabledReason: String = "Dolby Vision native tidak tersedia atau belum terverifikasi."
 ) {
+    val effectiveEnabled = enabled && canEnable
     Column(
         modifier = modifier
             .fillMaxWidth()
             .interactiveLiquidGlass(
-                isActive = enabled,
+                isActive = effectiveEnabled,
                 shape = RoundedCornerShape(22.dp),
                 elevation = 4.dp
             )
@@ -581,36 +604,41 @@ fun DolbyVisionControlCard(
                 Icon(
                     imageVector = Icons.Default.HdrOn,
                     contentDescription = null,
-                    tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (effectiveEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
                 Column {
                     Text(
-                        text = "Dolby Vision HDR Engine",
+                        text = "Dolby Vision (Native)",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = if (canEnable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                     )
                     Text(
-                        text = if (enabled) "Aktif • ${selectedMode.title}" else "Nonaktif (Warna SDR Standar)",
+                        text = when {
+                            effectiveEnabled -> "Aktif • ${selectedMode.title}"
+                            canEnable -> "Tersedia • Nonaktif (Klik untuk mengaktifkan)"
+                            else -> disabledReason
+                        },
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
             LiquidGlassSwitch(
-                checked = enabled,
-                onCheckedChange = onToggle
+                checked = effectiveEnabled,
+                onCheckedChange = onToggle,
+                enabled = canEnable || enabled
             )
         }
 
         AnimatedVisibility(
-            visible = enabled,
+            visible = effectiveEnabled,
             enter = expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Pilih Mode Visual Dolby Vision:",
+                    text = "Pilih Mode Dolby Vision:",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -628,7 +656,8 @@ fun DolbyVisionControlCard(
                             )
                             .clickable(
                                 interactionSource = rowInteraction,
-                                indication = null
+                                indication = null,
+                                enabled = canEnable
                             ) { onSelectMode(mode) }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -636,7 +665,8 @@ fun DolbyVisionControlCard(
                     ) {
                         LiquidGlassRadioButton(
                             selected = isSelected,
-                            onClick = { onSelectMode(mode) }
+                            onClick = { onSelectMode(mode) },
+                            enabled = canEnable
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
