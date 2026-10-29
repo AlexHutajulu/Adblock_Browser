@@ -149,6 +149,7 @@ object HeuristicsEngine {
             AbpRuleEngine.ResourceType.SCRIPT,
             AbpRuleEngine.ResourceType.SUBDOCUMENT -> true
             AbpRuleEngine.ResourceType.XMLHTTPREQUEST,
+            AbpRuleEngine.ResourceType.XHR_FETCH,
             AbpRuleEngine.ResourceType.IMAGE -> aggressive
             else -> false
         }

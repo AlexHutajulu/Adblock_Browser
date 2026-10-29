@@ -32,6 +32,16 @@ object CleanAdEngine {
 
     fun shouldBlock(url: String, pageHost: String, isThirdParty: Boolean): Boolean {
         val lowerUrl = url.lowercase(Locale.US)
+        val resType = AbpRuleEngine.inferType(lowerUrl)
+        if (resType.isMediaFamily && !AbpRuleEngine.hasExplicitVideoAdIndicator(lowerUrl)) {
+            return false
+        }
+        if (resType == AbpRuleEngine.ResourceType.IMAGE &&
+            AbpRuleEngine.isLikelyContentImagePath(lowerUrl) &&
+            !AbpRuleEngine.hasExplicitImageAdIndicator(lowerUrl)
+        ) {
+            return false
+        }
 
         if (currentMode == AdblockMode.BALANCED) {
             if (!isThirdParty) return false
@@ -59,8 +69,13 @@ object CleanAdEngine {
     fun isSafeCosmeticSelector(selector: String): Boolean =
         AbpRuleEngine.isSafeCosmeticSelector(selector)
 
-    fun inferType(url: String, acceptHeader: String? = null): AbpRuleEngine.ResourceType =
-        AbpRuleEngine.inferType(url, acceptHeader)
+    fun inferType(
+        url: String,
+        acceptHeader: String? = null,
+        requestHeaders: Map<String, String>? = null,
+        isForMainFrame: Boolean = false
+    ): AbpRuleEngine.ResourceType =
+        AbpRuleEngine.inferType(url, acceptHeader, requestHeaders, isForMainFrame)
 
     fun build(lines: Sequence<String>): AbpRuleEngine.RuleSet = AbpRuleEngine.build(lines)
 }

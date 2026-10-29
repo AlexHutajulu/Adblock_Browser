@@ -396,7 +396,9 @@ fun CustomWebView(
 
                     // Update properties that can change dynamically using update block
                     // Private tabs always enforce LOAD_NO_CACHE regardless of Data Saver setting
-                    settings.loadsImagesAutomatically = !dataSaverEnabled
+                    // Never disable loadsImagesAutomatically so content thumbnails and lazy images always render
+                    settings.loadsImagesAutomatically = true
+                    settings.blockNetworkImage = false
                     settings.cacheMode = when {
                         tab.isPrivate -> WebSettings.LOAD_NO_CACHE
                         dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
@@ -1776,8 +1778,9 @@ fun CustomWebView(
                 dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
                 else -> WebSettings.LOAD_DEFAULT
             }
-            if (webView.settings.loadsImagesAutomatically != !dataSaverEnabled || webView.settings.cacheMode != expectedCacheMode) {
-                webView.settings.loadsImagesAutomatically = !dataSaverEnabled
+            if (!webView.settings.loadsImagesAutomatically || webView.settings.blockNetworkImage || webView.settings.cacheMode != expectedCacheMode) {
+                webView.settings.loadsImagesAutomatically = true
+                webView.settings.blockNetworkImage = false
                 webView.settings.cacheMode = expectedCacheMode
             }
 

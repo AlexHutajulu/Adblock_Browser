@@ -7,17 +7,101 @@ object AbpRuleEngine {
     const val MAX_COSMETIC_SELECTORS_PER_HOST = 1500
 
     enum class ResourceType {
+        DOCUMENT,
         SCRIPT,
         IMAGE,
         STYLESHEET,
         XMLHTTPREQUEST,
+        XHR_FETCH,
         SUBDOCUMENT,
         MEDIA,
+        MEDIA_MANIFEST,
+        MEDIA_SEGMENT,
+        SUBTITLE,
         FONT,
         PING,
         WEBSOCKET,
-        OTHER
+        OTHER;
+
+        val isMediaFamily: Boolean
+            get() = this == MEDIA || this == MEDIA_MANIFEST || this == MEDIA_SEGMENT || this == SUBTITLE
+
+        val isXhrOrFetch: Boolean
+            get() = this == XMLHTTPREQUEST || this == XHR_FETCH
     }
+
+    private val MASK_MEDIA_FAMILY: Int =
+        (1 shl ResourceType.MEDIA.ordinal) or
+            (1 shl ResourceType.MEDIA_MANIFEST.ordinal) or
+            (1 shl ResourceType.MEDIA_SEGMENT.ordinal) or
+            (1 shl ResourceType.SUBTITLE.ordinal)
+
+    private val MASK_XHR_FAMILY: Int =
+        (1 shl ResourceType.XMLHTTPREQUEST.ordinal) or
+            (1 shl ResourceType.XHR_FETCH.ordinal)
+
+    private val EXPLICIT_VIDEO_AD_INDICATORS: List<String> = listOf(
+        "/vast",
+        "/vpaid",
+        "/pagead/",
+        "/doubleclick/",
+        "/adserver/",
+        "/ads/",
+        "/preroll",
+        "/midroll",
+        "/adbreak",
+        "ad_type=",
+        "adformat="
+    )
+
+    private val EXPLICIT_IMAGE_AD_INDICATORS: List<String> = listOf(
+        "/ads/",
+        "/ad/",
+        "/adserver",
+        "/adbanner",
+        "/ad-banner",
+        "-ad-banner",
+        "_ad_banner",
+        "/banner-ad",
+        "-banner-ad",
+        "/pagead/",
+        "/doubleclick/",
+        "/sponsor-",
+        "/sponsored/",
+        "/popunder",
+        "/popads",
+        "/pixel",
+        "/beacon",
+        "/collect",
+        "/ptracking",
+        "ad_type=",
+        "adformat="
+    )
+
+    private val CONTENT_IMAGE_PATH_INDICATORS: List<String> = listOf(
+        "/wp-content/uploads/",
+        "/uploads/",
+        "/thumbnails/",
+        "/thumbnail/",
+        "/thumb/",
+        "/thumbs/",
+        "/posters/",
+        "/poster/",
+        "/covers/",
+        "/cover/",
+        "/avatars/",
+        "/avatar/",
+        "/gallery/",
+        "/manga/",
+        "/anime/"
+    )
+
+    private val SAME_SITE_IMAGE_PROXY_HOSTS: Set<String> = setOf(
+        "i0.wp.com",
+        "i1.wp.com",
+        "i2.wp.com",
+        "i3.wp.com"
+    )
 
     data class MatchResult(
         val isAllow: Boolean,
@@ -34,11 +118,25 @@ object AbpRuleEngine {
         val thirdPartyOnly: Boolean?,
         val includedDomains: Set<String>?,
         val excludedDomains: Set<String>?,
-        val resourceTypes: Int
+        val resourceTypes: Int,
+        val excludedResourceTypes: Int = 0,
+        val wildcardTokens: List<String>? = null
     ) {
         fun matchesType(type: ResourceType): Boolean {
+            val bit = 1 shl type.ordinal
+            if (excludedResourceTypes != 0 && (excludedResourceTypes and bit) != 0) {
+                return false
+            }
             if (resourceTypes == 0) return true
-            return (resourceTypes and (1 shl type.ordinal)) != 0
+            return (resourceTypes and bit) != 0
+        }
+
+        fun hasExplicitMediaType(): Boolean {
+            return (resourceTypes and MASK_MEDIA_FAMILY) != 0
+        }
+
+        fun hasExplicitImageType(): Boolean {
+            return (resourceTypes and (1 shl ResourceType.IMAGE.ordinal)) != 0
         }
 
         fun matchesParty(isThirdParty: Boolean): Boolean {
@@ -64,6 +162,16 @@ object AbpRuleEngine {
         fun matchesUrl(lowerUrl: String, reqHost: String): Boolean {
             if (domainTarget != null) {
                 if (reqHost != domainTarget && !reqHost.endsWith(".$domainTarget")) return false
+            }
+            if (!wildcardTokens.isNullOrEmpty()) {
+                var searchFrom = 0
+                for (part in wildcardTokens) {
+                    if (part.isEmpty()) continue
+                    val idx = lowerUrl.indexOf(part, searchFrom)
+                    if (idx == -1) return false
+                    searchFrom = idx + part.length
+                }
+                return true
             }
             if (!substringToken.isNullOrEmpty()) {
                 return lowerUrl.contains(substringToken)
@@ -127,14 +235,25 @@ object AbpRuleEngine {
             if (clean.isEmpty()) return false
             var h = clean
             while (h.isNotEmpty()) {
-                if (domainOnlyAllow.containsKey(h)) return false
+                val allowList = domainOnlyAllow[h]
+                if (!allowList.isNullOrEmpty() && allowList.any {
+                        it.resourceTypes == 0 && it.excludedResourceTypes == 0 && it.includedDomains == null
+                    }
+                ) {
+                    return false
+                }
                 val dot = h.indexOf('.')
                 h = if (dot != -1) h.substring(dot + 1) else ""
             }
             h = clean
             while (h.isNotEmpty()) {
                 val rules = domainOnlyBlock[h]
-                if (!rules.isNullOrEmpty()) return true
+                if (!rules.isNullOrEmpty() && rules.any {
+                        it.resourceTypes == 0 && it.excludedResourceTypes == 0 && it.includedDomains == null
+                    }
+                ) {
+                    return true
+                }
                 val dot = h.indexOf('.')
                 h = if (dot != -1) h.substring(dot + 1) else ""
             }
@@ -185,7 +304,9 @@ object AbpRuleEngine {
             val lowerUrl = url.lowercase(Locale.US)
             val reqHost = cleanHost(extractHost(lowerUrl))
             val srcHost = cleanHost(sourceHost)
-            val isThirdParty = isThirdParty(reqHost, srcHost)
+            val isProxiedSameSiteImage = resourceType == ResourceType.IMAGE &&
+                isSameSiteImageProxy(reqHost, srcHost, lowerUrl)
+            val isThirdParty = isThirdParty(reqHost, srcHost) && !isProxiedSameSiteImage
 
             if (matchesAllowRule(lowerUrl, srcHost, resourceType)) {
                 return null
@@ -210,6 +331,27 @@ object AbpRuleEngine {
                 if (!isThirdParty && !rule.isDomainAnchored && rule.includedDomains == null && rule.thirdPartyOnly != false) {
                     continue
                 }
+                // Protect media streams, manifests, segments, and subtitles from overly broad unanchored generic rules
+                // that do not explicitly specify $media and are not scoped to specific domains, unless explicit video-ad
+                // indicators are present in the URL.
+                if (resourceType.isMediaFamily &&
+                    !rule.isDomainAnchored &&
+                    rule.includedDomains == null &&
+                    !rule.hasExplicitMediaType() &&
+                    !hasExplicitVideoAdIndicator(lowerUrl)
+                ) {
+                    continue
+                }
+                // Protect legitimate content images & thumbnails from overly broad unanchored substring rules
+                // unless the URL has an explicit image-ad indicator.
+                if (resourceType == ResourceType.IMAGE &&
+                    !rule.isDomainAnchored &&
+                    rule.includedDomains == null &&
+                    !hasExplicitImageAdIndicator(lowerUrl) &&
+                    (!rule.hasExplicitImageType() || isLikelyContentImagePath(lowerUrl))
+                ) {
+                    continue
+                }
                 if (rule.matchesType(resourceType) &&
                     rule.matchesParty(isThirdParty) &&
                     rule.matchesSourceDomain(srcHost) &&
@@ -220,6 +362,42 @@ object AbpRuleEngine {
             }
             return null
         }
+    }
+
+    internal fun hasExplicitVideoAdIndicator(lowerUrl: String): Boolean {
+        for (indicator in EXPLICIT_VIDEO_AD_INDICATORS) {
+            if (lowerUrl.contains(indicator)) return true
+        }
+        return false
+    }
+
+    internal fun hasExplicitImageAdIndicator(lowerUrl: String): Boolean {
+        for (indicator in EXPLICIT_IMAGE_AD_INDICATORS) {
+            if (lowerUrl.contains(indicator)) return true
+        }
+        return false
+    }
+
+    internal fun isLikelyContentImagePath(lowerUrl: String): Boolean {
+        if (hasExplicitImageAdIndicator(lowerUrl)) return false
+        val cleanPath = extractCleanPath(lowerUrl)
+        if (cleanPath.isEmpty()) return false
+        for (indicator in CONTENT_IMAGE_PATH_INDICATORS) {
+            if (cleanPath.contains(indicator)) return true
+        }
+        return false
+    }
+
+    internal fun isSameSiteImageProxy(reqHost: String, srcHost: String, lowerUrl: String): Boolean {
+        val cleanReq = cleanHost(reqHost)
+        val cleanSrc = cleanHost(srcHost)
+        if (cleanReq.isEmpty() || cleanSrc.isEmpty()) return false
+        if (!SAME_SITE_IMAGE_PROXY_HOSTS.contains(cleanReq)) return false
+        val cleanPath = extractCleanPath(lowerUrl).removePrefix("/")
+        if (cleanPath.isEmpty()) return false
+        val proxiedHost = cleanHost(cleanPath.substringBefore('/'))
+        if (proxiedHost.isEmpty()) return false
+        return SiteDomainPolicy.isSameSite(proxiedHost, cleanSrc)
     }
 
     fun cleanHost(host: String?): String {
@@ -241,7 +419,7 @@ object AbpRuleEngine {
         if (schemeIdx == -1) {
             if (trimmed.startsWith("//")) {
                 val rest = trimmed.substring(2)
-                return cleanHost(rest.substringBefore("/"))
+                return cleanHost(rest.substringBefore("/").substringBefore("?").substringBefore("#"))
             }
             return ""
         }
@@ -249,13 +427,65 @@ object AbpRuleEngine {
         if (start >= trimmed.length) return ""
         val slashIdx = trimmed.indexOf('/', start)
         val queryIdx = trimmed.indexOf('?', start)
-        val end = when {
-            slashIdx != -1 && queryIdx != -1 -> minOf(slashIdx, queryIdx)
-            slashIdx != -1 -> slashIdx
-            queryIdx != -1 -> queryIdx
-            else -> trimmed.length
-        }
+        val hashIdx = trimmed.indexOf('#', start)
+        var end = trimmed.length
+        if (slashIdx != -1 && slashIdx < end) end = slashIdx
+        if (queryIdx != -1 && queryIdx < end) end = queryIdx
+        if (hashIdx != -1 && hashIdx < end) end = hashIdx
         return cleanHost(trimmed.substring(start, end))
+    }
+
+    internal fun extractCleanPath(url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        val lower = url.trim().lowercase(Locale.US)
+        val withoutFragment = lower.substringBefore('#')
+        val withoutQuery = withoutFragment.substringBefore('?')
+        val schemeIdx = withoutQuery.indexOf("://")
+        val rawPath = when {
+            schemeIdx != -1 -> {
+                val slashIdx = withoutQuery.indexOf('/', schemeIdx + 3)
+                if (slashIdx != -1) withoutQuery.substring(slashIdx) else ""
+            }
+            withoutQuery.startsWith("//") -> {
+                val slashIdx = withoutQuery.indexOf('/', 2)
+                if (slashIdx != -1) withoutQuery.substring(slashIdx) else ""
+            }
+            else -> withoutQuery
+        }
+        if (rawPath.isEmpty()) return ""
+        return if (rawPath.contains(';')) {
+            rawPath.split('/').joinToString("/") { it.substringBefore(';') }
+        } else {
+            rawPath
+        }
+    }
+
+    internal fun extractQuery(url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        val withoutFragment = url.trim().lowercase(Locale.US).substringBefore('#')
+        val qIdx = withoutFragment.indexOf('?')
+        return if (qIdx != -1 && qIdx + 1 < withoutFragment.length) {
+            withoutFragment.substring(qIdx + 1)
+        } else {
+            ""
+        }
+    }
+
+    private fun headerValue(headers: Map<String, String>?, name: String): String? {
+        if (headers.isNullOrEmpty()) return null
+        headers[name]?.let { return it }
+        for ((k, v) in headers) {
+            if (k.equals(name, ignoreCase = true)) return v
+        }
+        return null
+    }
+
+    private fun queryContainsAny(query: String, vararg tokens: String): Boolean {
+        if (query.isEmpty()) return false
+        for (token in tokens) {
+            if (query.contains(token)) return true
+        }
+        return false
     }
 
     fun getRegistrableDomain(host: String): String = SiteDomainPolicy.registrableDomain(host)
@@ -266,26 +496,138 @@ object AbpRuleEngine {
     fun isSafeCosmeticSelector(selector: String): Boolean =
         CosmeticFilterInjector.isSafeCssSelector(selector.trim())
 
-    fun inferType(url: String, acceptHeader: String? = null): ResourceType {
-        val lower = url.lowercase(Locale.US)
-        val accept = acceptHeader?.lowercase(Locale.US).orEmpty()
+    fun inferType(
+        url: String,
+        acceptHeader: String? = null,
+        requestHeaders: Map<String, String>? = null,
+        isForMainFrame: Boolean = false
+    ): ResourceType {
+        val lower = url.trim().lowercase(Locale.US)
         if (lower.startsWith("ws://") || lower.startsWith("wss://")) return ResourceType.WEBSOCKET
-        val path = lower.substringBefore('?').substringBefore('#')
+
+        val accept = (acceptHeader ?: headerValue(requestHeaders, "Accept")).orEmpty().lowercase(Locale.US)
+        val secFetchDest = headerValue(requestHeaders, "Sec-Fetch-Dest").orEmpty().lowercase(Locale.US)
+        val secFetchMode = headerValue(requestHeaders, "Sec-Fetch-Mode").orEmpty().lowercase(Locale.US)
+        val requestedWith = headerValue(requestHeaders, "X-Requested-With").orEmpty().lowercase(Locale.US)
+        val rangeHeader = headerValue(requestHeaders, "Range").orEmpty().lowercase(Locale.US)
+
+        if (isForMainFrame || secFetchDest == "document") {
+            return ResourceType.DOCUMENT
+        }
+
+        val cleanPath = extractCleanPath(lower)
+        val query = extractQuery(lower)
+
         return when {
-            path.endsWith(".js") || path.endsWith(".mjs") || accept.contains("javascript") -> ResourceType.SCRIPT
-            path.endsWith(".css") || accept.contains("text/css") -> ResourceType.STYLESHEET
-            path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
-                path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".svg") ||
-                path.endsWith(".ico") || path.endsWith(".avif") || accept.startsWith("image/") -> ResourceType.IMAGE
-            path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".m3u8") ||
-                path.endsWith(".mpd") || path.endsWith(".ts") || path.endsWith(".m4s") ||
-                accept.startsWith("video/") || accept.startsWith("audio/") -> ResourceType.MEDIA
-            path.endsWith(".woff") || path.endsWith(".woff2") || path.endsWith(".ttf") ||
-                path.endsWith(".otf") -> ResourceType.FONT
-            lower.contains("/collect") || lower.contains("/beacon") || lower.contains("/ptracking") -> ResourceType.PING
-            accept.contains("application/json") || path.endsWith(".json") -> ResourceType.XMLHTTPREQUEST
-            accept.contains("text/html") -> ResourceType.SUBDOCUMENT
+            // 1. Streaming manifests (HLS / DASH / Smooth Streaming)
+            cleanPath.endsWith(".m3u8") || cleanPath.endsWith(".m3u") ||
+                cleanPath.endsWith(".mpd") || cleanPath.endsWith(".ism") || cleanPath.endsWith(".isml") ||
+                cleanPath.contains(".m3u8/") || cleanPath.contains(".mpd/") ||
+                accept.contains("application/vnd.apple.mpegurl") ||
+                accept.contains("application/x-mpegurl") ||
+                accept.contains("audio/mpegurl") ||
+                accept.contains("audio/x-mpegurl") ||
+                accept.contains("application/dash+xml") ||
+                queryContainsAny(
+                    query,
+                    "format=m3u8", "format=mpd", "type=m3u8", "type=mpd",
+                    "mime=application/x-mpegurl", "mime=application/vnd.apple.mpegurl",
+                    "mime=application/dash+xml"
+                ) -> ResourceType.MEDIA_MANIFEST
+
+            // 2. Streaming media segments (MPEG-TS, CMAF/fMP4 segments)
+            cleanPath.endsWith(".m4s") || cleanPath.endsWith(".ts") || cleanPath.endsWith(".m2ts") ||
+                cleanPath.endsWith(".m4f") || cleanPath.endsWith(".cmfv") || cleanPath.endsWith(".cmfa") ||
+                cleanPath.endsWith(".fmp4") ||
+                accept.contains("video/mp2t") || accept.contains("video/iso.segment") ||
+                ((cleanPath.contains("/segment/") || cleanPath.contains("/segments/") ||
+                    cleanPath.contains("/chunk/") || cleanPath.contains("/frag/")) &&
+                    (rangeHeader.startsWith("bytes=") || accept.startsWith("video/") || accept.startsWith("audio/"))) -> ResourceType.MEDIA_SEGMENT
+
+            // 3. Subtitles & captions
+            cleanPath.endsWith(".vtt") || cleanPath.endsWith(".webvtt") ||
+                cleanPath.endsWith(".srt") || cleanPath.endsWith(".ass") || cleanPath.endsWith(".ssa") ||
+                cleanPath.endsWith(".ttml") || cleanPath.endsWith(".dfxp") || cleanPath.endsWith(".sbv") ||
+                secFetchDest == "track" ||
+                accept.contains("text/vtt") || accept.contains("application/ttml+xml") ||
+                accept.contains("application/x-subrip") ||
+                queryContainsAny(query, "format=vtt", "format=srt", "format=ttml", "fmt=vtt", "fmt=srv3", "mime=text/vtt") -> ResourceType.SUBTITLE
+
+            // 4. Direct media files & dynamic media streaming endpoints
+            cleanPath.endsWith(".mp4") || cleanPath.endsWith(".webm") || cleanPath.endsWith(".mkv") ||
+                cleanPath.endsWith(".m4v") || cleanPath.endsWith(".mov") || cleanPath.endsWith(".ogv") ||
+                cleanPath.endsWith(".ogg") || cleanPath.endsWith(".oga") || cleanPath.endsWith(".mp3") ||
+                cleanPath.endsWith(".m4a") || cleanPath.endsWith(".aac") || cleanPath.endsWith(".flac") ||
+                cleanPath.endsWith(".opus") || cleanPath.endsWith(".wav") || cleanPath.endsWith(".weba") ||
+                cleanPath.endsWith(".3gp") ||
+                secFetchDest == "video" || secFetchDest == "audio" ||
+                accept.startsWith("video/") || accept.startsWith("audio/") || accept.contains("application/ogg") ||
+                queryContainsAny(
+                    query,
+                    "mime=video/", "mime=audio/", "mime=video%2f", "mime=audio%2f",
+                    "content_type=video/", "content_type=audio/"
+                ) ||
+                ((cleanPath.endsWith("/stream") || cleanPath.contains("/stream/") ||
+                    cleanPath.endsWith("/videoplayback") || cleanPath.contains("/videoplayback/")) &&
+                    !accept.contains("text/html") && !accept.contains("javascript") &&
+                    !accept.contains("text/css") && !accept.startsWith("image/") &&
+                    !accept.contains("application/json")) ||
+                (rangeHeader.startsWith("bytes=") &&
+                    !cleanPath.endsWith(".js") && !cleanPath.endsWith(".css") &&
+                    !cleanPath.endsWith(".pdf") && !cleanPath.endsWith(".zip")) -> ResourceType.MEDIA
+
+            // 5. Scripts
+            cleanPath.endsWith(".js") || cleanPath.endsWith(".mjs") || cleanPath.endsWith(".cjs") ||
+                secFetchDest == "script" || accept.contains("javascript") || accept.contains("ecmascript") -> ResourceType.SCRIPT
+
+            // 6. Stylesheets
+            cleanPath.endsWith(".css") || secFetchDest == "style" || accept.contains("text/css") -> ResourceType.STYLESHEET
+
+            // 7. Images & thumbnails
+            cleanPath.endsWith(".png") || cleanPath.endsWith(".jpg") || cleanPath.endsWith(".jpeg") ||
+                cleanPath.endsWith(".gif") || cleanPath.endsWith(".webp") || cleanPath.endsWith(".svg") ||
+                cleanPath.endsWith(".ico") || cleanPath.endsWith(".avif") || cleanPath.endsWith(".bmp") ||
+                cleanPath.endsWith(".apng") || cleanPath.endsWith(".jfif") ||
+                secFetchDest == "image" || accept.startsWith("image/") -> ResourceType.IMAGE
+
+            // 8. Fonts
+            cleanPath.endsWith(".woff") || cleanPath.endsWith(".woff2") || cleanPath.endsWith(".ttf") ||
+                cleanPath.endsWith(".otf") || cleanPath.endsWith(".eot") ||
+                secFetchDest == "font" || accept.startsWith("font/") || accept.contains("application/font-") -> ResourceType.FONT
+
+            // 9. Ping / beacon telemetry
+            lower.contains("/collect") || lower.contains("/beacon") || lower.contains("/ptracking") ||
+                secFetchDest == "ping" -> ResourceType.PING
+
+            // 10. Subdocuments (iframes / embeds)
+            secFetchDest == "iframe" || secFetchDest == "frame" || secFetchDest == "embed" -> ResourceType.SUBDOCUMENT
+
+            // 11. XHR / JSON / XML / Fetch API requests
+            accept.contains("application/json") || cleanPath.endsWith(".json") ||
+                cleanPath.endsWith(".xml") || accept.contains("application/xml") ||
+                requestedWith == "xmlhttprequest" -> ResourceType.XMLHTTPREQUEST
+
+            secFetchDest == "empty" || secFetchMode == "cors" ||
+                cleanPath.contains("/api/") || cleanPath.contains("/graphql") || cleanPath.contains("/ajax/") -> ResourceType.XHR_FETCH
+
+            // 12. HTML subdocuments
+            accept.contains("text/html") || accept.contains("application/xhtml+xml") ||
+                cleanPath.endsWith(".html") || cleanPath.endsWith(".htm") -> ResourceType.SUBDOCUMENT
+
             else -> ResourceType.OTHER
+        }
+    }
+
+    private fun parsePatternTokens(rawPattern: String): Pair<String?, List<String>?> {
+        val normalized = rawPattern.replace("^", "")
+        if (!normalized.contains('*')) {
+            return normalized.ifEmpty { null } to null
+        }
+        val parts = normalized.split('*').filter { it.isNotEmpty() }
+        return when {
+            parts.isEmpty() -> null to null
+            parts.size == 1 -> parts[0] to null
+            else -> parts[0] to parts
         }
     }
 
@@ -393,14 +735,17 @@ object AbpRuleEngine {
             var includedDomains: MutableSet<String>? = null
             var excludedDomains: MutableSet<String>? = null
             var resourceMask = 0
+            var excludedResourceMask = 0
             var unsupportedOption = false
+            var hasNonSubresourceModifier = false
 
             if (optionsPart.isNotEmpty()) {
                 for (opt in optionsPart.split(',')) {
                     val o = opt.trim().lowercase(Locale.US)
+                    if (o.isEmpty()) continue
                     when {
                         o == "third-party" || o == "3p" -> thirdPartyOnly = true
-                        o == "~third-party" || o == "1p" -> thirdPartyOnly = false
+                        o == "~third-party" || o == "1p" || o == "first-party" -> thirdPartyOnly = false
                         o.startsWith("domain=") -> {
                             val doms = o.removePrefix("domain=").split('|')
                             for (d in doms) {
@@ -420,20 +765,51 @@ object AbpRuleEngine {
                                 }
                             }
                         }
+                        o == "document" || o == "doc" -> resourceMask = resourceMask or (1 shl ResourceType.DOCUMENT.ordinal)
+                        o == "~document" || o == "~doc" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.DOCUMENT.ordinal)
                         o == "script" -> resourceMask = resourceMask or (1 shl ResourceType.SCRIPT.ordinal)
+                        o == "~script" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.SCRIPT.ordinal)
                         o == "image" -> resourceMask = resourceMask or (1 shl ResourceType.IMAGE.ordinal)
+                        o == "~image" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.IMAGE.ordinal)
                         o == "stylesheet" || o == "css" -> resourceMask = resourceMask or (1 shl ResourceType.STYLESHEET.ordinal)
-                        o == "xmlhttprequest" || o == "xhr" -> resourceMask = resourceMask or (1 shl ResourceType.XMLHTTPREQUEST.ordinal)
-                        o == "subdocument" -> resourceMask = resourceMask or (1 shl ResourceType.SUBDOCUMENT.ordinal)
-                        o == "media" -> resourceMask = resourceMask or (1 shl ResourceType.MEDIA.ordinal)
+                        o == "~stylesheet" || o == "~css" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.STYLESHEET.ordinal)
+                        o == "xmlhttprequest" || o == "xhr" -> resourceMask = resourceMask or MASK_XHR_FAMILY
+                        o == "~xmlhttprequest" || o == "~xhr" -> excludedResourceMask = excludedResourceMask or MASK_XHR_FAMILY
+                        o == "subdocument" || o == "frame" -> resourceMask = resourceMask or (1 shl ResourceType.SUBDOCUMENT.ordinal)
+                        o == "~subdocument" || o == "~frame" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.SUBDOCUMENT.ordinal)
+                        o == "media" -> resourceMask = resourceMask or MASK_MEDIA_FAMILY
+                        o == "~media" -> excludedResourceMask = excludedResourceMask or MASK_MEDIA_FAMILY
                         o == "font" -> resourceMask = resourceMask or (1 shl ResourceType.FONT.ordinal)
+                        o == "~font" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.FONT.ordinal)
                         o == "ping" || o == "beacon" -> resourceMask = resourceMask or (1 shl ResourceType.PING.ordinal)
+                        o == "~ping" || o == "~beacon" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.PING.ordinal)
                         o == "websocket" -> resourceMask = resourceMask or (1 shl ResourceType.WEBSOCKET.ordinal)
-                        o.startsWith("redirect=") || o.startsWith("csp=") || o == "badfilter" || o.startsWith("removeparam=") -> {
+                        o == "~websocket" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.WEBSOCKET.ordinal)
+                        o == "other" || o == "object" -> resourceMask = resourceMask or (1 shl ResourceType.OTHER.ordinal)
+                        o == "~other" || o == "~object" -> excludedResourceMask = excludedResourceMask or (1 shl ResourceType.OTHER.ordinal)
+                        o == "popup" || o == "elemhide" || o == "ehide" ||
+                            o == "generichide" || o == "ghide" || o == "specifichide" || o == "shide" ||
+                            o == "inline-script" || o == "inline-font" || o == "webrtc" || o == "all" -> {
+                            hasNonSubresourceModifier = true
+                        }
+                        o == "important" || o == "match-case" || o == "~match-case" -> {
+                            // Recognized modifier that does not change resource mask
+                        }
+                        o.startsWith("redirect=") || o.startsWith("redirect-rule=") ||
+                            o.startsWith("csp=") || o == "badfilter" || o.startsWith("removeparam=") ||
+                            o.startsWith("rewrite=") || o.startsWith("header=") || o.startsWith("denyallow=") -> {
                             unsupportedOption = true
                         }
                     }
                 }
+            }
+
+            // If a rule only specifies non-subresource modifiers (e.g., $popup, $elemhide, $generichide)
+            // without any positive or negated subresource type, it must NOT become a wildcard (resourceMask == 0)
+            // subresource network blocker.
+            if (hasNonSubresourceModifier && resourceMask == 0 && excludedResourceMask == 0) {
+                skippedCount++
+                continue
             }
 
             if (unsupportedOption || patternPart.isEmpty()) {
@@ -461,7 +837,9 @@ object AbpRuleEngine {
                             thirdPartyOnly = thirdPartyOnly,
                             includedDomains = includedDomains,
                             excludedDomains = excludedDomains,
-                            resourceTypes = resourceMask
+                            resourceTypes = resourceMask,
+                            excludedResourceTypes = excludedResourceMask,
+                            wildcardTokens = null
                         )
                         val targetMap = if (isAllow) domainOnlyAllow else domainOnlyBlock
                         targetMap.getOrPut(dom) { ArrayList() }.add(rule)
@@ -475,44 +853,56 @@ object AbpRuleEngine {
                         caretIdx != -1 -> caretIdx
                         else -> withoutPipes.length
                     }
-                    val dom = cleanHost(withoutPipes.substring(0, hostEnd))
-                    val rest = withoutPipes.substring(hostEnd).replace("^", "").substringBefore('*')
+                    val rawHostPart = withoutPipes.substring(0, hostEnd)
+                    val dom = if (rawHostPart.contains('*')) "" else cleanHost(rawHostPart)
+                    val rawRest = withoutPipes.substring(hostEnd)
+                    val (firstToken, wildcardParts) = parsePatternTokens(rawRest)
+                    if (dom.isEmpty() && firstToken == null && wildcardParts == null) {
+                        skippedCount++
+                        continue
+                    }
                     val rule = CustomRule(
                         rawLine = line,
                         isAllow = isAllow,
                         isDomainAnchored = dom.isNotEmpty(),
                         domainTarget = dom.ifEmpty { null },
-                        substringToken = rest.ifEmpty { null },
+                        substringToken = firstToken,
                         thirdPartyOnly = thirdPartyOnly,
                         includedDomains = includedDomains,
                         excludedDomains = excludedDomains,
-                        resourceTypes = resourceMask
+                        resourceTypes = resourceMask,
+                        excludedResourceTypes = excludedResourceMask,
+                        wildcardTokens = wildcardParts
                     )
                     if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                     parsedCount++
                     continue
                 }
             } else if (isSinglePipeScheme) {
-                val rawUrl = lowerPattern.substring(1).replace("^", "")
+                val rawUrl = lowerPattern.substring(1)
                 val dom = extractHost(rawUrl)
-                val token = rawUrl.substringBefore('*')
+                val (firstToken, wildcardParts) = parsePatternTokens(rawUrl)
                 val rule = CustomRule(
                     rawLine = line,
                     isAllow = isAllow,
                     isDomainAnchored = dom.isNotEmpty(),
                     domainTarget = dom.ifEmpty { null },
-                    substringToken = token,
+                    substringToken = firstToken,
                     thirdPartyOnly = thirdPartyOnly,
                     includedDomains = includedDomains,
                     excludedDomains = excludedDomains,
-                    resourceTypes = resourceMask
+                    resourceTypes = resourceMask,
+                    excludedResourceTypes = excludedResourceMask,
+                    wildcardTokens = wildcardParts
                 )
                 if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                 parsedCount++
                 continue
             } else {
-                val token = lowerPattern.removePrefix("|").replace("^", "").substringBefore('*')
-                if (token.length < 3) {
+                val rawBody = lowerPattern.removePrefix("|")
+                val (firstToken, wildcardParts) = parsePatternTokens(rawBody)
+                val effectiveLength = wildcardParts?.sumOf { it.length } ?: (firstToken?.length ?: 0)
+                if (effectiveLength < 3) {
                     skippedCount++
                     continue
                 }
@@ -521,11 +911,13 @@ object AbpRuleEngine {
                     isAllow = isAllow,
                     isDomainAnchored = false,
                     domainTarget = null,
-                    substringToken = token,
+                    substringToken = firstToken,
                     thirdPartyOnly = thirdPartyOnly,
                     includedDomains = includedDomains,
                     excludedDomains = excludedDomains,
-                    resourceTypes = resourceMask
+                    resourceTypes = resourceMask,
+                    excludedResourceTypes = excludedResourceMask,
+                    wildcardTokens = wildcardParts
                 )
                 if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                 parsedCount++

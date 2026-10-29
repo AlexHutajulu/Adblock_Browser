@@ -164,15 +164,15 @@ class AdBlockWebViewClient(
                     if (invocation.isNotBlank()) view.evaluateJavascript(invocation, null)
                 }
             }
-            if (currentMode.get() == PrivacyMode.AGGRESSIVE &&
-                (host.contains("youtube.com") || host.contains("music.youtube.com"))
-            ) {
-                if (youtubeGuardJs == null) {
-                    youtubeGuardJs = loadAssetJs(view, "adblock/youtube_guard.js")
-                }
-                val guard = youtubeGuardJs.orEmpty()
-                if (guard.isNotBlank()) view.evaluateJavascript(guard, null)
+        }
+        // Injeksi youtube_guard.js harus berada di luar blok !isSafeDomain(host)
+        // karena youtube.com berada di SAFE_DOMAINS, dan aktif di mode BALANCED maupun AGGRESSIVE.
+        if (currentMode.get() != PrivacyMode.OFF && isYouTubeHost(host)) {
+            if (youtubeGuardJs == null) {
+                youtubeGuardJs = loadAssetJs(view, "adblock/youtube_guard.js")
             }
+            val guard = youtubeGuardJs.orEmpty()
+            if (guard.isNotBlank()) view.evaluateJavascript(guard, null)
         }
     }
 
@@ -293,14 +293,23 @@ class AdBlockWebViewClient(
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value?.lowercase(Locale.US)
 
-        // Never block safe domains (CDN, auth, Google core, streaming infra, payment, captcha)
-        if (isSafeDomain(reqHost)) return null
+        // Never block safe domains (CDN, auth, Google core, streaming infra, payment, captcha),
+        // EXCEPT explicit YouTube/Google ad & ad-telemetry endpoints (/api/stats/ads, /pagead/, /ptracking, etc.)
+        if (isSafeDomain(reqHost) && !isExplicitYouTubeAdRequest(reqHost, lower)) return null
         if (pgHost.isNotEmpty() && isWhitelistedHost(pgHost)) return null
         if (isWhitelistedHost(reqHost)) return null
         if (isCriticalBypassDomain(reqHost) || (pgHost.isNotEmpty() && isCriticalBypassDomain(pgHost))) return null
 
-        val isFirstParty = pgHost.isNotEmpty() &&
-            com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost)
+        val resType = com.example.manager.AbpRuleEngine.inferType(
+            url = rawUrl,
+            acceptHeader = accept,
+            requestHeaders = request.requestHeaders,
+            isForMainFrame = request.isForMainFrame
+        )
+        val isProxiedSameSiteImage = resType == com.example.manager.AbpRuleEngine.ResourceType.IMAGE &&
+            com.example.manager.AbpRuleEngine.isSameSiteImageProxy(reqHost, pgHost, lower)
+        val isFirstParty = (pgHost.isNotEmpty() &&
+            com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost)) || isProxiedSameSiteImage
 
         val streamBoost = streamingBoostEnabled.get()
         val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$rawUrl"
@@ -311,24 +320,33 @@ class AdBlockWebViewClient(
                 null
             } else {
                 blockedCount.incrementAndGet()
+                if (cachedReason == "yt-ad-endpoint") ytCount.incrementAndGet()
                 onBlocked?.invoke(rawUrl, cachedReason)
                 emptyResponse(uri, accept)
             }
         }
 
-        val resType = com.example.manager.AbpRuleEngine.inferType(rawUrl, accept)
         var reason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost, resType, isFirstParty)
 
         // Lapisan DNS AdGuard (hanya untuk third-party dan bila belum terblokir aturan lokal).
         // Non-blocking: bila belum ada di cache, prefetch berjalan di background.
+        // Jangan timpa explicit allow rule (@@) atau memutus media stream / thumbnail konten di mode Balance.
         if (reason == null && !isFirstParty && mode != PrivacyMode.OFF) {
-            if (AdGuardDnsFilter.isBlockedCached(reqHost)) {
+            val explicitlyAllowed = com.example.manager.FilterListManager.getCachedRules()
+                ?.ruleSet?.matchesAllowRule(lower, pgHost, resType) == true
+            val protectBalancedMedia = (mode == PrivacyMode.BALANCED || streamBoost) && resType.isMediaFamily
+            val protectBalancedContentImage = mode == PrivacyMode.BALANCED &&
+                resType == com.example.manager.AbpRuleEngine.ResourceType.IMAGE &&
+                com.example.manager.AbpRuleEngine.isLikelyContentImagePath(lower)
+            if (!explicitlyAllowed && !protectBalancedMedia && !protectBalancedContentImage &&
+                AdGuardDnsFilter.isBlockedCached(reqHost)
+            ) {
                 reason = "adguard-dns"
             }
         }
 
         // First-party yang terkena aturan umum / heuristik: JANGAN kembalikan 200 kosong,
-        // biarkan lewat (return null) agar bundle JS/CSS situs utama tidak rusak.
+        // biarkan lewat (return null) agar bundle JS/CSS/gambar situs utama tidak rusak.
         if (reason != null && isFirstParty && reason in FIRST_PARTY_EXEMPT_REASONS) {
             reason = null
         }
@@ -341,6 +359,7 @@ class AdBlockWebViewClient(
 
         return if (isBlocked) {
             blockedCount.incrementAndGet()
+            if (reason == "yt-ad-endpoint") ytCount.incrementAndGet()
             onBlocked?.invoke(rawUrl, reason ?: "adblock")
             emptyResponse(uri, accept)
         } else null
@@ -378,6 +397,96 @@ class AdBlockWebViewClient(
 
     // ─── Core rule check ──────────────────────────────────────────────────────
 
+    internal fun isCleanStreamingPath(lowerUrl: String): Boolean {
+        val cleanPath = com.example.manager.AbpRuleEngine.extractCleanPath(lowerUrl)
+        if (cleanPath.isEmpty()) return false
+        return cleanPath.endsWith(".m3u8") || cleanPath.endsWith(".m3u") ||
+            cleanPath.endsWith(".mpd") || cleanPath.endsWith(".ism") || cleanPath.endsWith(".isml") ||
+            cleanPath.endsWith(".m4s") || cleanPath.endsWith(".ts") || cleanPath.endsWith(".m2ts") ||
+            cleanPath.endsWith(".m4f") || cleanPath.endsWith(".cmfv") || cleanPath.endsWith(".cmfa") ||
+            cleanPath.endsWith(".fmp4") || cleanPath.endsWith(".mp4") || cleanPath.endsWith(".webm") ||
+            cleanPath.endsWith(".mkv") || cleanPath.endsWith(".m4v") || cleanPath.endsWith(".mov") ||
+            cleanPath.endsWith(".mp3") || cleanPath.endsWith(".m4a") || cleanPath.endsWith(".aac") ||
+            cleanPath.endsWith(".ogg") || cleanPath.endsWith(".oga") || cleanPath.endsWith(".opus") ||
+            cleanPath.endsWith(".vtt") || cleanPath.endsWith(".srt") || cleanPath.endsWith(".ass") ||
+            cleanPath.endsWith(".ssa") || cleanPath.endsWith(".ttml")
+    }
+
+    internal fun evaluateRequestDecision(
+        rawUrl: String,
+        pageHost: String,
+        mode: PrivacyMode = currentMode.get(),
+        trackerEnabled: Boolean = trackerBlockingEnabled.get(),
+        streamBoost: Boolean = streamingBoostEnabled.get(),
+        acceptHeader: String? = null,
+        requestHeaders: Map<String, String>? = null,
+        isForMainFrame: Boolean = false
+    ): String? {
+        if (isForMainFrame) return null
+        val lower = rawUrl.trim().lowercase(Locale.US)
+        val reqHost = com.example.manager.AbpRuleEngine.extractHost(lower)
+        if (reqHost.isEmpty()) return null
+        val pgHost = com.example.manager.AbpRuleEngine.cleanHost(pageHost)
+        if (isSafeDomain(reqHost) && !isExplicitYouTubeAdRequest(reqHost, lower)) return null
+        if (pgHost.isNotEmpty() && isWhitelistedHost(pgHost)) return null
+        if (isWhitelistedHost(reqHost)) return null
+        if (isCriticalBypassDomain(reqHost) || (pgHost.isNotEmpty() && isCriticalBypassDomain(pgHost))) return null
+
+        val resType = com.example.manager.AbpRuleEngine.inferType(
+            url = rawUrl,
+            acceptHeader = acceptHeader,
+            requestHeaders = requestHeaders,
+            isForMainFrame = isForMainFrame
+        )
+        val isProxiedSameSiteImage = resType == com.example.manager.AbpRuleEngine.ResourceType.IMAGE &&
+            com.example.manager.AbpRuleEngine.isSameSiteImageProxy(reqHost, pgHost, lower)
+        val isFirstParty = (pgHost.isNotEmpty() &&
+            com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost)) || isProxiedSameSiteImage
+        var reason = checkRules(reqHost, pgHost, lower, mode, trackerEnabled, streamBoost, resType, isFirstParty)
+        if (reason != null && isFirstParty && reason in FIRST_PARTY_EXEMPT_REASONS) {
+            reason = null
+        }
+        return reason
+    }
+
+    internal fun sanitizeUrlForDiagnosticLog(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        val host = com.example.manager.AbpRuleEngine.extractHost(trimmed)
+        val path = com.example.manager.AbpRuleEngine.extractCleanPath(trimmed)
+        val hasQuery = trimmed.contains('?')
+        return if (hasQuery) "https://$host$path?[REDACTED]" else "https://$host$path"
+    }
+
+    internal fun isYouTubeHost(host: String): Boolean {
+        val clean = normalizeHost(host)
+        return clean == "youtube.com" || clean.endsWith(".youtube.com") || clean == "youtu.be"
+    }
+
+    internal fun isYouTubeOrGoogleAdHost(host: String): Boolean {
+        val clean = normalizeHost(host)
+        return isYouTubeHost(clean) ||
+            clean == "google.com" || clean.endsWith(".google.com") ||
+            clean == "google.co.id" || clean.endsWith(".google.co.id")
+    }
+
+    internal fun isExplicitYouTubeAdRequest(reqHost: String, lowerUrl: String): Boolean {
+        if (!isYouTubeOrGoogleAdHost(reqHost)) return false
+        val cleanPath = com.example.manager.AbpRuleEngine.extractCleanPath(lowerUrl)
+        if (cleanPath.isEmpty()) return false
+        if (cleanPath == "/youtubei/v1/player" ||
+            cleanPath.startsWith("/videoplayback") ||
+            cleanPath.startsWith("/youtubei/v1/next") ||
+            cleanPath.startsWith("/youtubei/v1/browse") ||
+            cleanPath.startsWith("/youtubei/v1/search") ||
+            cleanPath.startsWith("/youtubei/v1/guide") ||
+            cleanPath.startsWith("/s/player/") ||
+            cleanPath.startsWith("/iframe_api")
+        ) {
+            return false
+        }
+        return YOUTUBE_EXPLICIT_AD_PATHS.any { lowerUrl.contains(it) }
+    }
+
     private fun checkRules(
         reqHost: String,
         pgHost: String,
@@ -388,21 +497,33 @@ class AdBlockWebViewClient(
         resType: com.example.manager.AbpRuleEngine.ResourceType = com.example.manager.AbpRuleEngine.ResourceType.OTHER,
         isFirstParty: Boolean = (pgHost.isNotEmpty() && com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost))
     ): String? {
-        val isStreamingSegment = lowerUrl.contains(".m3u8") || lowerUrl.contains(".m4s") ||
-            lowerUrl.contains(".mpd") || lowerUrl.contains(".dash") ||
-            lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".ts") || lowerUrl.endsWith(".webm")
-        if (isStreamingSegment) {
-            if (streamBoost || !AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
-                return null
-            }
+        val isMediaResource = resType.isMediaFamily || isCleanStreamingPath(lowerUrl)
+        if (isMediaResource && streamBoost) {
+            return null
         }
+        val isProtectedContentImage = resType == com.example.manager.AbpRuleEngine.ResourceType.IMAGE &&
+            com.example.manager.AbpRuleEngine.isLikelyContentImagePath(lowerUrl)
 
+        val isKnownAdDomain = AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }
         val adBlockActive = (mode != PrivacyMode.OFF)
         val isAggressive = (mode == PrivacyMode.AGGRESSIVE)
 
+        // 0. Endpoint iklan & telemetri iklan YouTube eksplisit (berlaku baik first-party maupun third-party)
+        if (!isMediaResource && isExplicitYouTubeAdRequest(reqHost, lowerUrl)) {
+            val isYtTelemetryOnly = lowerUrl.contains("/ptracking") ||
+                lowerUrl.contains("/youtubei/v1/log_event") ||
+                lowerUrl.contains("/pcs/activeview")
+            if (adBlockActive) {
+                return "yt-ad-endpoint"
+            }
+            if (trackerEnabled && isYtTelemetryOnly) {
+                return "yt-ad-endpoint"
+            }
+        }
+
         // 1. Domain iklan & pelacak eksplisit (hanya third-party)
         if (!isFirstParty) {
-            if (adBlockActive && AD_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+            if (adBlockActive && isKnownAdDomain) {
                 return "ad-domain"
             }
             if (trackerEnabled && com.example.manager.TrackerClassifier.isTrackerDomain(reqHost)) {
@@ -417,7 +538,9 @@ class AdBlockWebViewClient(
             if (trackerEnabled && com.example.manager.TrackerClassifier.isTrackerPath(lowerUrl)) {
                 return "tracker-keyword"
             }
-            if (adBlockActive && AD_ONLY_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+            if (adBlockActive && (AD_ONLY_PATH_KEYWORDS.any { lowerUrl.contains(it) } ||
+                    (isMediaResource && com.example.manager.AbpRuleEngine.hasExplicitVideoAdIndicator(lowerUrl)))
+            ) {
                 return "ad-keyword"
             }
         }
@@ -426,20 +549,27 @@ class AdBlockWebViewClient(
             return null
         }
 
-        // 3. Tambahan khusus mode Aggressive
+        // 3. Tambahan khusus mode Aggressive (jangan blokir media stream atau thumbnail konten sah)
         if (isAggressive) {
             if (!isFirstParty && AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
                 return "aggressive-ad"
             }
-            if (!isFirstParty && !isFirstPartyCriticalFlow && AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }) {
+            if (!isFirstParty && !isFirstPartyCriticalFlow && !isMediaResource && !isProtectedContentImage &&
+                AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }
+            ) {
                 return "aggressive-keyword"
             }
         }
 
         // 4. Evaluasi AbpRuleEngine
+        val effectiveResType = if (isMediaResource && !resType.isMediaFamily) {
+            com.example.manager.AbpRuleEngine.ResourceType.MEDIA
+        } else {
+            resType
+        }
         val cachedRules = com.example.manager.FilterListManager.getCachedRules()
         if (cachedRules != null) {
-            val match = cachedRules.ruleSet.shouldBlock(lowerUrl, pgHost, resType)
+            val match = cachedRules.ruleSet.shouldBlock(lowerUrl, pgHost, effectiveResType)
             if (match != null) {
                 val isTrackerLike = com.example.manager.TrackerClassifier.isTrackerRequest(reqHost, lowerUrl) ||
                     lowerUrl.contains("analytics") || lowerUrl.contains("tracker") ||
@@ -455,13 +585,13 @@ class AdBlockWebViewClient(
 
         // 5. Lapisan heuristik (setelah exception ABP)
         if (adBlockActive) {
-            val explicitlyAllowed = cachedRules?.ruleSet?.matchesAllowRule(lowerUrl, pgHost, resType) == true
+            val explicitlyAllowed = cachedRules?.ruleSet?.matchesAllowRule(lowerUrl, pgHost, effectiveResType) == true
             if (!explicitlyAllowed) {
                 val heuristic = HeuristicsEngine.heuristicReason(
                     host = reqHost,
                     lowerUrl = lowerUrl,
                     isFirstParty = isFirstParty,
-                    resType = resType,
+                    resType = effectiveResType,
                     aggressive = isAggressive
                 )
                 if (heuristic != null) return heuristic
@@ -601,41 +731,60 @@ class AdBlockWebViewClient(
 
     fun emptyResponse(uri: Uri?, acceptHeader: String?): WebResourceResponse {
         val fullUrl = uri?.toString().orEmpty().lowercase(Locale.US)
-        val path = uri?.path.orEmpty().lowercase(Locale.US)
+        val path = com.example.manager.AbpRuleEngine.extractCleanPath(fullUrl)
         val accept = acceptHeader.orEmpty().lowercase(Locale.US)
+        val inferredType = com.example.manager.AbpRuleEngine.inferType(fullUrl, accept)
 
-        val isJsRequest = path.endsWith(".js") ||
-            fullUrl.contains("adsbygoogle") ||
-            fullUrl.contains("gpt.js") ||
-            fullUrl.contains("prebid") ||
-            fullUrl.contains("fuckadblock") ||
-            fullUrl.contains("blockadblock") ||
-            fullUrl.contains("admiral") ||
-            fullUrl.contains("pagefair") ||
-            fullUrl.contains("fundingchoices") ||
-            fullUrl.contains("/pagead/js/") ||
-            fullUrl.contains("analytics.js") ||
-            fullUrl.contains("fbevents.js") ||
-            accept.contains("javascript") ||
-            accept.contains("ecmascript")
+        val isJsRequest = !inferredType.isMediaFamily && (
+            inferredType == com.example.manager.AbpRuleEngine.ResourceType.SCRIPT ||
+                path.endsWith(".js") ||
+                fullUrl.contains("adsbygoogle") ||
+                fullUrl.contains("gpt.js") ||
+                fullUrl.contains("prebid") ||
+                fullUrl.contains("fuckadblock") ||
+                fullUrl.contains("blockadblock") ||
+                fullUrl.contains("admiral") ||
+                fullUrl.contains("pagefair") ||
+                fullUrl.contains("fundingchoices") ||
+                fullUrl.contains("/pagead/js/") ||
+                fullUrl.contains("analytics.js") ||
+                fullUrl.contains("fbevents.js") ||
+                accept.contains("javascript") ||
+                accept.contains("ecmascript")
+            )
 
-        val isImageRequest = path.endsWith(".gif") ||
-            path.endsWith(".png") ||
-            path.endsWith(".jpg") ||
-            path.endsWith(".jpeg") ||
-            path.endsWith(".webp") ||
-            path.endsWith(".svg") ||
-            path.endsWith(".ico") ||
-            fullUrl.contains("/pixel") ||
-            fullUrl.contains("/beacon") ||
-            accept.startsWith("image/")
+        val isImageRequest = !inferredType.isMediaFamily && !isJsRequest && (
+            inferredType == com.example.manager.AbpRuleEngine.ResourceType.IMAGE ||
+                path.endsWith(".gif") ||
+                path.endsWith(".png") ||
+                path.endsWith(".jpg") ||
+                path.endsWith(".jpeg") ||
+                path.endsWith(".webp") ||
+                path.endsWith(".svg") ||
+                path.endsWith(".ico") ||
+                path.endsWith(".avif") ||
+                fullUrl.contains("/pixel") ||
+                fullUrl.contains("/beacon") ||
+                accept.startsWith("image/")
+            )
 
-        val isJsonRequest = path.endsWith(".json") ||
-            fullUrl.contains("/api/stats/ads") ||
-            fullUrl.contains("/youtubei/v1/log_event") ||
-            accept.contains("application/json")
+        val isJsonRequest = !inferredType.isMediaFamily && (
+            path.endsWith(".json") ||
+                fullUrl.contains("/api/stats/ads") ||
+                fullUrl.contains("/youtubei/v1/log_event") ||
+                fullUrl.contains("/youtubei/v1/player/ad_break") ||
+                fullUrl.contains("/get_midroll_info") ||
+                fullUrl.contains("/ptracking") ||
+                fullUrl.contains("/pcs/activeview") ||
+                fullUrl.contains("/ad_data_204") ||
+                fullUrl.contains("/pagead/interaction") ||
+                fullUrl.contains("/pagead/adview") ||
+                fullUrl.contains("/pagead/lvz") ||
+                accept.contains("application/json")
+            )
 
-        val isCssRequest = path.endsWith(".css") || accept.contains("text/css")
+        val isCssRequest = inferredType == com.example.manager.AbpRuleEngine.ResourceType.STYLESHEET ||
+            path.endsWith(".css") || accept.contains("text/css")
 
         val mime: String
         val body: ByteArray
@@ -959,6 +1108,17 @@ class AdBlockWebViewClient(
             "/adblock-detector"
         )
 
+        private val YOUTUBE_EXPLICIT_AD_PATHS = listOf(
+            "/api/stats/ads",
+            "/pagead/",
+            "/ptracking",
+            "/youtubei/v1/log_event",
+            "/youtubei/v1/player/ad_break",
+            "/get_midroll_info",
+            "/pcs/activeview",
+            "/ad_data_204"
+        )
+
         private val CRITICAL_FLOW_KEYWORDS = listOf(
             "/login", "/signin", "/signup", "/register", "/oauth", "/auth/",
             "/checkout", "/payment", "/pembayaran", "/transaksi", "/verify", "/captcha"
@@ -1192,7 +1352,18 @@ class AdBlockWebViewClient(
 (function(){
   if(window.__asYTEarly) return;
   try{Object.defineProperty(window,'__asYTEarly',{value:true,enumerable:false,configurable:false});}catch(e){window.__asYTEarly=true;}
-  function wipe(v){if(v){try{v.adPlacements=[];v.playerAds=[];v.adSlots=[];}catch(e){}}return v;}
+  function wipe(v){
+    if(v&&typeof v==='object'){
+      try{
+        delete v.adPlacements;delete v.playerAds;delete v.adSlots;delete v.adBreakHeartbeatParams;
+        if(v.playerResponse&&typeof v.playerResponse==='object'){
+          delete v.playerResponse.adPlacements;delete v.playerResponse.playerAds;
+          delete v.playerResponse.adSlots;delete v.playerResponse.adBreakHeartbeatParams;
+        }
+      }catch(e){}
+    }
+    return v;
+  }
   function stripFeed(d){
     if(!d) return d;
     try{
@@ -1203,8 +1374,8 @@ class AdBlockWebViewClient(
         if(!items) return;
         for(var i=items.length-1;i>=0;i--){
           var x=items[i];
-          if(x.promotedSparklesWebRenderer||x.adSlotRenderer||x.searchPyvRenderer
-          ||(x.richItemRenderer&&x.richItemRenderer.content&&(x.richItemRenderer.content.adSlotRenderer||x.richItemRenderer.content.promotedSparklesWebRenderer)))
+          if(x.promotedSparklesWebRenderer||x.adSlotRenderer||x.searchPyvRenderer||x.inFeedAdLayoutRenderer
+          ||(x.richItemRenderer&&x.richItemRenderer.content&&(x.richItemRenderer.content.adSlotRenderer||x.richItemRenderer.content.promotedSparklesWebRenderer||x.richItemRenderer.content.inFeedAdLayoutRenderer)))
             items.splice(i,1);
         }
       });
@@ -1214,12 +1385,29 @@ class AdBlockWebViewClient(
   try{Object.defineProperty(window,'ytInitialPlayerResponse',{get:function(){return this.__ay;},set:function(v){this.__ay=wipe(v);},configurable:true});}catch(e){}
   try{Object.defineProperty(window,'ytInitialData',{get:function(){return this.__ad;},set:function(v){this.__ad=stripFeed(v);},configurable:true});}catch(e){}
   var pf=window.fetch;
-  var YB=['/api/stats/ads','/pagead/','/ptracking','/youtubei/v1/log_event','doubleclick.net/pagead'];
-  window.fetch=function(r,i){
-    var u=typeof r==='string'?r:(r&&r.url)||'';
-    if(YB.some(function(e){return u.indexOf(e)>-1;})) return Promise.resolve(new Response('{}',{status:200}));
-    return pf.apply(this,arguments);
-  };
+  var YB=['/api/stats/ads','/pagead/','/ptracking','/youtubei/v1/log_event','/youtubei/v1/player/ad_break','/get_midroll_info','/pcs/activeview','/ad_data_204','doubleclick.net/pagead','googlesyndication.com'];
+  function isYtAdUrl(u){
+    if(!u) return false;
+    var s=String(u);
+    if(s.indexOf('/videoplayback')>-1||s.indexOf('/s/player/')>-1) return false;
+    return YB.some(function(e){return s.indexOf(e)>-1;});
+  }
+  if(pf){
+    window.fetch=function(r,i){
+      var u=typeof r==='string'?r:(r&&r.url)||'';
+      if(isYtAdUrl(u)) return Promise.resolve(new Response('{"status":"ok"}',{status:200,headers:{'Content-Type':'application/json'}}));
+      return pf.apply(this,arguments);
+    };
+  }
+  var yxo=XMLHttpRequest.prototype.open;
+  if(yxo){
+    XMLHttpRequest.prototype.open=function(m,u){
+      if(isYtAdUrl(u)){
+        arguments[1]='data:application/json,%7B%22status%22%3A%22ok%22%7D';
+      }
+      return yxo.apply(this,arguments);
+    };
+  }
 })();
         """.trimIndent()
 
@@ -1519,6 +1707,48 @@ class AdBlockWebViewClient(
       }
     }catch(e){}
   }
+  function isPlaceholderImageSrc(s){
+    if(!s) return true;
+    var v=String(s).trim().toLowerCase();
+    return v===''||v==='about:blank'||v.indexOf('data:image/gif')===0||v.indexOf('data:image/svg+xml')===0||v.indexOf('data:image/png;base64,ivborw0kggoaaaansuheugaaaaeaaaab')===0;
+  }
+  function isSafeLazyImageUrl(raw){
+    try{
+      if(!raw) return false;
+      var s=String(raw).trim();
+      if(!s||s.indexOf('data:')===0||s.indexOf('javascript:')===0||s.indexOf('about:')===0) return false;
+      var u=new URL(s,location.href);
+      var h=cleanHost(u.hostname);
+      if(!h) return false;
+      return !isDomainMatch(h,BAD_DOMAINS);
+    }catch(e){return false;}
+  }
+  function recoverLazyImages(root){
+    try{
+      var scope=root&&root.querySelectorAll?root:document;
+      scope.querySelectorAll('img[data-src],img[data-lazy-src],img[data-original],img[data-lazy],img[data-srcset],img[data-lazy-srcset]').forEach(function(img){
+        if(img.getAttribute('data-as-lazy-fixed')==='1') return;
+        var curSrc=img.getAttribute('src')||'';
+        if(isPlaceholderImageSrc(curSrc)){
+          var cand=img.getAttribute('data-src')||img.getAttribute('data-lazy-src')||img.getAttribute('data-original')||img.getAttribute('data-lazy')||'';
+          if(isSafeLazyImageUrl(cand)){
+            img.setAttribute('src',cand);
+            img.setAttribute('data-as-lazy-fixed','1');
+          }
+        }
+        var curSet=img.getAttribute('srcset')||'';
+        if(!curSet){
+          var candSet=img.getAttribute('data-srcset')||img.getAttribute('data-lazy-srcset')||'';
+          if(candSet&&candSet.indexOf('javascript:')===-1){
+            img.setAttribute('srcset',candSet);
+          }
+        }
+        if(img.classList&&(img.classList.contains('lazyload')||img.classList.contains('lazy-hidden'))){
+          img.style.removeProperty('opacity');
+        }
+      });
+    }catch(e){}
+  }
   function clean(root){
     try{
       var scope=root||document;
@@ -1531,6 +1761,7 @@ class AdBlockWebViewClient(
           if(shouldCleanIframe(n)) hideIframe(n);
         });
       }
+      recoverLazyImages(scope);
     }catch(e){}
   }
   clean(document);
@@ -1550,7 +1781,7 @@ class AdBlockWebViewClient(
 
         // ─── YouTube skip script ───────────────────────────────────────────────
 
-        private val YT_PAGE_SCRIPT = """
+        internal val YT_PAGE_SCRIPT = """
 (function(){
   if(window.__AlexYTSkip) return;
   window.__AlexYTSkip=true;
@@ -1561,14 +1792,31 @@ class AdBlockWebViewClient(
     if(busy||document.hidden) return;
     busy=true;
     try{
-      var b=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button');
-      if(b){b.click();busy=false;return;}
       var c=document.querySelector('.ytp-ad-overlay-close-button,.ytp-ad-feedback-dialog-close-button');
       if(c) c.click();
-      var ad=document.querySelector('.ad-showing,.ytp-ad-player-overlay,.ytp-ad-simple-ad-badge,.ytp-ad-text');
-      var v=ad?document.querySelector('video'):null;
-      if(v&&isFinite(v.duration)&&v.duration>0){v.muted=true;v.currentTime=Math.max(v.duration-0.1,0);}
-      var slots=document.querySelectorAll('ytd-promoted-sparkles-web-renderer,ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,#player-ads,#masthead-ad');
+      var b=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button,.ytp-ad-skip-button-slot button');
+      if(b){b.click();}
+      var player=document.querySelector('#movie_player.ad-showing,#movie_player.ad-interrupting,.html5-video-player.ad-showing,.html5-video-player.ad-interrupting');
+      if(player){
+        var v=player.querySelector('video')||document.querySelector('video.html5-main-video');
+        if(v){
+          if(!window.__asYtMutedByAd){
+            window.__asYtPrevMuted=!!v.muted;
+            window.__asYtMutedByAd=true;
+          }
+          v.muted=true;
+          if(isFinite(v.duration)&&v.duration>0&&v.duration<600&&v.currentTime<v.duration-0.3){
+            v.currentTime=Math.max(v.duration-0.1,0);
+          }
+        }
+      }else if(window.__asYtMutedByAd){
+        var mainV=document.querySelector('#movie_player video,video.html5-main-video,video');
+        if(mainV){
+          mainV.muted=!!window.__asYtPrevMuted;
+        }
+        window.__asYtMutedByAd=false;
+      }
+      var slots=document.querySelectorAll('ytd-promoted-sparkles-web-renderer,ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-companion-slot-renderer,ytd-action-companion-ad-renderer,ytd-promoted-video-renderer,ytd-search-pyv-renderer,ytm-promoted-sparkles-web-renderer,#player-ads,#masthead-ad');
       for(var i=0;i<slots.length;i++){slots[i].remove();}
     }catch(e){}
     busy=false;
@@ -1616,11 +1864,23 @@ class AdBlockWebViewClient(
   }
 
   function isProtected(el){
-    try{var n=el;for(var i=0;n&&i<6;i++,n=n.parentElement){
-      var t=safeText(n);
-      if(SAFE.some(function(w){return t.includes(w);})) return true;
-      if(n.tagName==='FORM'||n.tagName==='INPUT'||n.tagName==='SELECT') return true;
-    }return false;}catch(e){return true;}
+    try{
+      if(!el||el.nodeType!==1) return true;
+      var tag=(el.tagName||'').toUpperCase();
+      if(tag==='BODY'||tag==='HTML'||tag==='MAIN'||tag==='ARTICLE'||tag==='VIDEO'||tag==='AUDIO') return true;
+      if(el.querySelector){
+        if(el.querySelector('video,audio,form,input,select')) return true;
+        if(tag!=='IMG'&&tag!=='IFRAME'&&tag!=='A'&&el.querySelectorAll('img').length>1) return true;
+        if(tag!=='IMG'&&tag!=='IFRAME'&&tag!=='A'&&el.querySelector('article,.animepost,.bs,.bsx,.thumb,.post-thumb,.limit')) return true;
+      }
+      var n=el;
+      for(var i=0;n&&i<6;i++,n=n.parentElement){
+        var t=safeText(n);
+        if(SAFE.some(function(w){return t.includes(w);})) return true;
+        if(n.tagName==='FORM'||n.tagName==='INPUT'||n.tagName==='SELECT') return true;
+      }
+      return false;
+    }catch(e){return true;}
   }
 
   function hasGambling(el){
@@ -1672,7 +1932,7 @@ class AdBlockWebViewClient(
     try{['iframe','img'].forEach(function(t){
       document.querySelectorAll(t+'[src]').forEach(function(el){
         if(isIAB(el)&&hasGambling(el)&&!isProtected(el)){
-          var c=el.closest('div,section,aside')||el;
+          var c=el.closest('a')||el;
           if(!isProtected(c)) hide(c);
         }
       });
@@ -1682,7 +1942,7 @@ class AdBlockWebViewClient(
   function step3(){
     if(IS_STREAMING) return;
     try{document.querySelectorAll('div,section,aside').forEach(function(el){
-      if(el.children.length>30) return;
+      if(el.children.length>6) return;
       if(isIAB(el)&&hasGambling(el)&&!isProtected(el)) hide(el);
     });}catch(e){}
   }
