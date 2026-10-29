@@ -22,26 +22,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Verify and repair Gradle Wrapper
-        run: |
-          chmod +x gradlew
-          if ! jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null 2>&1; then
-            echo "Detected corrupted gradle-wrapper.jar; restoring clean wrapper JAR..."
-            if [ -f gradle/wrapper/gradle-wrapper.jar.base64 ]; then
-              base64 -d gradle/wrapper/gradle-wrapper.jar.base64 > gradle/wrapper/gradle-wrapper.jar
-            else
-              DIST_URL=$(grep '^distributionUrl=' gradle/wrapper/gradle-wrapper.properties | cut -d'=' -f2- | sed 's/\\:/:/g')
-              curl -fsSL "$DIST_URL" -o /tmp/gradle-dist.zip
-              unzip -q /tmp/gradle-dist.zip -d /tmp/gradle-dist
-              GRADLE_BIN=$(find /tmp/gradle-dist -name "gradle" -type f -executable | head -n 1)
-              "$GRADLE_BIN" wrapper
-              rm -rf /tmp/gradle-dist.zip /tmp/gradle-dist
-            fi
-          fi
-          jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null
-
-      - name: Setup Gradle Cache
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Restore debug keystore and repair Gradle Wrapper if needed
+        run: |
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+          if ! jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null 2>&1; then
+            gradle wrapper --gradle-version 9.3.1
+          fi
+          chmod +x gradlew
 
       - name: Set up Android SDK
         run: |
