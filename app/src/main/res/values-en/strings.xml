@@ -51,6 +51,28 @@
     <string name="settings_section_language">Language</string>
     <string name="settings_section_advanced">Advanced</string>
 
+    <!-- 5 Clean Settings Categories -->
+    <string name="settings_cat_features">Features</string>
+    <string name="settings_cat_general">General</string>
+    <string name="settings_cat_appearance">Appearance</string>
+    <string name="settings_cat_passwords">Passwords &amp; Autofill</string>
+    <string name="settings_cat_about">About</string>
+    <string name="settings_cat_all">All</string>
+
+    <!-- Passwords & Autofill Strings -->
+    <string name="pref_save_passwords_title">Save Passwords &amp; Credentials</string>
+    <string name="pref_save_passwords_summary">Protect website passwords using SQLCipher encrypted vault</string>
+    <string name="pref_autofill_title">Autofill Forms</string>
+    <string name="pref_autofill_summary">Securely autofill address and web form details</string>
+    <string name="pref_keystore_status_title">Encryption Key Protection</string>
+    <string name="pref_keystore_status_summary">Encryption keys secured by Android Keystore (AES-256-GCM hardware-backed)</string>
+    <string name="pref_clipboard_shield_title">Clipboard Hijacking Shield</string>
+    <string name="pref_clipboard_shield_summary">Prevent web scripts from reading or overwriting clipboard without user interaction</string>
+    <string name="pref_desktop_zoom_title">Desktop Page Zoom</string>
+    <string name="pref_adaptive_zoom_title">Adaptive Zoom Scale Range</string>
+    <string name="settings_dolby_section_title">Dolby Atmos &amp; Dolby Vision (Audio &amp; HDR)</string>
+    <string name="settings_rescan_done">Device redetection completed</string>
+
     <!-- Language Settings -->
     <string name="pref_language_title">App Language</string>
     <string name="pref_language_summary">Select display language for the application</string>

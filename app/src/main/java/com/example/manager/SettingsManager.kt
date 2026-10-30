@@ -274,6 +274,14 @@ class SettingsManager(private val context: Context) {
         get() = prefs.getBoolean("force_web_page_dark_mode", false)
         set(value) = prefs.edit().putBoolean("force_web_page_dark_mode", value).apply()
 
+    var isSavePasswordsEnabled: Boolean
+        get() = prefs.getBoolean("pref_save_passwords_v1", false)
+        set(value) = prefs.edit().putBoolean("pref_save_passwords_v1", value).apply()
+
+    var isAutofillEnabled: Boolean
+        get() = prefs.getBoolean("pref_autofill_v1", false)
+        set(value) = prefs.edit().putBoolean("pref_autofill_v1", value).apply()
+
     var liquidGlassEnabled: Boolean
         get() = prefs.getBoolean("liquid_glass_enabled_v3", true)
         set(value) = prefs.edit().putBoolean("liquid_glass_enabled_v3", value).apply()

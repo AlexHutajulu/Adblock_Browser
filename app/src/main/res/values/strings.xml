@@ -51,6 +51,28 @@
     <string name="settings_section_language">Bahasa</string>
     <string name="settings_section_advanced">Lanjutan</string>
 
+    <!-- 5 Clean Settings Categories -->
+    <string name="settings_cat_features">Fitur</string>
+    <string name="settings_cat_general">Umum</string>
+    <string name="settings_cat_appearance">Tampilan</string>
+    <string name="settings_cat_passwords">Sandi dan Isi Otomatis</string>
+    <string name="settings_cat_about">Tentang</string>
+    <string name="settings_cat_all">Semua</string>
+
+    <!-- Passwords & Autofill Strings -->
+    <string name="pref_save_passwords_title">Simpan Sandi &amp; Kredensial</string>
+    <string name="pref_save_passwords_summary">Lindungi sandi situs web menggunakan brankas terenkripsi SQLCipher</string>
+    <string name="pref_autofill_title">Isi Otomatis Formulir</string>
+    <string name="pref_autofill_summary">Isi otomatis data alamat dan formulir web dengan aman</string>
+    <string name="pref_keystore_status_title">Perlindungan Kunci Enkripsi</string>
+    <string name="pref_keystore_status_summary">Kunci enkripsi diamankan oleh Android Keystore (AES-256-GCM hardware-backed)</string>
+    <string name="pref_clipboard_shield_title">Perisai Pembajakan Clipboard</string>
+    <string name="pref_clipboard_shield_summary">Cegah skrip situs web membaca atau menimpa clipboard tanpa interaksi</string>
+    <string name="pref_desktop_zoom_title">Zoom Halaman Desktop</string>
+    <string name="pref_adaptive_zoom_title">Rentang Skala Zoom Adaptif</string>
+    <string name="settings_dolby_section_title">Dolby Atmos &amp; Dolby Vision (Audio &amp; HDR)</string>
+    <string name="settings_rescan_done">Deteksi ulang perangkat selesai</string>
+
     <!-- Language Settings -->
     <string name="pref_language_title">Bahasa Aplikasi</string>
     <string name="pref_language_summary">Pilih bahasa tampilan untuk aplikasi</string>

@@ -367,7 +367,7 @@ fun CustomWebView(
                         allowFileAccess = false
                         allowContentAccess = false
                         @Suppress("DEPRECATION")
-                        saveFormData = false
+                        saveFormData = viewModel.isAutofillEnabled.value
                         
                         // Block Mixed Content (HTTP on HTTPS)
                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -447,15 +447,17 @@ fun CustomWebView(
                         @Volatile private var lastAudioStateTimestamp = 0L
                         @Volatile private var lastWebRtcToastTimestamp = 0L
                         @Volatile private var lastBlobDownloadTimestamp = 0L
+                        val pendingBlobDownloadTokens = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
                         fun openUrlInNewTab(url: String) {
                             val trimmed = url.trim()
                             if (trimmed.isBlank() || trimmed.length > 2048) return
+                            val sanitizedForLog = trimmed.substringBefore('?').take(120)
                             // Strict scheme allowlist: prevent javascript:, file:, content:, or intent: injection
                             if (!com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(trimmed)) {
                                 com.example.manager.SecurityLogger.logValidationError(
                                     "AlexBrowserNative",
-                                    "Blocked unsafe scheme in openUrlInNewTab: $trimmed"
+                                    "Blocked unsafe scheme in openUrlInNewTab: $sanitizedForLog"
                                 )
                                 return
                             }
@@ -473,7 +475,7 @@ fun CustomWebView(
                                 com.example.manager.SecurityLogger.logSecurityEvent(
                                     type = com.example.manager.SecurityLogger.EventType.VALIDATION_ERROR,
                                     component = "AlexBrowserNative",
-                                    message = "Blocked openUrlInNewTab to threat URL: $trimmed",
+                                    message = "Blocked openUrlInNewTab to threat URL: $sanitizedForLog",
                                     severity = "WARNING"
                                 )
                                 return
@@ -580,21 +582,29 @@ fun CustomWebView(
                         
                         fun onWebRtcBlocked(url: String) {
                             val now = System.currentTimeMillis()
-                            if (now - lastWebRtcToastTimestamp < 3000L) return
+                            if (now - lastWebRtcToastTimestamp < 5000L) return
                             lastWebRtcToastTimestamp = now
                             mainHandler.post {
                                 android.widget.Toast.makeText(
                                     context,
-                                    "Koneksi WebRTC diblokir oleh Mode Privasi Ketat. Ubah WebRTC ke 'Standar' di Pengaturan jika panggilan video gagal.",
-                                    android.widget.Toast.LENGTH_LONG
+                                    "Koneksi WebRTC diblokir oleh Perisai Privasi.",
+                                    android.widget.Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }
 
-                        fun downloadVerifiedBlob(blobUrl: String, dataUri: String, fileName: String, mimeType: String) {
+                        fun downloadVerifiedBlob(blobUrl: String, dataUri: String, fileName: String, mimeType: String, token: String) {
                             val now = System.currentTimeMillis()
                             if (now - lastBlobDownloadTimestamp < 1000L) return
                             lastBlobDownloadTimestamp = now
+
+                            // SECURITY FIX: Require valid one-time token issued by native setDownloadListener
+                            val tokenIssueTime = pendingBlobDownloadTokens.remove(token.trim())
+                            if (tokenIssueTime == null || (now - tokenIssueTime) > 30_000L) {
+                                Log.w(TAG, "Blocked unauthorized drive-by blob download without valid native token")
+                                return
+                            }
+
                             val activePageUrl = currentPageUrlRef.get()
                             if (!com.example.manager.SecurityGuardEngine.isSafeBlobUrlForContext(blobUrl, activePageUrl)) {
                                 Log.w(TAG, "Blocked unverified blob download in JS bridge: $blobUrl (page=$activePageUrl)")
@@ -681,7 +691,7 @@ fun CustomWebView(
                             )
                             "onWebRtcBlocked" -> alexNativeBridge.onWebRtcBlocked(a.optString(0).take(2048))
                             "downloadVerifiedBlob" -> alexNativeBridge.downloadVerifiedBlob(
-                                a.optString(0), a.optString(1), a.optString(2).take(255), a.optString(3).take(255)
+                                a.optString(0), a.optString(1), a.optString(2).take(255), a.optString(3).take(255), a.optString(4)
                             )
                             else -> Log.w(TAG, "Unknown native bridge method: ${call.method.take(64)}")
                         }
@@ -693,6 +703,15 @@ fun CustomWebView(
                             androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
                                 this,
                                 buildBackgroundPlaybackDocStartScript(),
+                                setOf("*")
+                            )
+                            // SECURITY FIX (Audit): Install client security guard at document start to eliminate <head> execution race condition
+                            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                                this,
+                                com.example.manager.SecurityGuardEngine.buildClientSecurityScript(
+                                    blockClipboardHijack = viewModel.blockClipboardHijack.value,
+                                    blockHiddenPopups = viewModel.blockHiddenPopups.value
+                                ),
                                 setOf("*")
                             )
                         } catch (_: Exception) {}
@@ -1593,7 +1612,7 @@ fun CustomWebView(
 
                         override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
                             super.onReceivedIcon(view, icon)
-                            com.example.manager.FaviconStore.put(view?.url, icon)
+                            com.example.manager.FaviconStore.put(view?.url, icon, tab.isPrivate)
                         }
 
                         override fun onShowFileChooser(
@@ -1703,9 +1722,12 @@ fun CustomWebView(
                         if (url.startsWith("blob:", ignoreCase = true)) {
                             val activePageUrl = this.url ?: currentPageUrlRef.get()
                             if (com.example.manager.SecurityGuardEngine.isSafeBlobUrlForContext(url, activePageUrl)) {
+                                val oneTimeToken = java.util.UUID.randomUUID().toString()
+                                alexNativeBridge.pendingBlobDownloadTokens[oneTimeToken] = System.currentTimeMillis()
                                 val quotedBlobUrl = org.json.JSONObject.quote(url)
                                 val quotedFileName = org.json.JSONObject.quote(fileName)
                                 val quotedMime = org.json.JSONObject.quote(mimetype ?: "application/octet-stream")
+                                val quotedToken = org.json.JSONObject.quote(oneTimeToken)
                                 val blobExtractorJs = """
                                     (function() {
                                         fetch($quotedBlobUrl).then(function(r) { return r.blob(); }).then(function(b) {
@@ -1713,7 +1735,7 @@ fun CustomWebView(
                                             var reader = new FileReader();
                                             reader.onloadend = function() {
                                                 if (typeof reader.result === 'string' && window.AlexBrowserNative && window.AlexBrowserNative.downloadVerifiedBlob) {
-                                                    window.AlexBrowserNative.downloadVerifiedBlob($quotedBlobUrl, reader.result, $quotedFileName, b.type || $quotedMime);
+                                                    window.AlexBrowserNative.downloadVerifiedBlob($quotedBlobUrl, reader.result, $quotedFileName, b.type || $quotedMime, $quotedToken);
                                                 }
                                             };
                                             reader.readAsDataURL(b);

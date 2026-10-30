@@ -1055,12 +1055,48 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         com.yourbrowser.adblock.AlexShieldV5LogStore.clearTab(tabId)
     }
 
+    private val _privateSessionHosts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun recordPrivateHost(host: String) {
+        val clean = host.lowercase().removePrefix("www.").trim()
+        if (clean.isNotEmpty()) {
+            _privateSessionHosts.add(clean)
+        }
+    }
+
     private fun onAllPrivateTabsClosed() {
         downloadManager.clearIncognitoEntries()
         com.example.manager.SecurityGuardEngine.clearTemporaryBypasses()
         viewModelScope.launch(Dispatchers.IO) {
             downloadRepository.clearIncognito()
         }
+
+        // SECURITY FIX (Audit): Purge cookies, web storage, and memory favicons for all origins visited in incognito
+        val cookieManager = android.webkit.CookieManager.getInstance()
+        val webStorage = android.webkit.WebStorage.getInstance()
+        val privateHostsToPurge = _privateSessionHosts.toSet()
+        _privateSessionHosts.clear()
+
+        com.example.manager.FaviconStore.clearPrivateSessionFavicons(privateHostsToPurge)
+
+        for (host in privateHostsToPurge) {
+            try {
+                webStorage.deleteOrigin("https://$host")
+                webStorage.deleteOrigin("http://$host")
+                val cookieString = cookieManager.getCookie("https://$host") ?: cookieManager.getCookie("http://$host")
+                if (!cookieString.isNullOrBlank()) {
+                    for (part in cookieString.split(";")) {
+                        val name = part.substringBefore("=").trim()
+                        if (name.isNotEmpty()) {
+                            cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/")
+                            cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.$host; path=/")
+                            cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=$host; path=/")
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
         // Android WebView shares a single process-wide CookieManager across all WebView instances.
         // Only purge global session cookies when no regular (non-private) web tabs have active pages,
         // preventing private tab closure from destroying active logins in open regular tabs.
@@ -1069,12 +1105,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         if (!hasActiveRegularWebTabs) {
             try {
-                android.webkit.CookieManager.getInstance().removeSessionCookies(null)
-                android.webkit.CookieManager.getInstance().flush()
+                cookieManager.removeSessionCookies(null)
             } catch (e: Exception) {
                 Log.w(TAG, "Session cookie cleanup warning: ${e.message}")
             }
         }
+        try {
+            cookieManager.flush()
+        } catch (_: Exception) {}
     }
 
     fun closeAllPrivateTabs() {
@@ -1285,8 +1323,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     // Room DB History actions & Bookmark Actions
     fun handlePageLoadComplete(title: String, url: String, incognito: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (!incognito) {
+        if (incognito) {
+            val host = try { android.net.Uri.parse(url).host } catch (_: Exception) { null }
+            if (!host.isNullOrBlank()) {
+                recordPrivateHost(host)
+            }
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
                 repository.addHistory(title, url)
             }
         }
@@ -1983,6 +2026,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setBlockHiddenPopups(enabled: Boolean) {
         com.example.manager.SecurityGuardEngine.setBlockHiddenPopups(getApplication(), enabled)
         _blockHiddenPopups.value = enabled
+    }
+
+    private val _isSavePasswordsEnabled = MutableStateFlow(settings.isSavePasswordsEnabled)
+    val isSavePasswordsEnabled = _isSavePasswordsEnabled.asStateFlow()
+
+    fun setSavePasswordsEnabled(enabled: Boolean) {
+        settings.isSavePasswordsEnabled = enabled
+        _isSavePasswordsEnabled.value = enabled
+    }
+
+    private val _isAutofillEnabled = MutableStateFlow(settings.isAutofillEnabled)
+    val isAutofillEnabled = _isAutofillEnabled.asStateFlow()
+
+    fun setAutofillEnabled(enabled: Boolean) {
+        settings.isAutofillEnabled = enabled
+        _isAutofillEnabled.value = enabled
     }
 
     private val _tabSecurityThreats = MutableStateFlow<Map<String, com.example.manager.SecurityThreatAssessment>>(emptyMap())

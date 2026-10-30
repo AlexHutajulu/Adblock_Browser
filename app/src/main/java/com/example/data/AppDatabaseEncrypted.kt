@@ -57,7 +57,9 @@ object AppDatabaseEncrypted {
             )
         }
 
-        val newPassphrase = java.util.UUID.randomUUID().toString() + "-" + java.util.UUID.randomUUID().toString()
+        val randomBytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(randomBytes)
+        val newPassphrase = randomBytes.joinToString("") { "%02x".format(it) }
         val committed = prefs.edit().putString(KEY_DB_PASSPHRASE, newPassphrase).commit()
         val verified = prefs.getString(KEY_DB_PASSPHRASE, null)
         if (!committed || verified != newPassphrase) {

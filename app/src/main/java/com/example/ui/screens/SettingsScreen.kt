@@ -49,11 +49,11 @@ import com.example.ui.theme.interactiveLiquidGlass
 import com.example.ui.viewmodel.BrowserViewModel
 
 enum class SettingsCategory(val titleRes: Int, val icon: ImageVector) {
-    APPEARANCE(R.string.settings_section_appearance, Icons.Outlined.Palette),
-    PRIVACY(R.string.settings_section_privacy, Icons.Outlined.Lock),
-    ADBLOCK(R.string.settings_section_adblock, Icons.Outlined.Shield),
-    LANGUAGE(R.string.settings_section_language, Icons.Outlined.Language),
-    ADVANCED(R.string.settings_section_advanced, Icons.Outlined.Tune)
+    FEATURES(R.string.settings_cat_features, Icons.Outlined.Widgets),
+    GENERAL(R.string.settings_cat_general, Icons.Outlined.Tune),
+    APPEARANCE(R.string.settings_cat_appearance, Icons.Outlined.Palette),
+    PASSWORDS_AUTOFILL(R.string.settings_cat_passwords, Icons.Outlined.Password),
+    ABOUT(R.string.settings_cat_about, Icons.Outlined.Info)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,7 +88,14 @@ fun SettingsScreen(
     val forceWebPageDarkMode by viewModel.forceWebPageDarkMode.collectAsState()
     val currentLanguage by viewModel.appLanguage.collectAsState()
 
-    var selectedCategory by remember { mutableStateOf(SettingsCategory.APPEARANCE) }
+    val isSavePasswordsEnabled by viewModel.isSavePasswordsEnabled.collectAsState()
+    val isAutofillEnabled by viewModel.isAutofillEnabled.collectAsState()
+    val blockClipboardHijack by viewModel.blockClipboardHijack.collectAsState()
+    val httpsOnlyMode by viewModel.httpsOnlyMode.collectAsState()
+    val phishingProtectionEnabled by viewModel.phishingProtectionEnabled.collectAsState()
+    val blockCameraMicStrict by viewModel.blockCameraMicStrict.collectAsState()
+
+    var selectedCategory by remember { mutableStateOf(SettingsCategory.FEATURES) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showDisplayModeDialog by remember { mutableStateOf(false) }
     var showPrivacyShieldDialog by remember { mutableStateOf(false) }
@@ -276,197 +283,8 @@ fun SettingsScreen(
     }
 
     @Composable
-    fun renderAppearanceSection() {
-        val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
-        var adaptiveZoomBounds by remember(desktopZoomScale) {
-            val minBound = (desktopZoomScale - 25).coerceIn(50, 150).toFloat()
-            val maxBound = (desktopZoomScale + 25).coerceIn(100, 200).toFloat()
-            mutableStateOf(minBound..maxBound)
-        }
-        SettingsSection(title = stringResource(R.string.settings_section_appearance)) {
-            SettingsNavRow(
-                title = stringResource(R.string.pref_theme_title),
-                subtitle = stringResource(R.string.pref_theme_summary),
-                value = themeLabel,
-                icon = Icons.Outlined.Palette,
-                onClick = { showThemeDialog = true }
-            )
-            SettingsDivider()
-            SettingsSwitchRow(
-                title = stringResource(R.string.settings_liquid_glass_title),
-                subtitle = stringResource(R.string.settings_liquid_glass_summary),
-                icon = Icons.Outlined.BlurOn,
-                checked = liquidGlassEnabled,
-                onCheckedChange = { viewModel.setLiquidGlassEnabled(it) }
-            )
-            SettingsDivider()
-            SettingsSwitchRow(
-                title = stringResource(R.string.pref_force_dark_title),
-                subtitle = stringResource(R.string.pref_force_dark_summary),
-                icon = Icons.Outlined.DarkMode,
-                checked = forceWebPageDarkMode,
-                onCheckedChange = { viewModel.setForceWebPageDarkMode(it) }
-            )
-            SettingsDivider()
-            SettingsNavRow(
-                title = stringResource(R.string.pref_display_mode_title),
-                value = displayModeLabel,
-                icon = Icons.Outlined.Devices,
-                onClick = { showDisplayModeDialog = true }
-            )
-            SettingsDivider()
-            SettingsSliderRow(
-                title = "Zoom Halaman Desktop",
-                valueLabel = "${desktopZoomScale}%",
-                icon = Icons.Outlined.ZoomIn,
-                value = desktopZoomScale.toFloat(),
-                valueRange = 50f..200f,
-                steps = 9,
-                onValueChange = { viewModel.setDesktopZoomScale((it.toInt() / 5) * 5) }
-            )
-            SettingsDivider()
-            SettingsRangeSliderRow(
-                title = "Rentang Skala Zoom Adaptif",
-                valueLabel = "${adaptiveZoomBounds.start.toInt()}% - ${adaptiveZoomBounds.endInclusive.toInt()}%",
-                icon = Icons.Outlined.AspectRatio,
-                value = adaptiveZoomBounds,
-                valueRange = 50f..200f,
-                steps = 5,
-                onValueChange = { range ->
-                    adaptiveZoomBounds = range
-                    val midZoom = ((range.start + range.endInclusive) / 2f).toInt()
-                    viewModel.setDesktopZoomScale(((midZoom / 5) * 5).coerceIn(50, 200))
-                }
-            )
-            SettingsDivider()
-            SettingsNavRow(
-                title = stringResource(R.string.settings_reset_quick_links),
-                subtitle = stringResource(R.string.settings_reset_quick_links_summary),
-                icon = Icons.Outlined.Restore,
-                onClick = {
-                    viewModel.resetQuickLinksToDefaults()
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.settings_reset_quick_links_toast),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        val dolbyAtmosEnabled by viewModel.dolbyAtmosEnabled.collectAsState()
-        val dolbyAtmosProfile by viewModel.dolbyAtmosProfile.collectAsState()
-        val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
-        val dolbyVisionMode by viewModel.dolbyVisionMode.collectAsState()
-        val dolbyCapabilities by viewModel.dolbyDeviceCapabilities.collectAsState()
-
-        SettingsSection(title = "Dolby Atmos & Dolby Vision (Audio & HDR)") {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                com.example.ui.components.DolbyHardwareDetectorCard(
-                    capabilities = dolbyCapabilities,
-                    onRescan = {
-                        viewModel.refreshDolbyDeviceCapabilities()
-                        Toast.makeText(
-                            context,
-                            "Deteksi ulang perangkat selesai",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                )
-                com.example.ui.components.DolbyAtmosControlCard(
-                    enabled = dolbyAtmosEnabled,
-                    canEnable = dolbyCapabilities.canEnableAtmos,
-                    disabledReason = dolbyCapabilities.atmosDisabledReason,
-                    selectedProfile = dolbyAtmosProfile,
-                    onToggle = {
-                        val decision = viewModel.setDolbyAtmosEnabled(it)
-                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
-                    },
-                    onSelectProfile = { viewModel.setDolbyAtmosProfile(it) }
-                )
-                com.example.ui.components.DolbyVisionControlCard(
-                    enabled = dolbyVisionEnabled,
-                    canEnable = dolbyCapabilities.canEnableDolbyVision,
-                    disabledReason = dolbyCapabilities.visionDisabledReason,
-                    selectedMode = dolbyVisionMode,
-                    onToggle = {
-                        val decision = viewModel.setDolbyVisionEnabled(it)
-                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
-                    },
-                    onSelectMode = { viewModel.setDolbyVisionMode(it) }
-                )
-            }
-        }
-    }
-
-    @Composable
-    fun renderPrivacySection() {
-        SettingsSection(title = stringResource(R.string.settings_section_privacy)) {
-            SettingsNavRow(
-                title = stringResource(R.string.pref_privacy_shield_title),
-                value = privacyShieldLabel,
-                icon = Icons.Outlined.Security,
-                onClick = { showPrivacyShieldDialog = true }
-            )
-            SettingsDivider()
-            SettingsSwitchRow(
-                title = stringResource(R.string.pref_webrtc_leak_title),
-                subtitle = stringResource(R.string.pref_webrtc_leak_summary),
-                icon = Icons.Outlined.VpnLock,
-                checked = preventWebRtcLeak,
-                onCheckedChange = { viewModel.setPreventWebRtcLeak(it) }
-            )
-            if (preventWebRtcLeak) {
-                SettingsDivider()
-                SettingsSwitchRow(
-                    title = stringResource(R.string.settings_strict_webrtc_title),
-                    subtitle = stringResource(R.string.settings_strict_webrtc_summary),
-                    icon = Icons.Outlined.GppGood,
-                    checked = strictWebRtcMode,
-                    onCheckedChange = { viewModel.setStrictWebRtcMode(it) }
-                )
-            }
-            SettingsDivider()
-            SettingsSwitchRow(
-                title = stringResource(R.string.pref_clear_cookies_exit_title),
-                subtitle = stringResource(R.string.pref_clear_cookies_exit_summary),
-                icon = Icons.Outlined.Cookie,
-                checked = clearCookiesOnExit,
-                onCheckedChange = { viewModel.setClearCookiesOnExit(it) }
-            )
-            SettingsDivider()
-            SettingsSwitchRow(
-                title = stringResource(R.string.pref_screen_recording_title),
-                subtitle = stringResource(R.string.pref_screen_recording_summary),
-                icon = Icons.Outlined.ScreenshotMonitor,
-                checked = allowScreenRecording,
-                onCheckedChange = { viewModel.setAllowScreenRecording(it) }
-            )
-            SettingsDivider()
-            SettingsNavRow(
-                title = stringResource(R.string.pref_site_permissions_title),
-                subtitle = stringResource(R.string.pref_site_permissions_summary),
-                icon = Icons.Outlined.AdminPanelSettings,
-                onClick = { showSitePermissions = true }
-            )
-            SettingsDivider()
-            SettingsNavRow(
-                title = stringResource(R.string.menu_clear_browsing_data),
-                icon = Icons.Outlined.DeleteSweep,
-                onClick = { showClearDataDialog = true }
-            )
-        }
-    }
-
-    @Composable
-    fun renderAdBlockSection() {
+    fun renderFeaturesSection() {
+        // 1. AdBlock & Kontrol Konten
         SettingsSection(title = stringResource(R.string.settings_section_adblock)) {
             SettingsNavRow(
                 title = stringResource(R.string.pref_adblock_title),
@@ -527,33 +345,41 @@ fun SettingsScreen(
                 }
             )
         }
-    }
 
-    @Composable
-    fun renderLanguageSection() {
-        SettingsSection(title = stringResource(R.string.settings_section_language)) {
-            SettingsNavRow(
-                title = stringResource(R.string.pref_language_title),
-                subtitle = stringResource(R.string.pref_language_summary),
-                value = languageLabel,
-                icon = Icons.Outlined.Language,
-                onClick = { showLanguageDialog = true }
-            )
-        }
-    }
+        Spacer(modifier = Modifier.height(16.dp))
 
-    @Composable
-    fun renderAdvancedSection() {
-        val dbEncryptionStatus by com.example.data.AppDatabase.encryptionStatusFlow.collectAsState()
-        SettingsSection(title = stringResource(R.string.settings_section_advanced)) {
+        // 2. Perisai Privasi & Jaringan
+        SettingsSection(title = stringResource(R.string.settings_section_privacy)) {
             SettingsNavRow(
-                title = stringResource(R.string.pref_search_engine_title),
-                subtitle = stringResource(R.string.pref_search_engine_summary),
-                value = currentEngine,
-                icon = Icons.Outlined.Search,
-                onClick = { showSearchEngineDialog = true }
+                title = stringResource(R.string.pref_privacy_shield_title),
+                value = privacyShieldLabel,
+                icon = Icons.Outlined.Security,
+                onClick = { showPrivacyShieldDialog = true }
             )
             SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_webrtc_leak_title),
+                subtitle = stringResource(R.string.pref_webrtc_leak_summary),
+                icon = Icons.Outlined.VpnLock,
+                checked = preventWebRtcLeak,
+                onCheckedChange = { viewModel.setPreventWebRtcLeak(it) }
+            )
+            if (preventWebRtcLeak) {
+                SettingsDivider()
+                SettingsSwitchRow(
+                    title = stringResource(R.string.settings_strict_webrtc_title),
+                    subtitle = stringResource(R.string.settings_strict_webrtc_summary),
+                    icon = Icons.Outlined.GppGood,
+                    checked = strictWebRtcMode,
+                    onCheckedChange = { viewModel.setStrictWebRtcMode(it) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 3. Media, Akselerasi & DevTools
+        SettingsSection(title = stringResource(R.string.settings_section_advanced)) {
             SettingsSwitchRow(
                 title = stringResource(R.string.pref_background_playback_title),
                 subtitle = stringResource(R.string.pref_background_playback_summary),
@@ -592,6 +418,160 @@ fun SettingsScreen(
                 checked = isInspectToolsEnabled,
                 onCheckedChange = { viewModel.setInspectToolsEnabled(it) }
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 4. Dolby Atmos & Vision
+        val dolbyAtmosEnabled by viewModel.dolbyAtmosEnabled.collectAsState()
+        val dolbyAtmosProfile by viewModel.dolbyAtmosProfile.collectAsState()
+        val dolbyVisionEnabled by viewModel.dolbyVisionEnabled.collectAsState()
+        val dolbyVisionMode by viewModel.dolbyVisionMode.collectAsState()
+        val dolbyCapabilities by viewModel.dolbyDeviceCapabilities.collectAsState()
+
+        SettingsSection(title = stringResource(R.string.settings_dolby_section_title)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                com.example.ui.components.DolbyHardwareDetectorCard(
+                    capabilities = dolbyCapabilities,
+                    onRescan = {
+                        viewModel.refreshDolbyDeviceCapabilities()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.settings_rescan_done),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+                com.example.ui.components.DolbyAtmosControlCard(
+                    enabled = dolbyAtmosEnabled,
+                    canEnable = dolbyCapabilities.canEnableAtmos,
+                    disabledReason = dolbyCapabilities.atmosDisabledReason,
+                    selectedProfile = dolbyAtmosProfile,
+                    onToggle = {
+                        val decision = viewModel.setDolbyAtmosEnabled(it)
+                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
+                    },
+                    onSelectProfile = { viewModel.setDolbyAtmosProfile(it) }
+                )
+                com.example.ui.components.DolbyVisionControlCard(
+                    enabled = dolbyVisionEnabled,
+                    canEnable = dolbyCapabilities.canEnableDolbyVision,
+                    disabledReason = dolbyCapabilities.visionDisabledReason,
+                    selectedMode = dolbyVisionMode,
+                    onToggle = {
+                        val decision = viewModel.setDolbyVisionEnabled(it)
+                        Toast.makeText(context, decision.reason, Toast.LENGTH_SHORT).show()
+                    },
+                    onSelectMode = { viewModel.setDolbyVisionMode(it) }
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun renderGeneralSection() {
+        val dbEncryptionStatus by com.example.data.AppDatabase.encryptionStatusFlow.collectAsState()
+
+        // 1. Pencarian & Bahasa
+        SettingsSection(title = stringResource(R.string.category_general)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_search_engine_title),
+                subtitle = stringResource(R.string.pref_search_engine_summary),
+                value = currentEngine,
+                icon = Icons.Outlined.Search,
+                onClick = { showSearchEngineDialog = true }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_language_title),
+                subtitle = stringResource(R.string.pref_language_summary),
+                value = languageLabel,
+                icon = Icons.Outlined.Language,
+                onClick = { showLanguageDialog = true }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 2. Izin Situs & Keamanan Navigasi
+        SettingsSection(title = stringResource(R.string.category_security)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_site_permissions_title),
+                subtitle = stringResource(R.string.pref_site_permissions_summary),
+                icon = Icons.Outlined.AdminPanelSettings,
+                onClick = { showSitePermissions = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.security_https_only_title),
+                subtitle = stringResource(R.string.security_https_only_sub),
+                icon = Icons.Outlined.Https,
+                checked = httpsOnlyMode,
+                onCheckedChange = { viewModel.setHttpsOnlyMode(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.security_phishing_title),
+                subtitle = stringResource(R.string.security_phishing_sub),
+                icon = Icons.Outlined.GppMaybe,
+                checked = phishingProtectionEnabled,
+                onCheckedChange = { viewModel.setPhishingProtectionEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.security_cam_mic_title),
+                subtitle = stringResource(R.string.security_cam_mic_sub),
+                icon = Icons.Outlined.VideocamOff,
+                checked = blockCameraMicStrict,
+                onCheckedChange = { viewModel.setBlockCameraMicStrict(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_screen_recording_title),
+                subtitle = stringResource(R.string.pref_screen_recording_summary),
+                icon = Icons.Outlined.ScreenshotMonitor,
+                checked = allowScreenRecording,
+                onCheckedChange = { viewModel.setAllowScreenRecording(it) }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 3. Pembersihan & Data
+        SettingsSection(title = stringResource(R.string.category_storage)) {
+            SettingsNavRow(
+                title = stringResource(R.string.menu_clear_browsing_data),
+                subtitle = stringResource(R.string.pref_clear_all_data),
+                icon = Icons.Outlined.DeleteSweep,
+                onClick = { showClearDataDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_clear_cookies_exit_title),
+                subtitle = stringResource(R.string.pref_clear_cookies_exit_summary),
+                icon = Icons.Outlined.Cookie,
+                checked = clearCookiesOnExit,
+                onCheckedChange = { viewModel.setClearCookiesOnExit(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.settings_reset_quick_links),
+                subtitle = stringResource(R.string.settings_reset_quick_links_summary),
+                icon = Icons.Outlined.Restore,
+                onClick = {
+                    viewModel.resetQuickLinksToDefaults()
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_reset_quick_links_toast),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
             SettingsDivider()
             Row(
                 modifier = Modifier
@@ -619,6 +599,151 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+    }
+
+    @Composable
+    fun renderAppearanceSection() {
+        val desktopZoomScale by viewModel.desktopZoomScale.collectAsState()
+        var adaptiveZoomBounds by remember(desktopZoomScale) {
+            val minBound = (desktopZoomScale - 25).coerceIn(50, 150).toFloat()
+            val maxBound = (desktopZoomScale + 25).coerceIn(100, 200).toFloat()
+            mutableStateOf(minBound..maxBound)
+        }
+        SettingsSection(title = stringResource(R.string.settings_cat_appearance)) {
+            SettingsNavRow(
+                title = stringResource(R.string.pref_theme_title),
+                subtitle = stringResource(R.string.pref_theme_summary),
+                value = themeLabel,
+                icon = Icons.Outlined.Palette,
+                onClick = { showThemeDialog = true }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.settings_liquid_glass_title),
+                subtitle = stringResource(R.string.settings_liquid_glass_summary),
+                icon = Icons.Outlined.BlurOn,
+                checked = liquidGlassEnabled,
+                onCheckedChange = { viewModel.setLiquidGlassEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_force_dark_title),
+                subtitle = stringResource(R.string.pref_force_dark_summary),
+                icon = Icons.Outlined.DarkMode,
+                checked = forceWebPageDarkMode,
+                onCheckedChange = { viewModel.setForceWebPageDarkMode(it) }
+            )
+            SettingsDivider()
+            SettingsNavRow(
+                title = stringResource(R.string.pref_display_mode_title),
+                value = displayModeLabel,
+                icon = Icons.Outlined.Devices,
+                onClick = { showDisplayModeDialog = true }
+            )
+            SettingsDivider()
+            SettingsSliderRow(
+                title = stringResource(R.string.pref_desktop_zoom_title),
+                valueLabel = "${desktopZoomScale}%",
+                icon = Icons.Outlined.ZoomIn,
+                value = desktopZoomScale.toFloat(),
+                valueRange = 50f..200f,
+                steps = 9,
+                onValueChange = { viewModel.setDesktopZoomScale((it.toInt() / 5) * 5) }
+            )
+            SettingsDivider()
+            SettingsRangeSliderRow(
+                title = stringResource(R.string.pref_adaptive_zoom_title),
+                valueLabel = "${adaptiveZoomBounds.start.toInt()}% - ${adaptiveZoomBounds.endInclusive.toInt()}%",
+                icon = Icons.Outlined.AspectRatio,
+                value = adaptiveZoomBounds,
+                valueRange = 50f..200f,
+                steps = 5,
+                onValueChange = { range ->
+                    adaptiveZoomBounds = range
+                    val midZoom = ((range.start + range.endInclusive) / 2f).toInt()
+                    viewModel.setDesktopZoomScale(((midZoom / 5) * 5).coerceIn(50, 200))
+                }
+            )
+        }
+    }
+
+    @Composable
+    fun renderPasswordsAndAutofillSection() {
+        SettingsSection(title = stringResource(R.string.settings_cat_passwords)) {
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_save_passwords_title),
+                subtitle = stringResource(R.string.pref_save_passwords_summary),
+                icon = Icons.Outlined.Password,
+                checked = isSavePasswordsEnabled,
+                onCheckedChange = { viewModel.setSavePasswordsEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_autofill_title),
+                subtitle = stringResource(R.string.pref_autofill_summary),
+                icon = Icons.Outlined.EditNote,
+                checked = isAutofillEnabled,
+                onCheckedChange = { viewModel.setAutofillEnabled(it) }
+            )
+            SettingsDivider()
+            SettingsSwitchRow(
+                title = stringResource(R.string.pref_clipboard_shield_title),
+                subtitle = stringResource(R.string.pref_clipboard_shield_summary),
+                icon = Icons.Outlined.ContentPasteOff,
+                checked = blockClipboardHijack,
+                onCheckedChange = { viewModel.setBlockClipboardHijack(it) }
+            )
+            SettingsDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Key,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.pref_keystore_status_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = stringResource(R.string.pref_keystore_status_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun renderAboutSection() {
+        SettingsAboutBanner()
+        Spacer(modifier = Modifier.height(16.dp))
+        SettingsSection(title = stringResource(R.string.settings_reset)) {
+            SettingsNavRow(
+                title = stringResource(R.string.settings_reset),
+                subtitle = stringResource(R.string.settings_reset_confirm),
+                icon = Icons.Outlined.RestartAlt,
+                onClick = {
+                    viewModel.resetToDefaults()
+                    viewModel.resetQuickLinksToDefaults()
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_reset_confirm),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
         }
     }
 
@@ -723,21 +848,11 @@ fun SettingsScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 when (category) {
-                                    SettingsCategory.APPEARANCE -> {
-                                        Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                            SettingsAboutBanner()
-                                        }
-                                        renderAppearanceSection()
-                                    }
-                                    SettingsCategory.PRIVACY -> renderPrivacySection()
-                                    SettingsCategory.ADBLOCK -> renderAdBlockSection()
-                                    SettingsCategory.LANGUAGE -> renderLanguageSection()
-                                    SettingsCategory.ADVANCED -> {
-                                        renderAdvancedSection()
-                                        Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                            SettingsAboutBanner()
-                                        }
-                                    }
+                                    SettingsCategory.FEATURES -> renderFeaturesSection()
+                                    SettingsCategory.GENERAL -> renderGeneralSection()
+                                    SettingsCategory.APPEARANCE -> renderAppearanceSection()
+                                    SettingsCategory.PASSWORDS_AUTOFILL -> renderPasswordsAndAutofillSection()
+                                    SettingsCategory.ABOUT -> renderAboutSection()
                                 }
                             }
                         }
@@ -762,7 +877,7 @@ fun SettingsScreen(
                                 onClick = { showAllMobileSections = true },
                                 label = {
                                     Text(
-                                        text = "Semua",
+                                        text = stringResource(R.string.settings_cat_all),
                                         fontWeight = if (showAllMobileSections) FontWeight.Bold else FontWeight.Medium
                                     )
                                 }
@@ -801,26 +916,22 @@ fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         if (showAllMobileSections) {
-                            Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                SettingsAboutBanner()
-                            }
+                            renderFeaturesSection()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            renderGeneralSection()
+                            Spacer(modifier = Modifier.height(16.dp))
                             renderAppearanceSection()
-                            renderPrivacySection()
-                            renderAdBlockSection()
-                            renderLanguageSection()
-                            renderAdvancedSection()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            renderPasswordsAndAutofillSection()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            renderAboutSection()
                         } else {
                             when (selectedCategory) {
+                                SettingsCategory.FEATURES -> renderFeaturesSection()
+                                SettingsCategory.GENERAL -> renderGeneralSection()
                                 SettingsCategory.APPEARANCE -> renderAppearanceSection()
-                                SettingsCategory.PRIVACY -> renderPrivacySection()
-                                SettingsCategory.ADBLOCK -> renderAdBlockSection()
-                                SettingsCategory.LANGUAGE -> renderLanguageSection()
-                                SettingsCategory.ADVANCED -> {
-                                    renderAdvancedSection()
-                                    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                        SettingsAboutBanner()
-                                    }
-                                }
+                                SettingsCategory.PASSWORDS_AUTOFILL -> renderPasswordsAndAutofillSection()
+                                SettingsCategory.ABOUT -> renderAboutSection()
                             }
                         }
                         Spacer(modifier = Modifier.height(16.dp))

@@ -109,10 +109,11 @@ object SecurityLogger {
     }
     
     fun logNetworkError(component: String, url: String, exception: Exception) {
+        val sanitizedUrl = url.substringBefore('?').take(256)
         logSecurityEvent(
             type = EventType.NETWORK_ERROR,
             component = component,
-            message = "Network error accessing: $url",
+            message = "Network error accessing: $sanitizedUrl",
             exception = exception
         )
     }

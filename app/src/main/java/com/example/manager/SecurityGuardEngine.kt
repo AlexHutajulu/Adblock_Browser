@@ -812,10 +812,19 @@ object SecurityGuardEngine {
 
             // Force ACTION_VIEW only — block arbitrary actions like ACTION_DELETE, ACTION_CALL, ACTION_SEND, or custom actions
             parsed.action = android.content.Intent.ACTION_VIEW
+            // SECURITY FIX: Strip all custom categories and enforce only CATEGORY_BROWSABLE
+            val existingCategories = parsed.categories?.toList().orEmpty()
+            for (cat in existingCategories) {
+                if (cat != android.content.Intent.CATEGORY_BROWSABLE) {
+                    parsed.removeCategory(cat)
+                }
+            }
             parsed.addCategory(android.content.Intent.CATEGORY_BROWSABLE)
             parsed.component = null
             parsed.selector = null
             parsed.clipData = null
+            // SECURITY FIX: Strip all extras from intent URI to prevent intent extra injection into external apps
+            parsed.replaceExtras(android.os.Bundle())
 
             // Strip all URI permission flags and dangerous activity launch flags
             val forbiddenFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or

@@ -44,12 +44,25 @@ object FaviconStore {
         return File(d, "$hash.png")
     }
 
-    fun put(url: String?, icon: Bitmap?) {
+    fun put(url: String?, icon: Bitmap?, isPrivate: Boolean = false) {
         if (url.isNullOrBlank() || icon == null) return
         val host = hostOf(url); if (host.isEmpty()) return
         val scaled = Bitmap.createScaledBitmap(icon, SIZE_PX, SIZE_PX, true)
         cache.put(host, scaled)
-        fileFor(host)?.let { f -> f.outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        // SECURITY FIX: Never persist incognito / private tab favicons to disk.
+        if (!isPrivate) {
+            fileFor(host)?.let { f -> f.outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        }
+    }
+
+    fun clearPrivateSessionFavicons(hosts: Set<String>) {
+        if (hosts.isEmpty()) return
+        for (host in hosts) {
+            val h = host.lowercase().removePrefix("www.")
+            if (h.isNotEmpty()) {
+                cache.remove(h)
+            }
+        }
     }
 
     fun get(host: String): Bitmap? {

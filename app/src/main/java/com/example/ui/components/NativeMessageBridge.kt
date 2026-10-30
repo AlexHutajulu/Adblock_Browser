@@ -95,7 +95,7 @@ object NativeMessageBridge {
       onStealthTrapDefused: function(k) { send('onStealthTrapDefused', [String(k)]); },
       onElementZapperSelected: function(s, t, tok) { send('onElementZapperSelected', [String(s), String(t), String(tok)]); },
       onWebRtcBlocked: function(u) { send('onWebRtcBlocked', [String(u)]); },
-      downloadVerifiedBlob: function(b, d, f, m) { send('downloadVerifiedBlob', [String(b), String(d), String(f), String(m)]); },
+      downloadVerifiedBlob: function(b, d, f, m, tok) { send('downloadVerifiedBlob', [String(b), String(d), String(f), String(m), String(tok || '')]); },
       getCosmeticCssAsync: function(h, cb) {
         if (typeof cb !== 'function') return;
         cssCallbacks.push(cb);

@@ -275,4 +275,71 @@ class SecurityFixesTest {
             dbEncryptedSource.contains("object AppDatabaseEncrypted")
         )
     }
+
+    @Test
+    fun testAuditVulnerabilityRemediations() {
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        val securityGuardSource = findSource("com/example/manager/SecurityGuardEngine.kt").readText()
+        val bridgeSource = findSource("com/example/ui/components/NativeMessageBridge.kt").readText()
+        val viewModelSource = findSource("com/example/ui/viewmodel/BrowserViewModel.kt").readText()
+        val faviconSource = findSource("com/example/manager/FaviconStore.kt").readText()
+        val dbEncryptedSource = findSource("com/example/data/AppDatabaseEncrypted.kt").readText()
+
+        // 1. Incognito session cookie & WebStorage isolation
+        assertTrue(
+            "BrowserViewModel must track private session hosts",
+            viewModelSource.contains("_privateSessionHosts")
+        )
+        assertTrue(
+            "BrowserViewModel must purge private cookies and web storage origins on close",
+            viewModelSource.contains("webStorage.deleteOrigin(\"https://\$host\")")
+        )
+
+        // 2. Drive-by blob download token protection
+        assertTrue(
+            "downloadVerifiedBlob in CustomWebView must verify token",
+            customWebViewSource.contains("pendingBlobDownloadTokens.remove(token.trim())")
+        )
+        assertTrue(
+            "NativeMessageBridge shim must forward token for downloadVerifiedBlob",
+            bridgeSource.contains("downloadVerifiedBlob: function(b, d, f, m, tok)")
+        )
+
+        // 3. Incognito favicon leak prevention
+        assertTrue(
+            "FaviconStore must not write to disk when isPrivate is true",
+            faviconSource.contains("if (!isPrivate)")
+        )
+        assertTrue(
+            "FaviconStore must provide cache purge for private session hosts",
+            faviconSource.contains("fun clearPrivateSessionFavicons(hosts: Set<String>)")
+        )
+        assertTrue(
+            "CustomWebView must forward tab.isPrivate to FaviconStore.put",
+            customWebViewSource.contains("FaviconStore.put(view?.url, icon, tab.isPrivate)")
+        )
+
+        // 4. Intent scheme extra & custom category stripping
+        assertTrue(
+            "SecurityGuardEngine must strip custom categories except CATEGORY_BROWSABLE",
+            securityGuardSource.contains("parsed.removeCategory(cat)")
+        )
+        assertTrue(
+            "SecurityGuardEngine must strip untrusted intent extras",
+            securityGuardSource.contains("parsed.replaceExtras(android.os.Bundle())")
+        )
+
+        // 5. Document-start script race condition fix
+        assertTrue(
+            "CustomWebView must install client security guard at document start",
+            customWebViewSource.contains("SecurityGuardEngine.buildClientSecurityScript(") &&
+                customWebViewSource.contains("addDocumentStartJavaScript")
+        )
+
+        // 6. Cryptographically secure 256-bit database passphrase
+        assertTrue(
+            "AppDatabaseEncrypted must use SecureRandom 256-bit token for database passphrase",
+            dbEncryptedSource.contains("java.security.SecureRandom().nextBytes(randomBytes)")
+        )
+    }
 }
