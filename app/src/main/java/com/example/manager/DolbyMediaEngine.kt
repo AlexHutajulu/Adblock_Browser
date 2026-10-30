@@ -840,10 +840,11 @@ object DolbyMediaEngine {
         visionEnabled: Boolean,
         visionMode: DolbyVisionMode
     ): String {
+        // Pure GPU-composited CSS shader filters (no SVG url(#...) software readback that drops video frames when IME opens)
         val cssFilterValue = when (visionMode) {
-            DolbyVisionMode.VIVID -> "url(#__alex_dv_vivid) contrast(1.14) saturate(1.28) brightness(1.04)"
-            DolbyVisionMode.CINEMA -> "url(#__alex_dv_cinema) contrast(1.16) saturate(1.16) brightness(1.01)"
-            DolbyVisionMode.BRIGHT -> "url(#__alex_dv_bright) contrast(1.10) saturate(1.22) brightness(1.10)"
+            DolbyVisionMode.VIVID -> "contrast(1.15) saturate(1.30) brightness(1.04)"
+            DolbyVisionMode.CINEMA -> "contrast(1.18) saturate(1.18) brightness(1.01)"
+            DolbyVisionMode.BRIGHT -> "contrast(1.12) saturate(1.24) brightness(1.11)"
         }
 
         val (subGain, lowMidGain, vocalGain, presenceGain, airGain) = when (atmosProfile) {
@@ -852,6 +853,10 @@ object DolbyMediaEngine {
             DolbyAtmosProfile.MUSIC -> listOf(4.5f, 2.2f, 2.6f, 4.4f, 5.6f)
             DolbyAtmosProfile.VOICE -> listOf(-1.5f, 1.5f, 6.2f, 4.8f, 2.2f)
         }
+
+        // On Android 9+ (API 28+), native hardware DynamicsProcessing + Virtualizer + BassBoost handles audio on session 0.
+        // Avoid hooking createMediaElementSource on YouTube MSE video when native hardware DSP is active so Chromium keeps hardware AudioTrack offload and never stutters when soft keyboard opens.
+        val hasNativeHardwareDsp = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
         return """
 (function() {
@@ -862,6 +867,7 @@ object DolbyMediaEngine {
             visionEnabled: $visionEnabled,
             visionMode: '${visionMode.name}',
             cssFilter: '$cssFilterValue',
+            hasNativeHardwareDsp: $hasNativeHardwareDsp,
             gains: [$subGain, $lowMidGain, $vocalGain, $presenceGain, $airGain]
         };
 
@@ -913,7 +919,7 @@ object DolbyMediaEngine {
             }
         }
 
-        // 2. Dolby Atmos Smooth WebAudio 5-Band Studio Processor (Event-Driven, Zero-Polling, Zero-Glitch)
+        // 2. Dolby Atmos Smooth WebAudio Fallback (only used when native Android Hardware DSP is absent)
         function isSameOriginOrBlobMedia(el) {
             try {
                 var src = el.currentSrc || el.src || '';
@@ -929,6 +935,7 @@ object DolbyMediaEngine {
             try {
                 var st = window.__alexDolbyState;
                 if (!st) return;
+                if (st.hasNativeHardwareDsp && !el.__alexAtmosNode) return;
                 if (!el.__alexAtmosNode && !st.atmosEnabled) return;
                 if (!isSameOriginOrBlobMedia(el)) return;
 
@@ -954,13 +961,6 @@ object DolbyMediaEngine {
                         b.gain.value = 0;
                         return b;
                     });
-                    var comp = ctx.createDynamicsCompressor();
-                    comp.threshold.value = -16;
-                    comp.knee.value = 18;
-                    comp.ratio.value = 2.6;
-                    comp.attack.value = 0.015;
-                    comp.release.value = 0.18;
-
                     var makeup = ctx.createGain();
                     makeup.gain.value = 1.0;
 
@@ -969,29 +969,12 @@ object DolbyMediaEngine {
                         prev.connect(filters[i]);
                         prev = filters[i];
                     }
-
-                    // 3D Spatial Acoustic Widener (Haas Crossfeed + Air Highpass)
-                    var spatialDelay = ctx.createDelay(0.05);
-                    spatialDelay.delayTime.value = 0.012;
-                    var spatialHp = ctx.createBiquadFilter();
-                    spatialHp.type = 'highpass';
-                    spatialHp.frequency.value = 380;
-                    var spatialGain = ctx.createGain();
-                    spatialGain.gain.value = 0.24;
-
-                    prev.connect(comp);
-                    prev.connect(spatialHp);
-                    spatialHp.connect(spatialDelay);
-                    spatialDelay.connect(spatialGain);
-                    spatialGain.connect(comp);
-
-                    comp.connect(makeup);
+                    prev.connect(makeup);
                     makeup.connect(ctx.destination);
 
                     el.__alexAtmosNode = {
                         ctx: ctx,
                         filters: filters,
-                        spatialGain: spatialGain,
                         makeup: makeup
                     };
                 }
@@ -1007,13 +990,7 @@ object DolbyMediaEngine {
                         var targetG = gList[j] || 0;
                         node.filters[j].gain.setTargetAtTime(targetG, now, 0.045);
                     }
-                    if (node.spatialGain) {
-                        var targetSpatial = st.atmosEnabled
-                            ? (st.atmosProfile === 'MOVIE' ? 0.30 : (st.atmosProfile === 'MUSIC' ? 0.26 : (st.atmosProfile === 'DYNAMIC' ? 0.24 : 0.12)))
-                            : 0.0;
-                        node.spatialGain.gain.setTargetAtTime(targetSpatial, now, 0.045);
-                    }
-                    var targetMakeup = st.atmosEnabled ? 1.18 : 1.0;
+                    var targetMakeup = st.atmosEnabled ? 1.14 : 1.0;
                     node.makeup.gain.setTargetAtTime(targetMakeup, now, 0.045);
                 }
             } catch(e) {}
@@ -1035,61 +1012,19 @@ object DolbyMediaEngine {
                     syncMediaElementAtmos(e.target);
                 }
             }, true);
-            document.addEventListener('loadedmetadata', function(e) {
-                if (e && e.target && (e.target.tagName === 'VIDEO' || e.target.tagName === 'AUDIO')) {
-                    syncMediaElementAtmos(e.target);
-                }
-            }, true);
-            window.addEventListener('yt-navigate-finish', function() {
-                if (window.__alexSyncAllMediaDolby) window.__alexSyncAllMediaDolby();
-            });
         }
 
         window.__alexSyncAllMediaDolby();
 
-        // 3. Dolby Vision Real-Time Video HDR Engine (SVG PQ Tone-Mapping + GPU CSS Compositor)
-        var svgEl = document.getElementById('__alex_dolby_vision_svg');
+        // 3. Dolby Vision Real-Time Video HDR Engine (Zero-Overhead Pure GPU CSS Shader)
         var styleEl = document.getElementById('__alex_dolby_vision_style');
         if (window.__alexDolbyState.visionEnabled) {
-            if (!svgEl && (document.body || document.documentElement)) {
-                var svgContainer = document.createElement('div');
-                svgContainer.id = '__alex_dolby_vision_svg';
-                svgContainer.style.cssText = 'position:fixed;width:0;height:0;overflow:hidden;pointer-events:none;z-index:-9999;';
-                svgContainer.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0">' +
-                    '<defs>' +
-                    '<filter id="__alex_dv_vivid" color-interpolation-filters="sRGB">' +
-                    '<feColorMatrix type="matrix" values="1.12 -0.06 -0.06 0 0  -0.05 1.10 -0.05 0 0  -0.05 -0.07 1.12 0 0  0 0 0 1 0"/>' +
-                    '<feComponentTransfer>' +
-                    '<feFuncR type="gamma" amplitude="1.03" exponent="0.94" offset="0"/>' +
-                    '<feFuncG type="gamma" amplitude="1.03" exponent="0.94" offset="0"/>' +
-                    '<feFuncB type="gamma" amplitude="1.04" exponent="0.93" offset="0"/>' +
-                    '</feComponentTransfer>' +
-                    '</filter>' +
-                    '<filter id="__alex_dv_cinema" color-interpolation-filters="sRGB">' +
-                    '<feColorMatrix type="matrix" values="1.09 -0.04 -0.04 0 0  -0.03 1.06 -0.03 0 0  -0.05 -0.05 1.04 0 0  0 0 0 1 0"/>' +
-                    '<feComponentTransfer>' +
-                    '<feFuncR type="gamma" amplitude="1.02" exponent="0.97" offset="-0.01"/>' +
-                    '<feFuncG type="gamma" amplitude="1.01" exponent="0.97" offset="-0.01"/>' +
-                    '<feFuncB type="gamma" amplitude="1.00" exponent="0.98" offset="-0.01"/>' +
-                    '</feComponentTransfer>' +
-                    '</filter>' +
-                    '<filter id="__alex_dv_bright" color-interpolation-filters="sRGB">' +
-                    '<feColorMatrix type="matrix" values="1.08 -0.04 -0.04 0 0  -0.04 1.08 -0.04 0 0  -0.04 -0.04 1.08 0 0  0 0 0 1 0"/>' +
-                    '<feComponentTransfer>' +
-                    '<feFuncR type="gamma" amplitude="1.05" exponent="0.88" offset="0.01"/>' +
-                    '<feFuncG type="gamma" amplitude="1.05" exponent="0.88" offset="0.01"/>' +
-                    '<feFuncB type="gamma" amplitude="1.05" exponent="0.88" offset="0.01"/>' +
-                    '</feComponentTransfer>' +
-                    '</filter>' +
-                    '</defs></svg>';
-                (document.body || document.documentElement).appendChild(svgContainer);
-            }
             if (!styleEl) {
                 styleEl = document.createElement('style');
                 styleEl.id = '__alex_dolby_vision_style';
                 (document.head || document.documentElement).appendChild(styleEl);
             }
-            var nextCss = 'video, .html5-main-video, :fullscreen video, :-webkit-full-screen video { filter: ' + window.__alexDolbyState.cssFilter + ' !important; will-change: filter; transition: filter 0.18s ease-out; }';
+            var nextCss = 'video, .html5-main-video, :fullscreen video, :-webkit-full-screen video { filter: ' + window.__alexDolbyState.cssFilter + ' !important; }';
             if (styleEl.textContent !== nextCss) {
                 styleEl.textContent = nextCss;
             }

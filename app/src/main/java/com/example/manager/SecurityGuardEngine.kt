@@ -492,24 +492,13 @@ object SecurityGuardEngine {
                 } catch (e) {}
             }
 
-            // 5. Block stealth background window.open, judol popups & target="_blank" opener leaks
+            // 5. Block all window.open popups (any site, not just judol) & target="_blank" opener leaks
             if ($blockHiddenPopups) {
                 try {
-                    var JUDOL_RE = /(slot88|slot77|slot99|slotgacor|slot-gacor|gacor88|maxwin88|judislot|judi-online|situs-judi|rtp-slot|rtpslot|daftar-slot|link-gacor|mahjong-ways|pragmatic88|pgsoft88|sbobet88|togel88|toto88|poker88|casino88|zeus88|olympus88|sultan88|hoki88|raja88|dewa88|jp88|bet88|kakek-zeus|scatter-hitam|depo-pulsa|depo-qris)/i;
-                    var origOpen = window.open;
                     window.open = function(url, target, features) {
                         var strUrl = String(url || '');
-                        if (strUrl && JUDOL_RE.test(strUrl)) {
-                            console.warn('[SecurityShield] Blocked online gambling (judol) popup: ' + strUrl);
-                            return null;
-                        }
-                        if (!hasRecentUserGesture()) {
-                            console.warn('[SecurityShield] Blocked background popup: ' + strUrl);
-                            return null;
-                        }
-                        var win = origOpen ? origOpen.apply(this, arguments) : null;
-                        try { if (win) win.opener = null; } catch (e) {}
-                        return win;
+                        console.warn('[SecurityShield] Blocked popup window to: ' + strUrl);
+                        return null;
                     };
                 } catch (e) {}
             }

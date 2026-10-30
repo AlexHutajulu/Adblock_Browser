@@ -66,6 +66,19 @@ android {
     compose = true
     buildConfig = true
   }
+  packaging {
+    resources {
+      excludes += setOf(
+        "META-INF/*.kotlin_module",
+        "META-INF/DEPENDENCIES",
+        "META-INF/LICENSE*",
+        "META-INF/NOTICE*",
+        "META-INF/AL2.0",
+        "META-INF/LGPL2.1",
+        "DebugProbesKt.bin"
+      )
+    }
+  }
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }
 

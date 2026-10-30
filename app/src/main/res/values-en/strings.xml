@@ -93,7 +93,7 @@
     <string name="pref_tracker_title">Block Trackers</string>
     <string name="pref_tracker_summary">Prevent cross-site tracking and analytics scripts</string>
     <string name="pref_popups_title">Open Pop-ups in New Tab</string>
-    <string name="pref_popups_summary">Open pop-ups in a new tab &amp; auto-block online gambling (judol) sites</string>
+    <string name="pref_popups_summary">Enabled by default • Automatically block new-tab pop-ups from any site</string>
     <string name="pref_redirects_title">Block Suspicious Redirects</string>
     <string name="pref_redirects_summary">Prevent automatic third-party ad redirects</string>
     <string name="pref_privacy_shield_title">Privacy Shield Mode</string>

@@ -93,7 +93,7 @@
     <string name="pref_tracker_title">Blokir Pelacak</string>
     <string name="pref_tracker_summary">Cegah skrip analitik dan pelacak lintas situs</string>
     <string name="pref_popups_title">Buka Pop-up di Tab Baru</string>
-    <string name="pref_popups_summary">Buka jendela pop-up di tab baru &amp; blokir otomatis jika terdeteksi situs judi online (judol)</string>
+    <string name="pref_popups_summary">Default aktif • Langsung blokir otomatis pop-up tab baru dari situs apapun</string>
     <string name="pref_redirects_title">Blokir Pengalihan Mencurigakan</string>
     <string name="pref_redirects_summary">Cegah situs mengalihkan otomatis ke tautan iklan pihak ketiga</string>
     <string name="pref_privacy_shield_title">Mode Perisai Privasi</string>

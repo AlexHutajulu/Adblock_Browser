@@ -300,18 +300,6 @@ fun CustomWebView(
                             }
                         }
 
-                        override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
-                            val currentTabState = viewModel.tabs.value.find { it.id == tab.id }
-                            if (!hasWindowFocus &&
-                                (viewModel.backgroundPlaybackEnabled.value || currentTabState?.isPlayingAudio == true)
-                            ) {
-                                // Prevent Chromium from pausing YouTube / HTML5 video when switching tabs or minimizing app
-                                super.onWindowFocusChanged(true)
-                            } else {
-                                super.onWindowFocusChanged(hasWindowFocus)
-                            }
-                        }
-
                         @SuppressLint("ClickableViewAccessibility")
                         override fun onTouchEvent(event: android.view.MotionEvent?): Boolean {
                             if (viewModel.activeTabId.value != tab.id) {
@@ -491,27 +479,20 @@ fun CustomWebView(
                                 return
                             }
 
-                            // Auto-block online gambling (Judol) popups/new-tab links
-                            if (com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(trimmed)) {
-                                Log.w(TAG, "Blocked online gambling (judol) popup via openUrlInNewTab: $trimmed")
+                            // Auto-block any popup new-tab URL (all sites, not just judol) when popup protection is active
+                            if (viewModel.openPopupsInNewTab.value ||
+                                viewModel.blockHiddenPopups.value ||
+                                com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(trimmed)
+                            ) {
+                                Log.w(TAG, "Auto-blocked popup via openUrlInNewTab: $trimmed")
                                 mainHandler.post {
                                     viewModel.incrementBlockedStats(trimmed, "Popup")
                                     android.widget.Toast.makeText(
                                         context,
-                                        "Pop-up situs judol diblokir otomatis",
+                                        "Pop-up tab baru diblokir otomatis",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 }
-                                return
-                            }
-
-                            // Anti-ad-popup: block automated popunder ad redirects
-                            val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
-                            val blockedByAdGuard = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
-                                (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
-                                alexShieldV5Client.shouldBlockNavigationRedirect(trimmed, mainPageUrl, false)
-                            if (blockedByAdGuard) {
-                                Log.w(TAG, "Blocked automated ad redirect via openUrlInNewTab: $trimmed")
                                 return
                             }
 
@@ -521,11 +502,7 @@ fun CustomWebView(
                             lastNewTabTimestamp = now
 
                             mainHandler.post {
-                                if (viewModel.openPopupsInNewTab.value) {
-                                    viewModel.addNewTab(trimmed, tab.isPrivate)
-                                } else {
-                                    this@apply.loadUrl(trimmed, mapOf("DNT" to "1"))
-                                }
+                                viewModel.addNewTab(trimmed, tab.isPrivate)
                             }
                         }
 
@@ -1389,9 +1366,16 @@ fun CustomWebView(
                         ): Boolean {
                             if (view == null) return false
 
-                            // Anti-scam: block popups without user gesture
-                            if (!isUserGesture && (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value)) {
-                                Log.w(TAG, "Blocked popup without user gesture")
+                            // Langsung blokir semua pop-up di tab baru dari situs apapun ketika fitur aktif (default aktif)
+                            if (viewModel.openPopupsInNewTab.value || !isUserGesture) {
+                                val currentUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
+                                Log.w(TAG, "Auto-blocked popup new tab on page: $currentUrl")
+                                viewModel.incrementBlockedStats(currentUrl.ifBlank { "popup://blocked" }, "Popup")
+                                android.widget.Toast.makeText(
+                                    view.context,
+                                    "Pop-up tab baru diblokir otomatis",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                                 return false
                             }
 
@@ -1432,16 +1416,14 @@ fun CustomWebView(
                                                 (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
                                                 alexShieldV5Client.shouldBlockNavigationRedirect(finalPopupUrl, mainPageUrl, isUserGesture)
 
-                                            if (isJudolPopup) {
-                                                Log.w(TAG, "Auto-blocked online gambling (judol) popup tab: $finalPopupUrl")
+                                            if (viewModel.openPopupsInNewTab.value || isJudolPopup || blockedByAdGuard) {
+                                                Log.w(TAG, "Auto-blocked popup tab for URL: $finalPopupUrl")
                                                 viewModel.incrementBlockedStats(finalPopupUrl, "Popup")
                                                 android.widget.Toast.makeText(
                                                     view.context,
-                                                    "Pop-up situs judol diblokir otomatis",
+                                                    "Pop-up tab baru diblokir otomatis",
                                                     android.widget.Toast.LENGTH_SHORT
                                                 ).show()
-                                            } else if (blockedByAdGuard) {
-                                                Log.w(TAG, "Blocked ad popup redirect: $finalPopupUrl")
                                             } else {
                                                 val threat = com.example.manager.SecurityGuardEngine.inspectUrlThreat(
                                                     url = finalPopupUrl,
@@ -1451,10 +1433,8 @@ fun CustomWebView(
                                                 )
                                                 if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
                                                     viewModel.reportTabSecurityThreat(tab.id, threat)
-                                                } else if (viewModel.openPopupsInNewTab.value) {
-                                                    viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
                                                 } else {
-                                                    view.loadUrl(finalPopupUrl, mapOf("DNT" to "1"))
+                                                    viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
                                                 }
                                             }
                                         } else {
@@ -1851,76 +1831,89 @@ fun CustomWebView(
             if (webView.visibility != expectedVisibility) {
                 webView.visibility = expectedVisibility
             }
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                @Suppress("DEPRECATION")
-                val expectedDark = if (forceWebPageDarkMode) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
-                @Suppress("DEPRECATION")
-                if (webView.settings.forceDark != expectedDark) {
-                    @Suppress("DEPRECATION")
-                    webView.settings.forceDark = expectedDark
-                }
-            }
-
-            val desktopUserAgent = rememberedDesktopUserAgent
-            val wantsDesktop = displayMode != DisplayMode.MOBILE
-            val isCurrentlyDesktop = webView.settings.userAgentString?.let {
-                it.contains("Windows NT") || it.contains("X11; Linux x86_64")
-            } == true
-
-            val targetTextZoom = if (wantsDesktop) desktopZoomScale.coerceIn(50, 200) else 100
-            if (webView.settings.textZoom != targetTextZoom) {
-                webView.settings.textZoom = targetTextZoom
-            }
-
-            if (wantsDesktop && !isCurrentlyDesktop) {
-                webView.settings.userAgentString = desktopUserAgent
-                webView.settings.useWideViewPort = true
-                webView.settings.loadWithOverviewMode = true
-                webView.settings.builtInZoomControls = true
-                webView.settings.displayZoomControls = false
-
-                val currentUrl = webView.url
-                if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
-                    webView.reload()
-                }
-            } else if (!wantsDesktop && isCurrentlyDesktop) {
-                webView.settings.userAgentString = null // Reset down to original mobile agent
-                webView.settings.useWideViewPort = true
-                webView.settings.loadWithOverviewMode = true
-                webView.settings.textZoom = 100
-
-                val currentUrl = webView.url
-                if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
-                    webView.reload()
-                }
-            }
-
-            val expectedDomStorage = !tab.isPrivate
-            if (webView.settings.domStorageEnabled != expectedDomStorage) {
-                webView.settings.domStorageEnabled = expectedDomStorage
-            }
-
-            val expectedCacheMode = when {
-                tab.isPrivate -> WebSettings.LOAD_NO_CACHE
-                dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
-                else -> WebSettings.LOAD_DEFAULT
-            }
-            if (!webView.settings.loadsImagesAutomatically || webView.settings.blockNetworkImage || webView.settings.cacheMode != expectedCacheMode) {
-                webView.settings.loadsImagesAutomatically = true
-                webView.settings.blockNetworkImage = false
-                webView.settings.cacheMode = expectedCacheMode
-            }
-
-            if (webView.url.isNullOrBlank() && tab.url.isNotBlank() &&
-                tab.url != "about:blank" && navigationActions[tab.id] == null &&
-                com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
-            ) {
-                val headers = mapOf("DNT" to "1")
-                webView.loadUrl(tab.url, headers)
-            }
         },
         modifier = Modifier.fillMaxSize()
     )
+    }
+
+    // Apply WebSettings only when actual settings state changes (never on every UI/IME recomposition frame)
+    LaunchedEffect(
+        tab.id,
+        tab.url,
+        tab.isPrivate,
+        forceWebPageDarkMode,
+        displayMode,
+        desktopZoomScale,
+        dataSaverEnabled
+    ) {
+        val webView = webViewPool[tab.id] ?: return@LaunchedEffect
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            @Suppress("DEPRECATION")
+            val expectedDark = if (forceWebPageDarkMode) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
+            @Suppress("DEPRECATION")
+            if (webView.settings.forceDark != expectedDark) {
+                @Suppress("DEPRECATION")
+                webView.settings.forceDark = expectedDark
+            }
+        }
+
+        val desktopUserAgent = rememberedDesktopUserAgent
+        val wantsDesktop = displayMode != DisplayMode.MOBILE
+        val isCurrentlyDesktop = webView.settings.userAgentString?.let {
+            it.contains("Windows NT") || it.contains("X11; Linux x86_64")
+        } == true
+
+        val targetTextZoom = if (wantsDesktop) desktopZoomScale.coerceIn(50, 200) else 100
+        if (webView.settings.textZoom != targetTextZoom) {
+            webView.settings.textZoom = targetTextZoom
+        }
+
+        if (wantsDesktop && !isCurrentlyDesktop) {
+            webView.settings.userAgentString = desktopUserAgent
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+            webView.settings.builtInZoomControls = true
+            webView.settings.displayZoomControls = false
+
+            val currentUrl = webView.url
+            if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
+                webView.reload()
+            }
+        } else if (!wantsDesktop && isCurrentlyDesktop) {
+            webView.settings.userAgentString = null
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+            webView.settings.textZoom = 100
+
+            val currentUrl = webView.url
+            if (!currentUrl.isNullOrBlank() && currentUrl != "about:blank") {
+                webView.reload()
+            }
+        }
+
+        val expectedDomStorage = !tab.isPrivate
+        if (webView.settings.domStorageEnabled != expectedDomStorage) {
+            webView.settings.domStorageEnabled = expectedDomStorage
+        }
+
+        val expectedCacheMode = when {
+            tab.isPrivate -> WebSettings.LOAD_NO_CACHE
+            dataSaverEnabled -> WebSettings.LOAD_CACHE_ELSE_NETWORK
+            else -> WebSettings.LOAD_DEFAULT
+        }
+        if (!webView.settings.loadsImagesAutomatically || webView.settings.blockNetworkImage || webView.settings.cacheMode != expectedCacheMode) {
+            webView.settings.loadsImagesAutomatically = true
+            webView.settings.blockNetworkImage = false
+            webView.settings.cacheMode = expectedCacheMode
+        }
+
+        if (webView.url.isNullOrBlank() && tab.url.isNotBlank() &&
+            tab.url != "about:blank" && navigationActions[tab.id] == null &&
+            com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
+        ) {
+            val headers = mapOf("DNT" to "1")
+            webView.loadUrl(tab.url, headers)
+        }
     }
 
     // Execute navigation commands (LoadUrl, GoBack, GoForward, Reload, StopLoading) strictly ONCE per actionId
@@ -2138,16 +2131,38 @@ internal fun buildBackgroundPlaybackDocStartScript(): String = """
         }, true);
 
         var lastUserActionTs = 0;
-        var markUserAction = function() {
+        var isInputElement = function(el) {
+            if (!el) return false;
+            var tag = (el.tagName || '').toUpperCase();
+            return tag === 'INPUT' || tag === 'TEXTAREA' || !!el.isContentEditable;
+        };
+        var markUserAction = function(e) {
+            var t = e && e.target;
+            if (isInputElement(t) || isInputElement(document.activeElement)) {
+                try { window._lact = Date.now(); } catch (err) {}
+                return;
+            }
             lastUserActionTs = Date.now();
-            try { window._lact = Date.now(); } catch (e) {}
+            try { window._lact = Date.now(); } catch (err) {}
         };
         ['pointerdown', 'touchstart', 'mousedown', 'keydown', 'click'].forEach(function(evt) {
             window.addEventListener(evt, markUserAction, true);
         });
 
-        // Keep YouTube activity timer alive in background tabs / minimized app
+        // Prevent YouTube player relayout/stutter when soft keyboard (IME) opens
         if (location.hostname.indexOf('youtube.com') !== -1 || location.hostname.indexOf('youtu.be') !== -1) {
+            window.addEventListener('resize', function(e) {
+                if (isInputElement(document.activeElement)) {
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', function(e) {
+                    if (isInputElement(document.activeElement)) {
+                        e.stopImmediatePropagation();
+                    }
+                }, true);
+            }
             setInterval(function() {
                 try { window._lact = Date.now(); } catch (e) {}
             }, 25000);

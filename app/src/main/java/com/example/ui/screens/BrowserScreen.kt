@@ -266,7 +266,8 @@ fun BrowserScreen(
     }
 
     // Battery & CPU Hibernation: Pause inactive background tabs and resume only the active tab
-    LaunchedEffect(activeTabId, isAppPaused, backgroundPlaybackEnabled, tabs) {
+    val anyAudioPlaying = remember(tabs) { tabs.any { it.isPlayingAudio } }
+    LaunchedEffect(activeTabId, isAppPaused, backgroundPlaybackEnabled, anyAudioPlaying) {
         val snapshot = synchronized(webViewPool) { webViewPool.entries.toList() }
         snapshot.forEach { (id, wv) ->
             val tabObj = tabs.find { it.id == id }
@@ -5640,7 +5641,7 @@ fun WebGuardShieldDialog(
                                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
                                 )
                                 Text(
-                                    text = "Default aktif • Otomatis blokir pop-up situs judol",
+                                    text = "Default aktif • Langsung blokir otomatis pop-up situs apapun",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

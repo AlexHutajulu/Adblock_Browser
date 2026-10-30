@@ -1873,8 +1873,13 @@ class AdBlockWebViewClient(
       });
     }catch(e){}
   }
+  var IS_STREAM_CLEAN=/(^|\.)(youtube\.com|youtu\.be|spotify\.com|twitch\.tv|soundcloud\.com|netflix\.com)$/i.test(location.hostname||'');
+  function isUserTyping(){
+    try{var a=document.activeElement;return !!(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable));}catch(e){return false;}
+  }
   function clean(root){
     try{
+      if(isUserTyping()) return;
       var scope=root||document;
       if(scope.nodeType===1&&(scope.tagName||'').toUpperCase()==='IFRAME'){
         if(shouldCleanIframe(scope)) hideIframe(scope);
@@ -1885,18 +1890,18 @@ class AdBlockWebViewClient(
           if(shouldCleanIframe(n)) hideIframe(n);
         });
       }
-      recoverLazyImages(scope);
+      if(!IS_STREAM_CLEAN) recoverLazyImages(scope);
     }catch(e){}
   }
   clean(document);
   var cleanTimer=null;
   new MutationObserver(function(){
-    if(cleanTimer||document.hidden) return;
+    if(cleanTimer||document.hidden||isUserTyping()) return;
     cleanTimer=setTimeout(function(){
       cleanTimer=null;
-      var raf=window.requestAnimationFrame||function(cb){cb();};
-      raf(function(){clean(document);});
-    },500);
+      var sched=window.requestIdleCallback||function(cb){setTimeout(cb,120);};
+      sched(function(){clean(document);});
+    },1500);
   }).observe(document.documentElement,{childList:true,subtree:true});
 })();
         """.trimIndent()
@@ -1911,9 +1916,12 @@ class AdBlockWebViewClient(
   window.__AlexYTSkip=true;
   var busy=false;
   var timer=null;
+  function isTyping(){
+    try{var a=document.activeElement;return !!(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable));}catch(e){return false;}
+  }
   function runSkip(){
     timer=null;
-    if(busy||document.hidden) return;
+    if(busy||document.hidden||isTyping()) return;
     busy=true;
     try{
       var c=document.querySelector('.ytp-ad-overlay-close-button,.ytp-ad-feedback-dialog-close-button');
@@ -1946,8 +1954,8 @@ class AdBlockWebViewClient(
     busy=false;
   }
   function skip(){
-    if(timer||document.hidden) return;
-    timer=setTimeout(runSkip,650);
+    if(timer||document.hidden||isTyping()) return;
+    timer=setTimeout(runSkip,950);
   }
   runSkip();
   new MutationObserver(function(){skip();})
@@ -1963,6 +1971,7 @@ class AdBlockWebViewClient(
   try{Object.defineProperty(window,'__asVAK',{value:true,enumerable:false,configurable:false});}catch(e){window.__asVAK=true;}
   var AGG=${aggressive};
   var IS_STREAMING=/(^|\.)(youtube\.com|youtu\.be|spotify\.com|twitch\.tv|soundcloud\.com|netflix\.com)$/i.test(location.hostname||'');
+  if(IS_STREAMING) return;
 
   var GAMBLING=['arab777','slot gacor','slot online','casino online',
     'judi online','togel online','betting online','daftar slot',
