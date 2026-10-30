@@ -109,7 +109,7 @@
     <string name="pref_site_permissions_summary">Camera, Microphone, Location, and Sensors per domain</string>
     <string name="settings_site_permissions_empty">No customized site permissions saved.</string>
     <string name="settings_db_status_prefix">Database Status: %1$s</string>
-    <string name="settings_about_description">Fast, lightweight, and responsive modern web browser with license-free internal AdShield protection, automatic gambling pop-up blocking, multi-tab background playback, and Dolby Atmos &amp; Dolby Vision support.</string>
+    <string name="settings_about_description">Fast, lightweight, and 100% responsive (Mobile &amp; Desktop) modern web browser with license-free internal AdShield protection, automatic all-site pop-up blocking, multi-tab background playback, Dolby Atmos &amp; Dolby Vision support, and AI collaboration with Antigravity, Gemini, Claude, ChatGPT &amp; Meta Muse.</string>
 
     <!-- Connectivity & Performance Module -->
     <string name="pref_streaming_boost_title">Video Streaming Acceleration</string>

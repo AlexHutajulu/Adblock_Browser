@@ -22,10 +22,24 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.theme.interactiveLiquidGlass
+
+@Composable
+fun AntigravityLogoIcon(
+    modifier: Modifier = Modifier.size(20.dp)
+) {
+    Image(
+        painter = painterResource(id = R.drawable.ic_logo_antigravity),
+        contentDescription = "Google Antigravity Official Logo",
+        contentScale = ContentScale.Fit,
+        modifier = modifier
+    )
+}
 
 @Composable
 fun GeminiLogoIcon(
@@ -81,45 +95,58 @@ fun AiAssistantBadge(
     iconBgColor: Color,
     modifier: Modifier = Modifier,
     isCompact: Boolean = false,
+    isHighlighted: Boolean = false,
     logo: @Composable () -> Unit
 ) {
     Surface(
         modifier = modifier.testTag("ai_badge_${name.lowercase().replace(" ", "_")}"),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(100.dp),
+        color = if (isHighlighted) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
+        },
+        tonalElevation = if (isHighlighted) 3.dp else 1.dp,
         border = BorderStroke(
             width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+            color = if (isHighlighted) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            }
         )
     ) {
         Row(
             modifier = Modifier.padding(
-                horizontal = if (isCompact) 10.dp else 12.dp,
-                vertical = if (isCompact) 6.dp else 8.dp
+                horizontal = if (isCompact) 9.dp else 11.dp,
+                vertical = if (isCompact) 5.dp else 6.dp
             ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
             Box(
                 modifier = Modifier
-                    .size(if (isCompact) 24.dp else 28.dp)
+                    .size(if (isCompact) 22.dp else 26.dp)
                     .clip(CircleShape)
                     .background(iconBgColor),
                 contentAlignment = Alignment.Center
             ) {
                 logo()
             }
-            Spacer(modifier = Modifier.width(7.dp))
+            Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = name,
                 style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = if (isCompact) 11.5.sp else 13.sp
+                    fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.SemiBold,
+                    fontSize = if (isCompact) 11.sp else 12.5.sp
                 ),
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (isHighlighted) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
                 maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -152,46 +179,54 @@ fun DeveloperAiAttributionSection(
                         imageVector = Icons.Outlined.AutoAwesome,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Developed by Alex Hutajulu",
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = if (isCompact) 12.sp else 13.5.sp
+                            fontSize = if (isCompact) 11.5.sp else 13.sp
                         ),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(7.dp))
 
             Text(
-                text = "Browser ini dikembangkan dengan kolaborasi 4 AI:",
+                text = "Browser ini dikembangkan dengan kolaborasi 5 AI:",
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontWeight = FontWeight.Medium,
-                    fontSize = if (isCompact) 11.5.sp else 12.sp
+                    fontSize = if (isCompact) 11.sp else 12.sp
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(9.dp))
 
-            // 4 Modern AI Badge Cards: Gemini, Claude, ChatGPT, Meta Muse
-            val badgeIconSize: Dp = if (isCompact) 16.dp else 19.dp
+            // 5 Modern AI Badge Pills: Antigravity, Gemini, Claude, ChatGPT, Meta Muse
+            val badgeIconSize: Dp = if (isCompact) 15.dp else 17.dp
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                maxItemsInEachRow = 4
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                AiAssistantBadge(
+                    name = "Antigravity",
+                    iconBgColor = Color(0xFF0A1022),
+                    isCompact = isCompact,
+                    isHighlighted = true
+                ) {
+                    AntigravityLogoIcon(modifier = Modifier.size(badgeIconSize))
+                }
+
                 AiAssistantBadge(
                     name = "Gemini",
                     iconBgColor = Color(0xFF0B0F19),
@@ -228,11 +263,13 @@ fun DeveloperAiAttributionSection(
     }
 
     if (showCardContainer) {
-        Surface(
-            modifier = modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .interactiveLiquidGlass(
+                    shape = RoundedCornerShape(22.dp),
+                    elevation = 2.dp
+                )
         ) {
             content()
         }

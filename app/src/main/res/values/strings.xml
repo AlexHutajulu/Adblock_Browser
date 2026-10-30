@@ -109,7 +109,7 @@
     <string name="pref_site_permissions_summary">Kamera, Mikrofon, Lokasi, dan Sensor per domain</string>
     <string name="settings_site_permissions_empty">Belum ada izin situs khusus yang disimpan.</string>
     <string name="settings_db_status_prefix">Status Database: %1$s</string>
-    <string name="settings_about_description">Browser web modern yang cepat, ringan, dan responsif dengan perlindungan AdShield mandiri bebas lisensi pihak ketiga, pemblokir otomatis pop-up judol, pemutaran latar belakang multi-tab, serta dukungan Dolby Atmos &amp; Dolby Vision.</string>
+    <string name="settings_about_description">Browser web modern yang cepat, ringan, dan 100% responsif (Mobile &amp; Desktop) dengan perlindungan AdShield mandiri bebas lisensi pihak ketiga, pemblokir otomatis pop-up situs apapun, pemutaran latar belakang multi-tab, dukungan Dolby Atmos &amp; Dolby Vision, serta kolaborasi bersama Antigravity, Gemini, Claude, ChatGPT &amp; Meta Muse.</string>
 
     <!-- Connectivity & Performance Module -->
     <string name="pref_streaming_boost_title">Akselerasi Streaming Video</string>

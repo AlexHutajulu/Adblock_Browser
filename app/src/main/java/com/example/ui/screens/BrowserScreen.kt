@@ -631,7 +631,7 @@ fun BrowserScreen(
                             .fillMaxSize()
                             .weight(1f)
                     ) {
-                        if (isTablet) {
+                        if (isTablet || displayMode == DisplayMode.DESKTOP) {
                             TabletHorizontalTabBar(viewModel, tabs, activeTabId)
                         }
 
@@ -1123,174 +1123,183 @@ private fun ChromeMobileBottomBar(
     val accentTint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
     val canBack = activeTab.canGoBack || (activeTab.url.isNotBlank() && activeTab.url != "about:blank")
 
-    // Satu Kapsul Kaca Cair Terpadu (Sesuai Video Referensi Detik 00:05 - 00:31)
-    Box(
+    // Kapsul Navigasi Bawah Modern Responsif (Anti-Terpotong di semua ukuran layar)
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .interactiveLiquidGlass(
-                isDark = isDark,
-                isIncognito = isIncognito,
-                shape = RoundedCornerShape(30.dp),
-                elevation = 10.dp
-            )
-            .animateContentSize(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            )
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            AnimatedVisibility(
-                visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
-                enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-                exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    ChromeShortcutAndJsBar(
-                        viewModel = viewModel,
-                        activeTab = activeTab,
-                        activeWebView = activeWebView,
-                        isIncognito = isIncognito,
-                        onOpenFindInPage = onOpenFindInPage,
-                        onOpenSecurityShield = onOpenSecurityShield
-                    )
-                    HorizontalDivider(
-                        thickness = 0.5.dp,
-                        color = if (isIncognito || isDark) Color.White.copy(alpha = 0.14f)
-                        else Color.Black.copy(alpha = 0.08f)
-                    )
-                }
-            }
+        val isCompactWidth = maxWidth < 360.dp
+        val btnSize = if (isCompactWidth) 42.dp else 46.dp
+        val orbSize = if (isCompactWidth) 46.dp else 50.dp
+        val barHeight = if (isCompactWidth) 56.dp else 60.dp
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(60.dp)
-                    .padding(horizontal = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onBack,
-                    enabled = canBack,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .testTag("mobile_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = if (canBack) iconTint else iconTint.copy(alpha = 0.30f),
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = onForward,
-                    enabled = activeTab.canGoForward,
-                    modifier = Modifier.size(46.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Forward",
-                        tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.30f),
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
-
-                // Tombol "+" Lensa Kaca Interaktif (Sesuai Video 00:18 - 00:24)
-                val newTabInteraction = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .size(50.dp)
-                        .interactiveLiquidGlass(
-                            isActive = true,
-                            interactionSource = newTabInteraction,
-                            shape = CircleShape,
-                            isDark = isDark,
-                            isIncognito = isIncognito,
-                            elevation = 4.dp
-                        )
-                        .clickable(
-                            interactionSource = newTabInteraction,
-                            indication = null,
-                            onClick = onNewTab
-                        )
-                        .testTag("mobile_new_tab_orb"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New Tab",
-                        tint = if (isIncognito || isDark) Color.White else MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                val shortcutInteraction = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .size(46.dp)
-                        .then(
-                            if (shortcutBarVisible) {
-                                Modifier.interactiveLiquidGlass(
-                                    isActive = true,
-                                    interactionSource = shortcutInteraction,
-                                    shape = CircleShape,
-                                    isDark = isDark,
-                                    isIncognito = isIncognito,
-                                    elevation = 2.dp
-                                )
-                            } else Modifier
-                        )
-                        .clickable(
-                            interactionSource = shortcutInteraction,
-                            indication = null,
-                            onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) }
-                        )
-                        .testTag("mobile_toggle_shortcut_bar"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
-                        contentDescription = "Pintasan & JS",
-                        tint = if (shortcutBarVisible) accentTint else iconTint,
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
-
-                ChromeTabCountButton(
-                    count = tabsCount,
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (isCompactWidth) 8.dp else 12.dp, vertical = 6.dp)
+                .interactiveLiquidGlass(
+                    isDark = isDark,
                     isIncognito = isIncognito,
-                    onClick = onOpenTabs,
-                    modifier = Modifier.size(46.dp)
+                    shape = RoundedCornerShape(28.dp),
+                    elevation = 10.dp
                 )
-
-                IconButton(
-                    onClick = onOpenShield,
-                    modifier = Modifier.size(46.dp)
+                .animateContentSize(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                AnimatedVisibility(
+                    visible = shortcutBarVisible && shortcutBarPosition == com.example.manager.ShortcutBarPosition.BOTTOM,
+                    enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
                 ) {
-                    BadgedBox(
-                        badge = {
-                            if (adBlockEnabled && pageBlockedCount > 0) {
-                                Badge {
-                                    Text(
-                                        text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
-                                        fontSize = 9.sp
-                                    )
-                                }
-                            }
-                        }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        ChromeShortcutAndJsBar(
+                            viewModel = viewModel,
+                            activeTab = activeTab,
+                            activeWebView = activeWebView,
+                            isIncognito = isIncognito,
+                            onOpenFindInPage = onOpenFindInPage,
+                            onOpenSecurityShield = onOpenSecurityShield
+                        )
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = if (isIncognito || isDark) Color.White.copy(alpha = 0.14f)
+                            else Color.Black.copy(alpha = 0.08f)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(barHeight)
+                        .padding(horizontal = if (isCompactWidth) 4.dp else 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onBack,
+                        enabled = canBack,
+                        modifier = Modifier
+                            .size(btnSize)
+                            .testTag("mobile_back_button")
                     ) {
                         Icon(
-                            imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
-                            contentDescription = "AdShield",
-                            tint = if (adBlockEnabled) accentTint else iconTint.copy(alpha = 0.65f),
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = if (canBack) iconTint else iconTint.copy(alpha = 0.30f),
                             modifier = Modifier.size(20.dp)
                         )
+                    }
+
+                    IconButton(
+                        onClick = onForward,
+                        enabled = activeTab.canGoForward,
+                        modifier = Modifier.size(btnSize)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "Forward",
+                            tint = if (activeTab.canGoForward) iconTint else iconTint.copy(alpha = 0.30f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    val newTabInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .size(orbSize)
+                            .interactiveLiquidGlass(
+                                isActive = true,
+                                interactionSource = newTabInteraction,
+                                shape = CircleShape,
+                                isDark = isDark,
+                                isIncognito = isIncognito,
+                                elevation = 4.dp
+                            )
+                            .clickable(
+                                interactionSource = newTabInteraction,
+                                indication = null,
+                                onClick = onNewTab
+                            )
+                            .testTag("mobile_new_tab_orb"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "New Tab",
+                            tint = if (isIncognito || isDark) Color.White else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(23.dp)
+                        )
+                    }
+
+                    val shortcutInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .size(btnSize)
+                            .then(
+                                if (shortcutBarVisible) {
+                                    Modifier.interactiveLiquidGlass(
+                                        isActive = true,
+                                        interactionSource = shortcutInteraction,
+                                        shape = CircleShape,
+                                        isDark = isDark,
+                                        isIncognito = isIncognito,
+                                        elevation = 2.dp
+                                    )
+                                } else Modifier
+                            )
+                            .clickable(
+                                interactionSource = shortcutInteraction,
+                                indication = null,
+                                onClick = { viewModel.setShortcutBarVisible(!shortcutBarVisible) }
+                            )
+                            .testTag("mobile_toggle_shortcut_bar"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (shortcutBarVisible) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                            contentDescription = "Pintasan & JS",
+                            tint = if (shortcutBarVisible) accentTint else iconTint,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    ChromeTabCountButton(
+                        count = tabsCount,
+                        isIncognito = isIncognito,
+                        onClick = onOpenTabs,
+                        modifier = Modifier.size(btnSize)
+                    )
+
+                    IconButton(
+                        onClick = onOpenShield,
+                        modifier = Modifier.size(btnSize)
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                if (adBlockEnabled && pageBlockedCount > 0) {
+                                    Badge {
+                                        Text(
+                                            text = if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(),
+                                            fontSize = 9.sp
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (adBlockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
+                                contentDescription = "AdShield",
+                                tint = if (adBlockEnabled) accentTint else iconTint.copy(alpha = 0.65f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1358,127 +1367,176 @@ fun TabletHorizontalTabBar(
     val isIncognito = activeTab?.isPrivate == true
     val stripBg = if (isIncognito) ChromeIncognitoBg else MaterialTheme.colorScheme.surfaceContainerLowest
     val activeTabBg = if (isIncognito) ChromeIncognitoSurface else MaterialTheme.colorScheme.surface
+    val accentColor = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary
+    val currentDisplayMode by viewModel.displayMode.collectAsState()
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+        val isCompactWidth = maxWidth < 420.dp
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-                .then(if (isFloatingWindow) Modifier.padding(top = 14.dp) else Modifier)
+                .then(if (isFloatingWindow) Modifier.padding(top = 10.dp) else Modifier)
                 .height(42.dp)
                 .background(stripBg)
-                .padding(start = 8.dp, end = 8.dp, top = 6.dp),
+                .padding(start = 6.dp, end = 6.dp, top = 5.dp),
             verticalAlignment = Alignment.Bottom
         ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            tabs.forEach { tab ->
-                val isActive = tab.id == activeTabId
-                val tabColor = if (isActive) {
-                    activeTabBg
-                } else {
-                    if (isIncognito) ChromeIncognitoSurface.copy(alpha = 0.45f)
-                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                }
-                val textColor = if (isIncognito) {
-                    if (isActive) ChromeIncognitoText else ChromeIncognitoSubtext
-                } else {
-                    if (isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-                }
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                tabs.forEach { tab ->
+                    val isActive = tab.id == activeTabId
+                    val tabColor = if (isActive) {
+                        activeTabBg
+                    } else {
+                        if (isIncognito) ChromeIncognitoSurface.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    }
+                    val textColor = if (isIncognito) {
+                        if (isActive) ChromeIncognitoText else ChromeIncognitoSubtext
+                    } else {
+                        if (isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                    }
 
-                val isTabDark = isAppInDarkTheme() || isIncognito
-                Surface(
-                    modifier = Modifier
-                        .widthIn(min = 130.dp, max = 220.dp)
-                        .fillMaxHeight()
-                        .then(
-                            if (isActive) Modifier.liquidGlass(isActive = true, cornerRadius = 100.dp, isDark = isTabDark)
-                            else Modifier
-                        )
-                        .clickable { viewModel.selectTab(tab.id) },
-                    shape = if (isActive) RoundedCornerShape(100.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
-                    color = if (isActive) Color.Transparent else tabColor
-                ) {
-                    Row(
+                    val isTabDark = isAppInDarkTheme() || isIncognito
+                    Surface(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .widthIn(min = if (isCompactWidth) 112.dp else 130.dp, max = if (isCompactWidth) 176.dp else 220.dp)
+                            .fillMaxHeight()
+                            .then(
+                                if (isActive) Modifier.liquidGlass(isActive = true, cornerRadius = 100.dp, isDark = isTabDark)
+                                else Modifier
+                            )
+                            .clickable { viewModel.selectTab(tab.id) },
+                        shape = if (isActive) RoundedCornerShape(100.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                        color = if (isActive) Color.Transparent else tabColor
                     ) {
                         Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(start = 10.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            if (tab.isPrivate) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (tab.isPrivate) {
+                                    Icon(
+                                        imageVector = Icons.Default.VisibilityOff,
+                                        contentDescription = null,
+                                        tint = ChromeIncognitoAccent,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                } else {
+                                    com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = tab.title.ifBlank { "Tab Baru" },
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = textColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (tab.isPlayingAudio) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                                        contentDescription = "Memutar audio",
+                                        tint = accentColor,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.removeTab(tab.id) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.VisibilityOff,
-                                    contentDescription = null,
-                                    tint = ChromeIncognitoAccent,
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Tutup tab ${tab.title.ifBlank { "Tab Baru" }}",
+                                    tint = textColor.copy(alpha = 0.7f),
                                     modifier = Modifier.size(14.dp)
                                 )
-                            } else {
-                                com.example.manager.SiteIcon(host = tab.url, sizeDp = 14)
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = tab.title.ifBlank { "New Tab" },
-                                fontSize = 12.sp,
-                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = textColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
                         }
+                    }
+                }
 
-                        IconButton(
-                            onClick = { viewModel.removeTab(tab.id) },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Tutup tab ${tab.title.ifBlank { "Tab Baru" }}",
-                                tint = textColor.copy(alpha = 0.7f),
-                                modifier = Modifier.size(15.dp)
-                            )
-                        }
+                IconButton(
+                    onClick = { viewModel.addNewTab(isPrivate = false) },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "New Tab",
+                        tint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Quick Mode Toggle Pill (Desktop <-> Mobile)
+            Surface(
+                onClick = {
+                    val nextMode = if (currentDisplayMode == DisplayMode.DESKTOP) DisplayMode.MOBILE else DisplayMode.DESKTOP
+                    viewModel.setDisplayMode(nextMode)
+                },
+                shape = RoundedCornerShape(999.dp),
+                color = if (currentDisplayMode == DisplayMode.DESKTOP) accentColor.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.padding(bottom = 3.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (currentDisplayMode == DisplayMode.DESKTOP) Icons.Default.DesktopWindows else Icons.Default.Smartphone,
+                        contentDescription = "Mode Tampilan",
+                        tint = if (currentDisplayMode == DisplayMode.DESKTOP) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    if (!isCompactWidth) {
+                        Text(
+                            text = if (currentDisplayMode == DisplayMode.DESKTOP) "Desktop" else "Mobile",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (currentDisplayMode == DisplayMode.DESKTOP) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
                     }
                 }
             }
 
+            Spacer(modifier = Modifier.width(2.dp))
+
             IconButton(
-                onClick = { viewModel.addNewTab(isPrivate = false) },
+                onClick = { viewModel.addNewTab(isPrivate = true) },
                 modifier = Modifier.size(34.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "New Tab",
-                    tint = if (isIncognito) ChromeIncognitoText else MaterialTheme.colorScheme.onSurface,
+                    imageVector = Icons.Outlined.VisibilityOff,
+                    contentDescription = "New Incognito Tab",
+                    tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.width(6.dp))
-
-        IconButton(
-            onClick = { viewModel.addNewTab(isPrivate = true) },
-            modifier = Modifier.size(34.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.VisibilityOff,
-                contentDescription = "New Incognito Tab",
-                tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-        }
         }
     }
 }
@@ -1536,20 +1594,20 @@ fun TabletOrMobileToolbar(
                 modifier = Modifier.fillMaxWidth(),
                 color = toolbarBg
             ) {
-                // PERBAIKAN: Gunakan windowInsetsPadding + extra top padding di Floating Window untuk menghindari bentrok kontrol jendela OS (HyperOS/Freeform)
+                // PERBAIKAN: Gunakan windowInsetsPadding + extra top padding hanya jika bilah tab horizontal di atas tidak aktif
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
-                            if (!isTablet) {
+                            if (!isTablet && currentDisplayMode != DisplayMode.DESKTOP) {
                                 Modifier
                                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-                                    .then(if (isFloatingWindow) Modifier.padding(top = 14.dp) else Modifier)
+                                    .then(if (isFloatingWindow) Modifier.padding(top = 12.dp) else Modifier)
                             } else {
                                 Modifier
                             }
                         )
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = if (maxWidth < 360.dp) 6.dp else 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (isTablet) {
