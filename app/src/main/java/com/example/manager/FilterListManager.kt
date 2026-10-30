@@ -29,16 +29,9 @@ object FilterListManager {
     internal const val MAX_NET_RULES = 150_000
     internal const val MAX_COSMETIC_RULES = 80_000
 
-    // Sumber filter list publik — semua gratis dan open source (wajib HTTPS)
-    private val FILTER_LIST_URLS = mapOf(
-        "easylist"        to "https://easylist.to/easylist/easylist.txt",
-        "easyprivacy"     to "https://easylist.to/easylist/easyprivacy.txt",
-        "peterlowe"       to "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0",
-        "ublock-filters"  to "https://ublockorigin.github.io/uAssets/filters/filters.txt",
-        "ublock-badware"  to "https://ublockorigin.github.io/uAssets/filters/badware.txt",
-        "ublock-privacy"  to "https://ublockorigin.github.io/uAssets/filters/privacy.txt",
-        "ublock-unbreak"  to "https://ublockorigin.github.io/uAssets/filters/unbreak.txt"
-    )
+    // Sumber filter eksternal dikosongkan agar 100% bebas dari lisensi pihak ketiga (GPL/CC-BY-SA).
+    // Seluruh aturan menggunakan mesin internal mandiri (CleanAdEngine, HeuristicsEngine & fallback.txt).
+    private val FILTER_LIST_URLS = emptyMap<String, String>()
 
     data class ParsedRules(
         val ruleSet: AbpRuleEngine.RuleSet

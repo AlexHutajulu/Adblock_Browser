@@ -67,10 +67,26 @@ object HeuristicsEngine {
     )
 
     private val GAMBLING_HOST_TOKENS: List<String> = listOf(
-        "slot88", "hoki88", "gacor88", "maxwin88", "jp88",
-        "bet88", "judislot", "daftar-slot", "link-gacor", "rtp-slot",
+        "slot88", "slot77", "slot99", "slotgacor", "hoki88", "gacor88", "gacor77",
+        "maxwin", "maxwin88", "jp88", "bet88", "judislot", "judibola", "judi88", "judol",
+        "daftar-slot", "daftarslot", "link-gacor", "linkgacor", "rtp-slot", "rtpslot",
+        "pragmatic", "pgsoft", "mahjongways", "mahjong-ways", "sbobet", "ibcbet",
+        "togel", "toto88", "toto4d", "poker88", "domino88", "pkvgames", "idnpoker", "idnslot",
+        "casino88", "zeus88", "olympus88", "sultan88", "raja88", "dewa88", "cuan88",
+        "garuda88", "kakekzeus", "scatter88", "mpo88", "mposlot", "pay4d", "bolagacor",
         "kubet", "shbet", "jun88", "f8bet", "fun88",
         "789bet", "okvip", "rikvip", "78win", "gem88"
+    )
+
+    private val GAMBLING_URL_KEYWORDS: List<String> = listOf(
+        "slot-gacor", "slot_gacor", "slotgacor", "rtp-slot", "rtp_slot", "rtpslot",
+        "rtp-live", "daftar-slot", "link-gacor", "link-alternatif-slot",
+        "situs-judi", "judi-online", "judi-slot", "judislot", "judi-bola",
+        "bocoran-slot", "pola-gacor", "pola-slot", "akun-pro-slot",
+        "mahjong-ways", "gates-of-olympus", "starlight-princess", "sweet-bonanza",
+        "kakek-zeus", "scatter-hitam", "depo-pulsa", "depo-qris",
+        "bandar-togel", "bandar-slot", "agen-slot", "agen-judi", "agen-sbobet",
+        "sbobet88", "pragmatic88", "pgsoft88", "maxwin88", "gacor88", "slot88"
     )
 
     private val AD_SCRIPT_PATH_PATTERNS: List<String> = listOf(
@@ -86,6 +102,30 @@ object HeuristicsEngine {
         "/vpaid.js",
         "/inpagepush",
         "/doubleclick/"
+    )
+
+    private val ULTRA_AGGRESSIVE_PATH_PATTERNS: List<String> = listOf(
+        "/clickunder",
+        "/adframe",
+        "/adservice",
+        "/adscript",
+        "/ad_data",
+        "/ad-unit",
+        "/ad_handler",
+        "/adbanner",
+        "/ad-banner",
+        "/nativeads",
+        "/clicktrack",
+        "/out/click",
+        "/track/click",
+        "/push-ad",
+        "/webpush",
+        "/interstitial",
+        "/floating-ad",
+        "adurl=",
+        "click_url=",
+        "banner_id=",
+        "zoneid="
     )
 
     internal fun matchesHostToken(host: String, token: String): Boolean {
@@ -108,9 +148,41 @@ object HeuristicsEngine {
     internal fun matchesDomainKeyword(host: String, keyword: String): Boolean =
         matchesHostToken(host, keyword)
 
-    private fun isGamblingHost(cleanHost: String): Boolean {
+    fun isGamblingHost(cleanHost: String): Boolean {
+        val normalized = cleanHost.lowercase(Locale.US).trim().trimEnd('.').removePrefix("www.")
+        if (normalized.isEmpty()) return false
         for (token in GAMBLING_HOST_TOKENS) {
-            if (matchesHostToken(cleanHost, token)) return true
+            if (matchesHostToken(normalized, token)) return true
+        }
+        return false
+    }
+
+    /**
+     * Deteksi apakah URL (host, path, atau query) merupakan situs / pop-up judi online (Judol).
+     */
+    fun isGamblingUrl(url: String): Boolean {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return false
+        val lower = trimmed.lowercase(Locale.US)
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+        val schemeIdx = lower.indexOf("://")
+        val startHost = if (schemeIdx != -1) schemeIdx + 3 else 0
+        val slashIdx = lower.indexOf('/', startHost)
+        val qIdx = lower.indexOf('?', startHost)
+        val hostEnd = when {
+            slashIdx != -1 && qIdx != -1 -> minOf(slashIdx, qIdx)
+            slashIdx != -1 -> slashIdx
+            qIdx != -1 -> qIdx
+            else -> lower.length
+        }
+        val rawHost = lower.substring(startHost, hostEnd).substringBefore(':').removePrefix("www.")
+        if (rawHost.isEmpty()) return false
+        if (isGamblingHost(rawHost)) return true
+        val pathAndQuery = extractPathAndQuery(lower)
+        if (pathAndQuery.isNotEmpty()) {
+            for (kw in GAMBLING_URL_KEYWORDS) {
+                if (pathAndQuery.contains(kw)) return true
+            }
         }
         return false
     }
@@ -159,6 +231,18 @@ object HeuristicsEngine {
         for (pattern in AD_SCRIPT_PATH_PATTERNS) {
             if (pathPart.contains(pattern)) {
                 return "heuristic-path"
+            }
+        }
+        if (aggressive) {
+            for (pattern in ULTRA_AGGRESSIVE_PATH_PATTERNS) {
+                if (pathPart.contains(pattern)) {
+                    return "heuristic-aggressive-path"
+                }
+            }
+            for (kw in GAMBLING_URL_KEYWORDS) {
+                if (pathPart.contains(kw)) {
+                    return "heuristic-gambling-path"
+                }
             }
         }
         return null

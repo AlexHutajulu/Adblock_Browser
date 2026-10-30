@@ -40,10 +40,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -55,7 +57,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 val LocalIsDarkTheme = compositionLocalOf { false }
-val LocalLiquidGlassEnabled = compositionLocalOf { false }
+val LocalLiquidGlassEnabled = compositionLocalOf { true }
 
 @Composable
 fun isAppInDarkTheme(): Boolean {
@@ -138,140 +140,181 @@ fun Modifier.interactiveLiquidGlass(
 
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    // Fisika Pegas (Spring Scale) dijalankan di GPU RenderThread (graphicsLayer) tanpa memicu Layout ulang
+    // Fisika Pegas (Spring Scale) dijalankan murni di GPU RenderThread (graphicsLayer) tanpa relayout
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
+        targetValue = if (isPressed) 0.955f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            stiffness = Spring.StiffnessMedium
         ),
         label = "liquid_scale"
     )
 
-    // Pendaran Cahaya Sentuhan (HANYA saat disentuh, merata di seluruh kapsul tanpa bulatan anomali di tengah)
+    // Pendaran Cahaya Sentuhan (HANYA saat disentuh, tanpa alokasi objek per-frame)
     val pressSheenAlpha by animateFloatAsState(
-        targetValue = if (isPressed) 0.36f else 0f,
-        animationSpec = tween(150),
+        targetValue = if (isPressed) 1f else 0f,
+        animationSpec = tween(140),
         label = "liquid_press_sheen"
     )
 
-    val topColor by animateColorAsState(
-        targetValue = when {
+    // Warna optik berlapis di-cache penuh (Zero Coroutine Overhead pada ratusan komponen statis)
+    val glassSurfaceBrush = remember(isActive, effectiveDark, isIncognito) {
+        val topColor = when {
             isActive && effectiveDark -> GlassActiveDarkTop
             isActive && !effectiveDark -> GlassActiveLightTop
             isIncognito -> GlassSurfaceIncognitoTop
             effectiveDark -> GlassSurfaceDarkTop
             else -> GlassSurfaceLightTop
-        },
-        animationSpec = tween(200),
-        label = "glass_top"
-    )
-    val midColor by animateColorAsState(
-        targetValue = when {
+        }
+        val upperMidColor = when {
             isActive && effectiveDark -> GlassActiveDarkMid
             isActive && !effectiveDark -> GlassActiveLightMid
             effectiveDark -> GlassSurfaceDarkMid
             else -> GlassSurfaceLightMid
-        },
-        animationSpec = tween(200),
-        label = "glass_mid"
-    )
-    val bottomColor by animateColorAsState(
-        targetValue = when {
+        }
+        val lowerMidColor = when {
+            isActive && effectiveDark -> GlassActiveDarkMid.copy(alpha = 0.64f)
+            isActive && !effectiveDark -> GlassActiveLightMid.copy(alpha = 0.76f)
+            effectiveDark -> GlassSurfaceDarkMid.copy(alpha = 0.44f)
+            else -> GlassSurfaceLightMid.copy(alpha = 0.65f)
+        }
+        val bottomColor = when {
             isActive && effectiveDark -> GlassActiveDarkBottom
             isActive && !effectiveDark -> GlassActiveLightBottom
             isIncognito -> GlassSurfaceIncognitoBottom
             effectiveDark -> GlassSurfaceDarkBottom
             else -> GlassSurfaceLightBottom
-        },
-        animationSpec = tween(200),
-        label = "glass_bottom"
-    )
-
-    val glassSurfaceBrush = remember(topColor, midColor, bottomColor) {
-        Brush.verticalGradient(colors = listOf(topColor, midColor, bottomColor))
+        }
+        Brush.verticalGradient(colors = listOf(topColor, upperMidColor, lowerMidColor, bottomColor))
     }
 
     val rimBrush = remember(isActive, effectiveDark, isIncognito) {
         val rimHighlight = when {
             isActive && !effectiveDark -> Color(0xFFFFFFFF)
-            isActive && effectiveDark -> Color(0xB3A8C7FA)
+            isActive && effectiveDark -> Color(0xD9B8D4FF)
             isIncognito -> GlassBorderIncognitoHighlight
             effectiveDark -> GlassBorderDarkHighlight
             else -> GlassBorderLightHighlight
         }
-        val rimMid = when {
-            isActive && !effectiveDark -> Color(0x800B57D0)
-            isActive && effectiveDark -> Color(0x66A8C7FA)
-            effectiveDark -> rimHighlight.copy(alpha = 0.28f)
-            else -> Color(0x80CBD5E1)
+        val rimUpperMid = when {
+            isActive && !effectiveDark -> Color(0x993B82F6)
+            isActive && effectiveDark -> Color(0x808AB4F8)
+            effectiveDark -> Color.White.copy(alpha = 0.34f)
+            else -> Color.White.copy(alpha = 0.72f)
+        }
+        val rimLowerMid = when {
+            isActive && !effectiveDark -> Color(0x660B57D0)
+            isActive && effectiveDark -> Color(0x5260A5FA)
+            effectiveDark -> Color(0x3894A3B8)
+            else -> Color(0x52CBD5E1)
         }
         val rimShadow = when {
-            isActive && !effectiveDark -> Color(0x590B57D0)
+            isActive && !effectiveDark -> Color(0x800B57D0)
+            isActive && effectiveDark -> Color(0x8060A5FA)
             effectiveDark -> GlassBorderDarkShadow
             else -> GlassBorderLightShadow
         }
         Brush.linearGradient(
-            colors = listOf(rimHighlight, rimMid, rimShadow),
+            colors = listOf(rimHighlight, rimUpperMid, rimLowerMid, rimShadow),
             start = Offset(0f, 0f),
-            end = Offset(420f, 420f)
+            end = Offset(460f, 460f)
         )
     }
 
     val touchGlowColor = if (effectiveDark) LiquidTouchGlow else LiquidTouchGlowLight
+    val effectiveElevation = (elevation * 0.45f).coerceAtLeast(0.dp)
 
     return this
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
         }
+        .then(
+            if (effectiveElevation > 0.dp) {
+                Modifier.shadow(
+                    elevation = effectiveElevation,
+                    shape = shape,
+                    ambientColor = if (effectiveDark) Color.Black.copy(alpha = 0.55f) else Color(0xFF0F172A).copy(alpha = 0.14f),
+                    spotColor = if (isActive) Color(0xFF0B57D0).copy(alpha = 0.28f) else Color(0xFF0F172A).copy(alpha = 0.18f)
+                )
+            } else {
+                Modifier
+            }
+        )
         .clip(shape)
         .background(brush = glassSurfaceBrush, shape = shape)
-        .drawWithContent {
-            // 1. Gambar pantulan kubah kaca bagian atas (Inner Dome Specular Refraction)
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (effectiveDark) (if (isActive) 0.28f else 0.20f) else 0.55f),
-                        Color.Transparent
-                    ),
-                    startY = 0f,
-                    endY = size.height * 0.52f
-                )
+        .drawWithCache {
+            val h = size.height.coerceAtLeast(1f)
+            val w = size.width.coerceAtLeast(1f)
+
+            // 1. Kubah Spekular Atas (Crown Optical Reflection) — di-cache per ukuran komponen
+            val crownTopAlpha = if (effectiveDark) (if (isActive) 0.32f else 0.22f) else (if (isActive) 0.68f else 0.58f)
+            val crownMidAlpha = if (effectiveDark) 0.06f else 0.18f
+            val crownBrush = Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = crownTopAlpha),
+                    Color.White.copy(alpha = crownMidAlpha),
+                    Color.Transparent
+                ),
+                startY = 0f,
+                endY = h * 0.46f
             )
-            // 2. Bias cahaya kristal halus di tepi bawah kaca (Bottom-Edge Crystal Sheen)
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        if (effectiveDark) {
-                            if (isActive) Color(0xFF8AB4F8).copy(alpha = 0.18f)
-                            else Color.White.copy(alpha = 0.09f)
-                        } else {
-                            Color(0xFF0B57D0).copy(alpha = if (isActive) 0.14f else 0.06f)
-                        }
-                    ),
-                    startY = size.height * 0.58f,
-                    endY = size.height
-                )
+
+            // 2. Garis Kilau Kristal Puncak (Top 1.5dp Specular Micro-Crest)
+            val crestHeight = 2.2.dp.toPx().coerceAtMost(h * 0.18f)
+            val crestBrush = Brush.horizontalGradient(
+                colors = listOf(
+                    Color.Transparent,
+                    Color.White.copy(alpha = if (effectiveDark) 0.42f else 0.82f),
+                    Color.White.copy(alpha = if (effectiveDark) 0.52f else 0.92f),
+                    Color.White.copy(alpha = if (effectiveDark) 0.42f else 0.82f),
+                    Color.Transparent
+                ),
+                startX = w * 0.06f,
+                endX = w * 0.94f
             )
-            // 3. Pendaran cahaya kapsul merata saat disentuh (Tanpa drawCircle yang memicu bulatan anomali)
-            if (pressSheenAlpha > 0.01f) {
-                drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            touchGlowColor.copy(alpha = pressSheenAlpha * 0.65f),
-                            touchGlowColor.copy(alpha = pressSheenAlpha),
-                            touchGlowColor.copy(alpha = pressSheenAlpha * 0.65f)
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, size.height)
-                    )
-                )
+
+            // 3. Bias Refraksi Prisik Bawah (Bottom Caustic Bounce Light)
+            val causticColor = if (effectiveDark) {
+                if (isActive) Color(0xFF8AB4F8).copy(alpha = 0.24f)
+                else Color(0xFFA8C7FA).copy(alpha = 0.11f)
+            } else {
+                if (isActive) Color(0xFF0B57D0).copy(alpha = 0.16f)
+                else Color(0xFF3B82F6).copy(alpha = 0.07f)
             }
-            drawContent()
+            val bottomCausticBrush = Brush.verticalGradient(
+                colors = listOf(Color.Transparent, causticColor),
+                startY = h * 0.62f,
+                endY = h
+            )
+
+            // 4. Pendaran Cahaya Sentuhan (Pre-cached Diagonal Sheen Brush)
+            val pressSheenBrush = Brush.linearGradient(
+                colors = listOf(
+                    touchGlowColor.copy(alpha = 0.22f),
+                    touchGlowColor.copy(alpha = 0.42f),
+                    touchGlowColor.copy(alpha = 0.22f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(w, h)
+            )
+
+            onDrawWithContent {
+                // Zero-allocation draw calls menggunakan Shader yang sudah di-cache
+                drawRect(brush = crownBrush, size = Size(w, h * 0.46f))
+                drawRect(brush = crestBrush, size = Size(w, crestHeight))
+                drawRect(
+                    brush = bottomCausticBrush,
+                    topLeft = Offset(0f, h * 0.62f),
+                    size = Size(w, h * 0.38f)
+                )
+                if (pressSheenAlpha > 0.01f) {
+                    drawRect(brush = pressSheenBrush, alpha = pressSheenAlpha)
+                }
+                drawContent()
+            }
         }
-        .border(width = 1.35.dp, brush = rimBrush, shape = shape)
+        .border(width = 1.25.dp, brush = rimBrush, shape = shape)
 }
 
 @Composable
@@ -645,7 +688,7 @@ private val ChromeLightColorScheme = lightColorScheme(
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    liquidGlassEnabled: Boolean = false,
+    liquidGlassEnabled: Boolean = true,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {

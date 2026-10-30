@@ -494,12 +494,15 @@ class MediaClassificationAndBalanceTest {
         val animeStreamUrl = "https://cdn-stream.example/hls/episode-1100/seg-004.ts?token=xyz"
         val animeThumbUrl = "https://i0.wp.com/samehadaku.care/wp-content/uploads/2026/05/poster.jpg?resize=240,340"
 
-        // 1. BALANCED mode: blocks known ad domain, allows legitimate stream & thumbnail, does not trigger aggressive-only list
+        // 1. BALANCED mode: blocks known ad domain & former aggressive ad domain, allows legitimate stream & thumbnail
         assertEquals("ad-domain", client.evaluateRequestDecision(adScriptUrl, "samehadaku.care", PrivacyMode.BALANCED))
+        assertEquals("aggressive-ad", client.evaluateRequestDecision(aggressiveAdUrl, "samehadaku.care", PrivacyMode.BALANCED))
         assertNull(client.evaluateRequestDecision(animeStreamUrl, "samehadaku.care", PrivacyMode.BALANCED))
         assertNull(client.evaluateRequestDecision(animeThumbUrl, "samehadaku.care", PrivacyMode.BALANCED))
 
-        // 2. AGGRESSIVE mode: blocks both standard and aggressive ad domains, STILL protects anime stream & content thumbnail
+        // 2. AGGRESSIVE mode (Ultra-Aggressive): blocks standard, aggressive, ultra-aggressive & first-party ad paths, STILL protects anime stream & content thumbnail
+        val ultraAggressiveUrl = "https://tsyndicate.com/sdk/v1/pop.js"
+        val firstPartyBannerSlot = "https://samehadaku.care/banner-slot/gacor.gif"
         client.setMode(PrivacyMode.AGGRESSIVE)
         assertEquals(
             com.yourbrowser.adblock.AdblockMode.AGGRESSIVE,
@@ -507,6 +510,12 @@ class MediaClassificationAndBalanceTest {
         )
         assertEquals("ad-domain", client.evaluateRequestDecision(adScriptUrl, "samehadaku.care", PrivacyMode.AGGRESSIVE))
         assertEquals("aggressive-ad", client.evaluateRequestDecision(aggressiveAdUrl, "samehadaku.care", PrivacyMode.AGGRESSIVE))
+        assertEquals("ultra-aggressive-ad", client.evaluateRequestDecision(ultraAggressiveUrl, "samehadaku.care", PrivacyMode.AGGRESSIVE))
+        assertEquals("first-party-aggressive-ad", client.evaluateRequestDecision(firstPartyBannerSlot, "samehadaku.care", PrivacyMode.AGGRESSIVE))
+        assertTrue(
+            "Judol popup URL must be auto-blocked even with user gesture",
+            client.shouldBlockNavigationRedirect("https://situs-resmi.example/daftar-slot?rtp=99", "https://samehadaku.care", hasGesture = true)
+        )
         assertNull(
             "Anime stream segment must remain unblocked even in AGGRESSIVE mode",
             client.evaluateRequestDecision(animeStreamUrl, "samehadaku.care", PrivacyMode.AGGRESSIVE)

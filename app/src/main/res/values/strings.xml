@@ -93,7 +93,7 @@
     <string name="pref_tracker_title">Blokir Pelacak</string>
     <string name="pref_tracker_summary">Cegah skrip analitik dan pelacak lintas situs</string>
     <string name="pref_popups_title">Buka Pop-up di Tab Baru</string>
-    <string name="pref_popups_summary">Buka jendela pop-up yang diizinkan sebagai tab terpisah</string>
+    <string name="pref_popups_summary">Buka jendela pop-up di tab baru &amp; blokir otomatis jika terdeteksi situs judi online (judol)</string>
     <string name="pref_redirects_title">Blokir Pengalihan Mencurigakan</string>
     <string name="pref_redirects_summary">Cegah situs mengalihkan otomatis ke tautan iklan pihak ketiga</string>
     <string name="pref_privacy_shield_title">Mode Perisai Privasi</string>
@@ -109,7 +109,7 @@
     <string name="pref_site_permissions_summary">Kamera, Mikrofon, Lokasi, dan Sensor per domain</string>
     <string name="settings_site_permissions_empty">Belum ada izin situs khusus yang disimpan.</string>
     <string name="settings_db_status_prefix">Status Database: %1$s</string>
-    <string name="settings_about_description">Browser web modern yang cepat, ringan, dan responsif dengan perlindungan AdShield bawaan. Koneksi eksternal dibatasi pada mesin pencari pilihan Anda, Android Safe Browsing, pembaruan daftar filter HTTPS (EasyList, EasyPrivacy, Peter Lowe), serta URL yang Anda buka.</string>
+    <string name="settings_about_description">Browser web modern yang cepat, ringan, dan responsif dengan perlindungan AdShield mandiri bebas lisensi pihak ketiga, pemblokir otomatis pop-up judol, pemutaran latar belakang multi-tab, serta dukungan Dolby Atmos &amp; Dolby Vision.</string>
 
     <!-- Connectivity & Performance Module -->
     <string name="pref_streaming_boost_title">Akselerasi Streaming Video</string>

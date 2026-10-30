@@ -276,6 +276,12 @@ fun BrowserScreen(
                 try {
                     wv.onResume()
                     wv.resumeTimers()
+                    if (id != activeTabId || isAppPaused) {
+                        wv.evaluateJavascript(
+                            "(function(){try{document.querySelectorAll('video,audio').forEach(function(v){if(v.__alexKeepPlaying&&v.paused&&!v.ended){var p=v.play();if(p&&p.catch)p.catch(function(){});}});}catch(e){}})();",
+                            null
+                        )
+                    }
                 } catch (_: Throwable) {}
             } else {
                 try {
@@ -761,7 +767,11 @@ fun BrowserScreen(
                                     !tabItem.isSuspended &&
                                     (tabItem.id == activeTab.id ||
                                         tabItem.isPlayingAudio ||
-                                        (backgroundPlaybackEnabled && webViewPool.containsKey(tabItem.id)))
+                                        (backgroundPlaybackEnabled && (
+                                            webViewPool.containsKey(tabItem.id) ||
+                                                tabItem.url.contains("youtube.com", ignoreCase = true) ||
+                                                tabItem.url.contains("youtu.be", ignoreCase = true)
+                                            )))
                             }
 
                             mountedWebTabs.forEach { tabItem ->
@@ -2454,6 +2464,19 @@ fun SidebarTabsPanel(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        if (tab.isPlayingAudio) {
+                            IconButton(
+                                onClick = { viewModel.toggleTabMuted(tab.id) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (tab.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                    contentDescription = if (tab.isMuted) "Unmute tab" else "Mute tab",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = { viewModel.removeTab(tab.id) },
                             modifier = Modifier.size(28.dp)
@@ -3168,7 +3191,35 @@ fun MobileTabsDialog(
                                                     overflow = TextOverflow.Ellipsis,
                                                     textAlign = TextAlign.Center
                                                 )
-                                                if (tab.isSuspended && !isActive) {
+                                                if (tab.isPlayingAudio) {
+                                                    Spacer(modifier = Modifier.height(6.dp))
+                                                    Surface(
+                                                        shape = RoundedCornerShape(100.dp),
+                                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                                        modifier = Modifier.clickable { viewModel.toggleTabMuted(tab.id) }
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (tab.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                                                contentDescription = null,
+                                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                                modifier = Modifier.size(12.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(4.dp))
+                                                            Text(
+                                                                text = if (tab.isMuted) "Dibisukan" else "Memutar Audio",
+                                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                                    fontSize = 10.sp,
+                                                                    fontWeight = FontWeight.SemiBold
+                                                                ),
+                                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                            )
+                                                        }
+                                                    }
+                                                } else if (tab.isSuspended && !isActive) {
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Surface(
                                                         shape = RoundedCornerShape(100.dp),
@@ -3869,7 +3920,11 @@ fun DesktopBrowserLayout(
                             !tabItem.isSuspended &&
                             (tabItem.id == activeTab.id ||
                                 tabItem.isPlayingAudio ||
-                                (backgroundPlaybackEnabledDesktop && webViewPool.containsKey(tabItem.id)))
+                                (backgroundPlaybackEnabledDesktop && (
+                                    webViewPool.containsKey(tabItem.id) ||
+                                        tabItem.url.contains("youtube.com", ignoreCase = true) ||
+                                        tabItem.url.contains("youtu.be", ignoreCase = true)
+                                    )))
                     }
 
                     mountedDesktopWebTabs.forEach { tabItem ->
@@ -5513,6 +5568,86 @@ fun WebGuardShieldDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                        }
+                    }
+
+                    val currentAdBlockMode by viewModel.adBlockMode.collectAsState()
+                    val openPopupsInNewTab by viewModel.openPopupsInNewTab.collectAsState()
+
+                    // Mode AdBlock Selector (Nonaktif | Seimbang [Eks-Agresif] | Agresif Baru [Ultra])
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Mode Perlindungan AdShield",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    com.example.manager.AdBlockMode.OFF to "Nonaktif",
+                                    com.example.manager.AdBlockMode.BALANCED to "Seimbang+",
+                                    com.example.manager.AdBlockMode.AGGRESSIVE to "Agresif Ultra"
+                                ).forEach { (modeItem, label) ->
+                                    val selected = currentAdBlockMode == modeItem
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            viewModel.setAdBlockMode(modeItem)
+                                            viewModel.reload()
+                                        },
+                                        label = {
+                                            Text(
+                                                text = label,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Toggle Buka Pop-up di Tab Baru (Default Aktif + Blokir Otomatis Situs Judol)
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.pref_popups_title),
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "Default aktif • Otomatis blokir pop-up situs judol",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            LiquidGlassSwitch(
+                                checked = openPopupsInNewTab,
+                                onCheckedChange = { viewModel.setOpenPopupsInNewTab(it) }
+                            )
                         }
                     }
 

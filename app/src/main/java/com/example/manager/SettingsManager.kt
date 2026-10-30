@@ -176,8 +176,8 @@ class SettingsManager(private val context: Context) {
         }
         
     var openPopupsInNewTab: Boolean
-        get() = prefs.getBoolean("open_popups_new_tab_v2", false)
-        set(value) = prefs.edit().putBoolean("open_popups_new_tab_v2", value).apply()
+        get() = prefs.getBoolean("open_popups_new_tab_v3", true)
+        set(value) = prefs.edit().putBoolean("open_popups_new_tab_v3", value).apply()
 
     var blockSuspiciousRedirects: Boolean
         get() = prefs.getBoolean("block_suspicious_redirects", true)
@@ -275,8 +275,8 @@ class SettingsManager(private val context: Context) {
         set(value) = prefs.edit().putBoolean("force_web_page_dark_mode", value).apply()
 
     var liquidGlassEnabled: Boolean
-        get() = prefs.getBoolean("liquid_glass_enabled_v2", false)
-        set(value) = prefs.edit().putBoolean("liquid_glass_enabled_v2", value).apply()
+        get() = prefs.getBoolean("liquid_glass_enabled_v3", true)
+        set(value) = prefs.edit().putBoolean("liquid_glass_enabled_v3", value).apply()
 
     var dolbyAtmosEnabled: Boolean
         get() = prefs.getBoolean("dolby_atmos_enabled_v2", false)

@@ -46,10 +46,7 @@ object DocumentStartCosmetics {
     }
 
     fun buildCosmeticCssForHost(host: String): String {
-        // Solusi T3 & T5: Filter kosmetik generik dimatikan di mode BALANCED agar tidak merusak tampilan web
-        if (com.yourbrowser.adblock.CleanAdEngine.currentMode != com.yourbrowser.adblock.AdblockMode.AGGRESSIVE) {
-            return ""
-        }
+        // Filter kosmetik kini aktif di mode BALANCED (mewarisi mode Aggressive lama) dan AGGRESSIVE
         val clean = host.trim().lowercase().removePrefix("www.")
         if (clean.isNotEmpty() && com.yourbrowser.adblock.AdBlockWebViewClient.CRITICAL_BYPASS_DOMAINS.any { clean == it || clean.endsWith(".$it") }) {
             return ""

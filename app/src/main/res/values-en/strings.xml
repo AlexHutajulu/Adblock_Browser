@@ -93,7 +93,7 @@
     <string name="pref_tracker_title">Block Trackers</string>
     <string name="pref_tracker_summary">Prevent cross-site tracking and analytics scripts</string>
     <string name="pref_popups_title">Open Pop-ups in New Tab</string>
-    <string name="pref_popups_summary">Open allowed pop-up windows as separate tabs</string>
+    <string name="pref_popups_summary">Open pop-ups in a new tab &amp; auto-block online gambling (judol) sites</string>
     <string name="pref_redirects_title">Block Suspicious Redirects</string>
     <string name="pref_redirects_summary">Prevent automatic third-party ad redirects</string>
     <string name="pref_privacy_shield_title">Privacy Shield Mode</string>
@@ -109,7 +109,7 @@
     <string name="pref_site_permissions_summary">Camera, Microphone, Location, and Sensors per domain</string>
     <string name="settings_site_permissions_empty">No customized site permissions saved.</string>
     <string name="settings_db_status_prefix">Database Status: %1$s</string>
-    <string name="settings_about_description">Fast, lightweight, and responsive modern web browser with built-in AdShield protection. External connections are limited to your selected search engine, Android Safe Browsing, HTTPS AdBlock filter list updates (EasyList, EasyPrivacy, Peter Lowe), and URLs you explicitly open.</string>
+    <string name="settings_about_description">Fast, lightweight, and responsive modern web browser with license-free internal AdShield protection, automatic gambling pop-up blocking, multi-tab background playback, and Dolby Atmos &amp; Dolby Vision support.</string>
 
     <!-- Connectivity & Performance Module -->
     <string name="pref_streaming_boost_title">Video Streaming Acceleration</string>

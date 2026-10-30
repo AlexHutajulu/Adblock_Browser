@@ -293,6 +293,12 @@ class MainActivity : AppCompatActivity() {
             viewModel.setAppPaused(true)
         } else {
             viewModel.setAppPaused(false)
+            viewModel.webViewPool.values.forEach { wv ->
+                try {
+                    wv.onResume()
+                    wv.resumeTimers()
+                } catch (_: Exception) {}
+            }
             if (hasAudioTab) {
                 com.example.manager.TabPersistenceService.syncMediaSession(
                     context = applicationContext,
@@ -315,6 +321,12 @@ class MainActivity : AppCompatActivity() {
             viewModel.setAppPaused(true)
         } else {
             viewModel.setAppPaused(false)
+            viewModel.webViewPool.values.forEach { wv ->
+                try {
+                    wv.onResume()
+                    wv.resumeTimers()
+                } catch (_: Exception) {}
+            }
             try {
                 startService(Intent(this, com.example.manager.TabPersistenceService::class.java))
             } catch (_: Exception) {}

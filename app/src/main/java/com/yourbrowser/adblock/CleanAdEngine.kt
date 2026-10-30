@@ -20,7 +20,23 @@ object CleanAdEngine {
         "pubmatic.com", "rubiconproject.com", "openx.net", "adroll.com",
         "propellerads.com", "exoclick.com", "adsterra.com", "popads.net",
         "popcash.net", "mgid.com", "revcontent.com", "adcash.com",
-        "smartadserver.com", "moatads.com", "fundingchoicesmessages.google.com"
+        "smartadserver.com", "moatads.com", "fundingchoicesmessages.google.com",
+        "amazon-adsystem.com", "advertising.com", "everesttech.net",
+        "rlcdn.com", "w55c.net", "ads-twitter.com", "/popunder/",
+        "/adbanner/", "/advertising/banner", "/ads/banner"
+    )
+    private val ultraAggressiveKeywords = listOf(
+        "hilltopads", "clickadu.com", "trafficstars.com", "juicyads.com",
+        "ero-advertising.com", "a-ads.com", "bidvertiser.com", "zeroredirect1.com",
+        "tsyndicate.com", "realsrv.com", "acscdn.com", "galaksion.com",
+        "rollerads.com", "pushhouse.com", "evadav.com", "richads.com",
+        "mondiad.com", "admaven.com", "coinzilla.com", "cointraffic.io",
+        "adskeeper.com", "vidazoo.com", "connatix.com", "primis.tech",
+        "aniview.com", "spotxchange.com", "gumgum.com", "triplelift.com",
+        "sovrn.com", "zedo.com", "adblade.com", "adrecover.com",
+        "/clickunder", "/inpagepush", "/inpage-push", "/webpush-ad",
+        "/floating-ad", "/interstitial-ad", "/sticky-ad", "?adurl=",
+        "&adurl=", "?click_url=", "&click_url=", "?zoneid=", "&zoneid="
     )
     private val trackerKeywords = listOf(
         "analytics", "pixel", "telemetry", "beacon", "tracker",
@@ -45,13 +61,16 @@ object CleanAdEngine {
 
         if (currentMode == AdblockMode.BALANCED) {
             if (!isThirdParty) return false
+            if (HeuristicsEngine.isGamblingUrl(lowerUrl)) return true
             return adKeywords.any { lowerUrl.contains(it) }
         }
 
         if (currentMode == AdblockMode.AGGRESSIVE) {
+            if (HeuristicsEngine.isGamblingUrl(lowerUrl)) return true
             val isAd = adKeywords.any { lowerUrl.contains(it) }
+            val isUltraAd = ultraAggressiveKeywords.any { lowerUrl.contains(it) }
             val isTracker = trackerKeywords.any { lowerUrl.contains(it) }
-            return isAd || isTracker
+            return isAd || isUltraAd || isTracker
         }
 
         return false

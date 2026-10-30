@@ -393,8 +393,11 @@ object BackgroundMediaController {
                     var active = mediaList.find(function(m) { return !m.paused && !m.ended; }) || mediaList[0];
                     if (!active) return;
                     if (active.paused) {
+                        active.__alexKeepPlaying = true;
                         active.play().catch(function(){});
                     } else {
+                        window.__alexExplicitMediaPause = true;
+                        active.__alexKeepPlaying = false;
                         active.pause();
                     }
                 })();
@@ -415,6 +418,7 @@ object BackgroundMediaController {
                     var mediaList = Array.from(document.querySelectorAll('video, audio'));
                     var active = mediaList[0];
                     if (active && active.paused) {
+                        active.__alexKeepPlaying = true;
                         active.play().catch(function(){});
                     }
                 })();
@@ -430,7 +434,9 @@ object BackgroundMediaController {
             wv.evaluateJavascript(
                 """
                 (function() {
+                    window.__alexExplicitMediaPause = true;
                     document.querySelectorAll('video, audio').forEach(function(m) {
+                        m.__alexKeepPlaying = false;
                         if (!m.paused) m.pause();
                     });
                 })();

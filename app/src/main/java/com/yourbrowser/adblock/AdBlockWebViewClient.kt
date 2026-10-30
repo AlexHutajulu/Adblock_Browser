@@ -201,7 +201,7 @@ class AdBlockWebViewClient(
     // ── Solusi T3 & T5 & Optimasi Injeksi Terpadu ──────────────────────────────
 
     fun applyCosmeticFiltering(view: WebView, isAggressive: Boolean) {
-        if (!isAggressive) return
+        if (currentMode.get() == PrivacyMode.OFF && !isAggressive) return
         val host = currentPageHost.ifEmpty { safeHost(pageUrl.get()) }
         val domainCss = buildCosmeticCSS(host)
         if (domainCss.isNotBlank()) {
@@ -375,6 +375,13 @@ class AdBlockWebViewClient(
         if (isWhitelistedHost(host)) return false
         if (isCriticalBypassDomain(host)) return false
 
+        // Blok otomatis situs judol (judi online) meskipun ada gestur
+        if (HeuristicsEngine.isGamblingUrl(url)) {
+            blockedCount.incrementAndGet()
+            onBlocked?.invoke(url, "judol-popup-blocked")
+            return true
+        }
+
         // Navigasi dalam situs yang sama dengan gestur user diizinkan
         val isSameSite = (host.isNotEmpty() && mainHost.isNotEmpty()) &&
             (host == mainHost || host.endsWith(".$mainHost") || mainHost.endsWith(".$host"))
@@ -383,6 +390,8 @@ class AdBlockWebViewClient(
         // Blok domain iklan yang dikenal walau ada gestur (scam/slot redirect)
         val isKnownAd = REDIRECT_BLOCK_DOMAINS.any { host == it || host.endsWith(".$it") } ||
             AD_DOMAINS.any { host == it || host.endsWith(".$it") } ||
+            AGGRESSIVE_DOMAINS.any { host == it || host.endsWith(".$it") } ||
+            ULTRA_AGGRESSIVE_DOMAINS.any { host == it || host.endsWith(".$it") } ||
             (com.example.manager.FilterListManager.getCachedRules()?.ruleSet?.isDomainBlocked(host) == true)
 
         if (isKnownAd) {
@@ -549,15 +558,35 @@ class AdBlockWebViewClient(
             return null
         }
 
-        // 3. Tambahan khusus mode Aggressive (jangan blokir media stream atau thumbnail konten sah)
+        // 3. Kemampuan eks-Aggressive kini menjadi standar di mode BALANCED (dan tetap aktif di AGGRESSIVE),
+        //    tanpa memblokir media stream atau thumbnail konten sah.
+        if (!isFirstParty && AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+            return "aggressive-ad"
+        }
+        if (!isFirstParty && !isFirstPartyCriticalFlow && !isMediaResource && !isProtectedContentImage &&
+            AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }
+        ) {
+            return "aggressive-keyword"
+        }
+        if (!isFirstParty && HeuristicsEngine.isGamblingUrl(lowerUrl)) {
+            return "heuristic-gambling"
+        }
+
+        // 3b. Mode AGGRESSIVE Baru (Ultra-Aggressive): blokir jaringan iklan/popunder/push/judol tingkat lanjut
+        //     serta path iklan first-party & third-party yang lebih dalam, tetap melindungi stream video & gambar konten.
         if (isAggressive) {
-            if (!isFirstParty && AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
-                return "aggressive-ad"
+            if (!isFirstParty && ULTRA_AGGRESSIVE_DOMAINS.any { reqHost == it || reqHost.endsWith(".$it") }) {
+                return "ultra-aggressive-ad"
             }
             if (!isFirstParty && !isFirstPartyCriticalFlow && !isMediaResource && !isProtectedContentImage &&
-                AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }
+                ULTRA_AGGRESSIVE_PATH_KEYWORDS.any { lowerUrl.contains(it) }
             ) {
-                return "aggressive-keyword"
+                return "ultra-aggressive-keyword"
+            }
+            if (isFirstParty && !isFirstPartyCriticalFlow && !isMediaResource && !isProtectedContentImage &&
+                FIRST_PARTY_AGGRESSIVE_AD_PATHS.any { lowerUrl.contains(it) }
+            ) {
+                return "first-party-aggressive-ad"
             }
         }
 
@@ -693,22 +722,22 @@ class AdBlockWebViewClient(
 
     private fun buildCosmeticCSS(hostname: String): String {
         val mode = currentMode.get()
+        if (mode == PrivacyMode.OFF) return ""
         val selectors = LinkedHashSet<String>()
 
+        // Mode BALANCED kini mewarisi seluruh kemampuan kosmetik dari mode Aggressive lama
+        selectors.addAll(EXPLICIT_AD_SELECTORS)
+        selectors.addAll(GLOBAL_COSMETIC)
+        if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
+            selectors.addAll(YT_COSMETIC)
+        }
+        DOMAIN_COSMETIC.forEach { (domain, rules) ->
+            if (hostname == domain || hostname.endsWith(".$domain")) selectors.addAll(rules)
+        }
+
+        // Mode AGGRESSIVE baru menambahkan selektor ultra-agresif (banner judol, sticky ads, popunder overlays)
         if (mode == PrivacyMode.AGGRESSIVE) {
-            selectors.addAll(GLOBAL_COSMETIC)
-            if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
-                selectors.addAll(YT_COSMETIC)
-            }
-            DOMAIN_COSMETIC.forEach { (domain, rules) ->
-                if (hostname == domain || hostname.endsWith(".$domain")) selectors.addAll(rules)
-            }
-        } else {
-            // Mode Balance: hanya selektor ad-network eksplisit (tidak menyentuh class generik halaman).
-            selectors.addAll(EXPLICIT_AD_SELECTORS)
-            if (hostname.contains("youtube.com") || hostname.contains("music.youtube.com")) {
-                selectors.addAll(YT_COSMETIC)
-            }
+            selectors.addAll(ULTRA_AGGRESSIVE_COSMETIC)
         }
 
         val validated = selectors.filter { com.example.manager.CosmeticFilterInjector.isSafeCssSelector(it) }
@@ -1094,6 +1123,77 @@ class AdBlockWebViewClient(
             "ads-twitter.com"
         )
 
+        private val ULTRA_AGGRESSIVE_DOMAINS = setOf(
+            "hilltopads.net", "hilltopads.com", "clickadu.com", "trafficstars.com",
+            "juicyads.com", "ero-advertising.com", "a-ads.com", "unityads.unity3d.com",
+            "vungle.com", "inmobi.com", "bidvertiser.com", "zeroredirect1.com",
+            "tsyndicate.com", "realsrv.com", "acscdn.com", "galaksion.com",
+            "rollerads.com", "pushhouse.com", "evadav.com", "richads.com",
+            "mondiad.com", "admaven.com", "coinzilla.com", "cointraffic.io",
+            "adskeeper.com", "adskeeper.co.uk", "lentainform.com", "idealmedia.io",
+            "trafficfactory.biz", "plugrush.com", "adxpansion.com", "adnium.com",
+            "pushground.com", "megapush.com", "dao.ad", "propush.me",
+            "outbrainimg.com", "trc.taboola.com", "vidazoo.com", "connatix.com",
+            "primis.tech", "aniview.com", "springserve.com", "spotxchange.com",
+            "spotx.tv", "lkqd.net", "fyber.com", "ironsrc.com", "Tapjoy.com",
+            "tapjoy.com", "startappservice.com", "Smaato.net", "smaato.net",
+            "sonobi.com", "gumgum.com", "triplelift.com", "sovrn.com",
+            "lijit.com", "zedo.com", "undertone.com", "conversantmedia.com",
+            "fastclick.net", "valueclick.com", "Burstnet.com", "burstnet.com",
+            "tribalfusion.com", "exponential.com", "adblade.com", "content.ad",
+            "adrecover.com", "d38psrni17bvxu.cloudfront.net"
+        )
+
+        private val ULTRA_AGGRESSIVE_PATH_KEYWORDS = listOf(
+            "/clickunder",
+            "/popunder.js",
+            "/pop.js",
+            "/inpagepush",
+            "/inpage-push",
+            "/webpush-ad",
+            "/adframe.",
+            "/adscript.",
+            "/ad_data/",
+            "/ad-unit/",
+            "/ad_handler",
+            "/nativeads/",
+            "/floating-ad",
+            "/interstitial-ad",
+            "/sticky-ad",
+            "/preroll-ad",
+            "/midroll-ad",
+            "/slot-gacor",
+            "/rtp-slot",
+            "/daftar-slot",
+            "/link-gacor",
+            "/judislot",
+            "/situs-judi",
+            "/mahjong-ways",
+            "/kakek-zeus",
+            "/scatter-hitam",
+            "?adurl=",
+            "&adurl=",
+            "?click_url=",
+            "&click_url=",
+            "?zoneid=",
+            "&zoneid=",
+            "?banner_id=",
+            "&banner_id="
+        )
+
+        private val FIRST_PARTY_AGGRESSIVE_AD_PATHS = listOf(
+            "/wp-content/uploads/ads/",
+            "/wp-content/plugins/ad-inserter/",
+            "/assets/ads/",
+            "/images/ads/",
+            "/banner-judi",
+            "/banner-slot",
+            "/iklan-slot",
+            "/iklan-judi",
+            "/popunder.js",
+            "/clickunder.js"
+        )
+
         private val AD_ONLY_PATH_KEYWORDS = listOf(
             "/api/stats/ads",
             "/pagead/",
@@ -1183,6 +1283,30 @@ class AdBlockWebViewClient(
             "reddit.com"    to listOf(".promotedlink", "[data-testid='promoted-post']", "shreddit-ad-post"),
             "facebook.com"  to listOf("[aria-label='Sponsored']", "[data-pagelet*='sponsored']"),
             "instagram.com" to listOf("[aria-label='Sponsored']")
+        )
+
+        private val ULTRA_AGGRESSIVE_COSMETIC = setOf(
+            "iframe[src*='popads']", "iframe[src*='popcash']", "iframe[src*='propellerads']",
+            "iframe[src*='adsterra']", "iframe[src*='exoclick']", "iframe[src*='mgid']",
+            "iframe[src*='revcontent']", "iframe[src*='juicyads']", "iframe[src*='clickadu']",
+            "iframe[src*='hilltopads']", "iframe[src*='adskeeper']",
+            "div[id*='mgid']", "div[class*='mgid']", "div[id*='revcontent']",
+            "div[id*='adsterra']", "div[class*='adsterra']",
+            "div[class*='slot-banner']", "div[class*='gacor-banner']", "div[class*='judol-banner']",
+            "div[class*='iklan-slot']", "div[class*='iklan-judi']", "div[class*='floating-ads']",
+            "div[id*='floating-ads']", "div[class*='sticky-ads']", "div[id*='sticky-ads']",
+            "div[class*='bottom-ad']", "div[id*='bottom-ad']", "div[class*='top-ad-banner']",
+            "div[class*='popup-ad']", "div[id*='popup-ad']", "div[class*='overlay-ad']",
+            "a[href*='slot88']", "a[href*='slotgacor']", "a[href*='slot-gacor']",
+            "a[href*='maxwin']", "a[href*='judislot']", "a[href*='rtp-slot']",
+            "a[href*='rtpslot']", "a[href*='daftar-slot']", "a[href*='link-gacor']",
+            "a[href*='sbobet']", "a[href*='pragmatic']", "a[href*='mahjong-ways']",
+            "a[href*='togel88']", "a[href*='poker88']", "a[href*='casino88']",
+            "a[href*='zeus88']", "a[href*='olympus88']", "a[href*='sultan88']",
+            "a[href*='hoki88']", "a[href*='kakek-zeus']", "a[href*='scatter-hitam']",
+            "img[src*='slot-gacor']", "img[src*='slotgacor']", "img[src*='judislot']",
+            "img[src*='banner-slot']", "img[src*='iklan-slot']", "img[alt*='slot gacor']",
+            "img[alt*='judi slot']", "img[alt*='rtp slot']", "img[alt*='maxwin']"
         )
 
         // ─── Stealth Early Script (Native Cloaking + Bait Dimension Spoof + SDK Stubs) ───
@@ -1948,15 +2072,40 @@ class AdBlockWebViewClient(
   }
 
   function step4(){
-    if(!AGG||IS_STREAMING) return;
-    try{document.querySelectorAll('div,section').forEach(function(el){
+    if(IS_STREAMING) return;
+    try{document.querySelectorAll('div,section,aside').forEach(function(el){
       if(isFixedOverlay(el)&&hasGambling(el)&&!isProtected(el)) hide(el);
     });}catch(e){}
   }
 
+  function step5(){
+    if(!AGG||IS_STREAMING) return;
+    try{
+      var JUDOL_SEL='a[href*="slot"],a[href*="gacor"],a[href*="maxwin"],a[href*="sbobet"],a[href*="judol"],a[href*="judislot"],a[href*="togel"],a[href*="rtp-slot"],a[href*="rtpslot"],a[href*="mahjong-ways"],a[href*="kakek-zeus"],img[src*="slot"],img[src*="gacor"],img[alt*="slot gacor"],img[alt*="judi"]';
+      document.querySelectorAll(JUDOL_SEL).forEach(function(el){
+        if(hasGambling(el)&&!isProtected(el)){
+          var c=el.closest('a')||el;
+          if(!isProtected(c)) hide(c);
+        }
+      });
+      document.querySelectorAll('div,aside,section,ins').forEach(function(el){
+        if(isProtected(el)) return;
+        var s=window.getComputedStyle(el);
+        var z=parseInt(s.zIndex,10)||0;
+        if((s.position==='fixed'||s.position==='sticky')&&z>=999){
+          var r=el.getBoundingClientRect();
+          var t=safeText(el);
+          if(hasGambling(el)||/\b(ad|ads|iklan|sponsor|promo|popunder|clickhere|download now)\b/i.test(t)||(r.height<=140&&r.width>=(window.innerWidth||320)*0.6)){
+            hide(el);
+          }
+        }
+      });
+    }catch(e){}
+  }
+
   function runAll(){
     if(document.hidden) return;
-    step1();step2();step3();step4();
+    step1();step2();step3();step4();step5();
   }
 
   if(document.readyState==='loading'){

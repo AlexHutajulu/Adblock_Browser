@@ -57,36 +57,36 @@ val GoogleRed = Color(0xFFEA4335)
 val GoogleYellow = Color(0xFFFBBC05)
 val GoogleGreen = Color(0xFF34A853)
 
-// Liquid Glass Optical Tokens (True Transparent Dynamic Island Crystal Glass)
-val GlassSurfaceLightTop = Color(0x80FFFFFF)      // 50% Pure Pearlescent Crystal Top
-val GlassSurfaceLightMid = Color(0x66F3F7FE)      // 40% Soft Ice-Blue Crystal Mid
-val GlassSurfaceLightBottom = Color(0x73E6EEF9)   // 45% Refracted Frost Base
-val GlassBorderLightHighlight = Color(0xE6FFFFFF) // Crisp Specular Top-Left Rim
-val GlassBorderLightShadow = Color(0x3864748B)    // Subtle Slate-Blue Bottom-Right Refraction
-val GlassBorderLightSubtle = Color(0x33747775)    // 20% bottom-right border
+// Liquid Glass Optical Tokens (High-Clarity Multi-Layer Prismatic Crystal Glass)
+val GlassSurfaceLightTop = Color(0xD9FFFFFF)      // 85% Pearlescent Crown Crystal Top
+val GlassSurfaceLightMid = Color(0xB8F4F8FF)      // 72% Soft Ice-Blue Optical Mid
+val GlassSurfaceLightBottom = Color(0xC7E6EFFC)   // 78% Refracted Frost Base
+val GlassBorderLightHighlight = Color(0xFAFFFFFF) // 98% Crisp Specular Top-Left Rim
+val GlassBorderLightShadow = Color(0x4764748B)    // Subtle Slate-Blue Bottom-Right Refraction
+val GlassBorderLightSubtle = Color(0x38747775)    // 22% bottom-right border
 
-val GlassActiveLightTop = Color(0x99E6F0FF)       // Active Lens Light Top
-val GlassActiveLightMid = Color(0x85D3E5FF)       // Active Lens Light Mid
-val GlassActiveLightBottom = Color(0x8CC2DBFF)    // Active Lens Light Bottom
+val GlassActiveLightTop = Color(0xE6EAF2FF)       // Active Lens Light Top
+val GlassActiveLightMid = Color(0xCCD4E6FF)       // Active Lens Light Mid
+val GlassActiveLightBottom = Color(0xD9C2DCFF)    // Active Lens Light Bottom
 
-val GlassSurfaceDarkTop = Color(0x5228303D)       // 32% Translucent Frosted Crystal Top (No opaque dark gray)
-val GlassSurfaceDarkMid = Color(0x3D1C222B)       // 24% Clear Deep Crystal Mid
-val GlassSurfaceDarkBottom = Color(0x4D141820)    // 30% Translucent Crystal Base
-val GlassBorderDarkHighlight = Color(0x99FFFFFF)  // 60% Sharp White Specular Rim
-val GlassBorderDarkShadow = Color(0x40FFFFFF)     // 25% Translucent Specular Lower Rim
-val GlassBorderDarkSubtle = Color(0x2EFFFFFF)     // 18% Subtle edge
+val GlassSurfaceDarkTop = Color(0x9E2B3547)       // Translucent Smoked Sapphire Crystal Top
+val GlassSurfaceDarkMid = Color(0x801C2330)       // Deep Optical Crystal Mid
+val GlassSurfaceDarkBottom = Color(0x8F161D29)    // Refracted Abyssal Crystal Base
+val GlassBorderDarkHighlight = Color(0xB8FFFFFF)  // 72% Sharp White Specular Rim
+val GlassBorderDarkShadow = Color(0x4D8AB4F8)     // 30% Icy Sapphire Lower Caustic Rim
+val GlassBorderDarkSubtle = Color(0x33FFFFFF)     // 20% Subtle edge
 
-val GlassActiveDarkTop = Color(0x80163B73)        // Active Lens Dark Top (Translucent)
-val GlassActiveDarkMid = Color(0x660F2A54)        // Active Lens Dark Mid (Translucent)
-val GlassActiveDarkBottom = Color(0x730A1E3D)     // Active Lens Dark Bottom (Translucent)
+val GlassActiveDarkTop = Color(0xAD1A4382)        // Active Lens Dark Top (Luminous Sapphire)
+val GlassActiveDarkMid = Color(0x94123163)        // Active Lens Dark Mid
+val GlassActiveDarkBottom = Color(0x9E0D254C)     // Active Lens Dark Bottom
 
-val LiquidActiveTint = Color(0x590B57D0)          // 35% Liquid Blue Active Lens
-val LiquidTouchGlow = Color(0x73FFFFFF)           // 45% Radial Touch Glow (Dark/Incognito)
-val LiquidTouchGlowLight = Color(0x4D0B57D0)      // 30% Icy Azure Radial Touch Glow (Light Mode)
+val LiquidActiveTint = Color(0x660B57D0)          // 40% Liquid Blue Active Lens
+val LiquidTouchGlow = Color(0x80FFFFFF)           // 50% Specular Touch Sheen (Dark/Incognito)
+val LiquidTouchGlowLight = Color(0x590B57D0)      // 35% Icy Azure Touch Sheen (Light Mode)
 
-val GlassSurfaceIncognitoTop = Color(0x54292C33)
-val GlassSurfaceIncognitoBottom = Color(0x421E2026)
-val GlassBorderIncognitoHighlight = Color(0x808AB4F8) // Subtle icy blue specular edge
+val GlassSurfaceIncognitoTop = Color(0x992D313B)
+val GlassSurfaceIncognitoBottom = Color(0x851F2229)
+val GlassBorderIncognitoHighlight = Color(0x998AB4F8) // Crisp icy blue specular edge
 
 val IosGlassLightBg = Color(0x78FFFFFF)
 val IosGlassDarkBg = Color(0x471A1D24)

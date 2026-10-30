@@ -988,6 +988,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ""
         }
 
+        if (safeInitialUrl.isNotEmpty() && com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(safeInitialUrl)) {
+            Log.w(TAG, "Auto-blocked online gambling (judol) new tab URL: $safeInitialUrl")
+            incrementBlockedStats(safeInitialUrl, "Popup")
+            return
+        }
+
         val newTab = BrowserTab(
             url = safeInitialUrl,
             title = if (isPrivate) "Private Tab" else "New Tab",
@@ -996,6 +1002,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _tabs.update { it + newTab }
         _activeTabId.update { newTab.id }
         _showTabsDialog.update { false }
+
+        if (_backgroundPlaybackEnabled.value) {
+            webViewPool.values.forEach { wv ->
+                try {
+                    wv.onResume()
+                    wv.resumeTimers()
+                } catch (_: Exception) {}
+            }
+        }
 
         if (safeInitialUrl.isNotEmpty() && safeInitialUrl != "about:blank") {
             val host = com.example.manager.SecurityGuardEngine.extractHost(safeInitialUrl)
@@ -1662,6 +1677,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun resetToDefaults() {
         setAdBlockEnabled(true)
         setTrackerBlockEnabled(true)
+        setOpenPopupsInNewTab(true)
+        setBackgroundPlaybackEnabled(true)
+        setLiquidGlassEnabled(true)
         setSearchEngine("Google")
         setTheme(AppTheme.SYSTEM)
         setAppLanguage(com.example.manager.AppLanguage.INDONESIAN)

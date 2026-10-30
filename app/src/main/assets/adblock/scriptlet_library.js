@@ -5,7 +5,7 @@
  * SEBELUM pemanggilan per-aturan dari ScriptletEngine.kt
  * (window.__browserScriptlets['nama'](args...)).
  *
- * Subset yang diimplementasikan, mengikuti semantik uBlock/AdGuard:
+ * Subset yang diimplementasikan secara mandiri:
  *  - set-constant: kunci properti window ke nilai konstan.
  *  - abort-on-property-read / abort-on-property-write: lempar saat
  *    properti dibaca/ditulis (cara standar memutus skrip anti-adblock

@@ -53,7 +53,7 @@ object CosmeticFilterInjector {
         ".container", "#container", ".content", "#content"
     )
 
-    // Forbidden substrings in EasyList cosmetic selectors that could hide legitimate UI elements or inject rules
+    // Forbidden substrings in cosmetic selectors that could hide legitimate UI elements or inject rules
     private val DANGEROUS_SELECTOR_TOKENS = listOf(
         "body", "html", "main", "header", "footer", "nav", "article", "section",
         "#app", "#root", "#main", "#content", ".content", ".container", ".wrapper",
@@ -159,17 +159,9 @@ object CosmeticFilterInjector {
             return
         }
 
-        val isAggressive = com.yourbrowser.adblock.CleanAdEngine.currentMode == com.yourbrowser.adblock.AdblockMode.AGGRESSIVE
-        if (!isAggressive && customSelectors.isEmpty()) {
-            // Solusi T3 & T5: Jangan injeksi filter kosmetik generik di mode BALANCED
-            return
-        }
-
         val rules = FilterListManager.getCachedRules()
         val safeSelectors = LinkedHashSet<String>()
-        if (isAggressive) {
-            safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS.filter { isSafeCssSelector(it) })
-        }
+        safeSelectors.addAll(SAFE_BUILT_IN_SELECTORS.filter { isSafeCssSelector(it) })
 
         customSelectors.forEach { sel ->
             if (AbpRuleEngine.isSafeCosmeticSelector(sel) && isSafeCssSelector(sel)) {
@@ -177,15 +169,13 @@ object CosmeticFilterInjector {
             }
         }
 
-        if (isAggressive) {
-            // Per-domain cosmetic selectors from AbpRuleEngine (filtered first, then capped at MAX_COSMETIC_SELECTORS_PER_HOST)
-            rules?.ruleSet?.cosmetic?.selectorsFor(host)
-                ?.asSequence()
-                ?.filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
-                ?.filter { isSafeCssSelector(it) }
-                ?.take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
-                ?.forEach { safeSelectors.add(it.trim()) }
-        }
+        // Per-domain cosmetic selectors from AbpRuleEngine (now active in both BALANCED and AGGRESSIVE modes)
+        rules?.ruleSet?.cosmetic?.selectorsFor(host)
+            ?.asSequence()
+            ?.filter { AbpRuleEngine.isSafeCosmeticSelector(it) }
+            ?.filter { isSafeCssSelector(it) }
+            ?.take(AbpRuleEngine.MAX_COSMETIC_SELECTORS_PER_HOST)
+            ?.forEach { safeSelectors.add(it.trim()) }
 
         if (safeSelectors.isEmpty()) return
 

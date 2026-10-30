@@ -300,8 +300,23 @@ fun CustomWebView(
                             }
                         }
 
+                        override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+                            val currentTabState = viewModel.tabs.value.find { it.id == tab.id }
+                            if (!hasWindowFocus &&
+                                (viewModel.backgroundPlaybackEnabled.value || currentTabState?.isPlayingAudio == true)
+                            ) {
+                                // Prevent Chromium from pausing YouTube / HTML5 video when switching tabs or minimizing app
+                                super.onWindowFocusChanged(true)
+                            } else {
+                                super.onWindowFocusChanged(hasWindowFocus)
+                            }
+                        }
+
                         @SuppressLint("ClickableViewAccessibility")
                         override fun onTouchEvent(event: android.view.MotionEvent?): Boolean {
+                            if (viewModel.activeTabId.value != tab.id) {
+                                return false
+                            }
                             if (event != null) {
                                 val thresholdPx = 128f * resources.displayMetrics.density
                                 when (event.actionMasked) {
@@ -476,6 +491,20 @@ fun CustomWebView(
                                 return
                             }
 
+                            // Auto-block online gambling (Judol) popups/new-tab links
+                            if (com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(trimmed)) {
+                                Log.w(TAG, "Blocked online gambling (judol) popup via openUrlInNewTab: $trimmed")
+                                mainHandler.post {
+                                    viewModel.incrementBlockedStats(trimmed, "Popup")
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Pop-up situs judol diblokir otomatis",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                return
+                            }
+
                             // Anti-ad-popup: block automated popunder ad redirects
                             val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
                             val blockedByAdGuard = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
@@ -492,7 +521,11 @@ fun CustomWebView(
                             lastNewTabTimestamp = now
 
                             mainHandler.post {
-                                viewModel.addNewTab(trimmed, tab.isPrivate)
+                                if (viewModel.openPopupsInNewTab.value) {
+                                    viewModel.addNewTab(trimmed, tab.isPrivate)
+                                } else {
+                                    this@apply.loadUrl(trimmed, mapOf("DNT" to "1"))
+                                }
                             }
                         }
 
@@ -634,8 +667,8 @@ fun CustomWebView(
                         }
 
                         fun getCosmeticCss(host: String): String {
-                            // Solusi T3 & T5: Filter kosmetik generik hanya aktif di AGGRESSIVE mode
-                            if (viewModel.adBlockMode.value != com.example.manager.AdBlockMode.AGGRESSIVE) return ""
+                            // Filter kosmetik kini aktif di mode BALANCED (eks-Aggressive) dan AGGRESSIVE
+                            if (viewModel.adBlockMode.value == com.example.manager.AdBlockMode.OFF) return ""
                             val cleanHost = host.trim().lowercase().removePrefix("www.")
                             if (cleanHost.isBlank()) return ""
                             val isWhitelisted = viewModel.adBlockDisabledDomains.value.any { d ->
@@ -678,6 +711,15 @@ fun CustomWebView(
                     }
                     // Must come after the bridge shim: document-start scripts run in insertion order.
                     com.example.manager.DocumentStartCosmetics.install(this)
+                    if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                        try {
+                            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                                this,
+                                buildBackgroundPlaybackDocStartScript(),
+                                setOf("*")
+                            )
+                        } catch (_: Exception) {}
+                    }
 
                     // Only attach DevTools bridge when Inspect Tools is explicitly enabled by user
                     if (viewModel.inspectToolsEnabled.value) {
@@ -769,6 +811,9 @@ fun CustomWebView(
                                         com.example.manager.SecurityGuardEngine.buildIncognitoStorageIsolationScript(),
                                         null
                                     )
+                                }
+                                if (viewModel.backgroundPlaybackEnabled.value) {
+                                    view.evaluateJavascript(buildBackgroundPlaybackDocStartScript(), null)
                                 }
                                 alexShieldV5Client.onPageStarted(view, url, favicon)
                                 com.example.manager.SecurityGuardEngine.injectClientSecurityScript(
@@ -896,19 +941,11 @@ fun CustomWebView(
                             viewModel.handlePageLoadComplete(title, url, tab.isPrivate)
                             
                             // Inject middle-click handler, background Page Visibility spoofer, HyperIsland media metadata bridge, and sync mute state
+                            if (viewModel.backgroundPlaybackEnabled.value) {
+                                view?.evaluateJavascript(buildBackgroundPlaybackDocStartScript(), null)
+                            }
                             view?.evaluateJavascript("""
                                 (function() {
-                                    if (${viewModel.backgroundPlaybackEnabled.value} && !window.__alexBgVisibilitySpoofed) {
-                                        window.__alexBgVisibilitySpoofed = true;
-                                        try {
-                                            Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
-                                            Object.defineProperty(document, 'webkitHidden', { get: function() { return false; }, configurable: true });
-                                            Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
-                                            window.addEventListener('visibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
-                                            document.addEventListener('visibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
-                                            document.addEventListener('webkitvisibilitychange', function(e) { e.stopImmediatePropagation(); }, true);
-                                        } catch(e) {}
-                                    }
                                     if (!window.__middleClickInjected) {
                                         window.__middleClickInjected = true;
                                         document.addEventListener('auxclick', function(e) {
@@ -1035,9 +1072,7 @@ fun CustomWebView(
                             if (adBlockMode != com.example.manager.AdBlockMode.OFF && !isAdBlockDisabledForSite && view != null) {
                                 // v5 page cleanup: aggressive CSS, anti-popup, anti-beacon, safe YouTube cleanup.
                                 alexShieldV5Client.onPageFinished(view, url)
-                                if (adBlockMode == com.example.manager.AdBlockMode.AGGRESSIVE &&
-                                    !androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
-                                ) {
+                                if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
                                     com.example.manager.CosmeticFilterInjector.inject(view, pageUrl = url)
                                 }
                                 com.yourbrowser.adblock.AdblockLogger.d("AlexShield", alexShieldV5Client.getAggressiveMetrics().toString())
@@ -1312,6 +1347,25 @@ fun CustomWebView(
                                 val latestTab = viewModel.tabs.value.find { it.id == tab.id }
                                 val mainPageUrl = latestTab?.url ?: ""
                                 val currentMode = viewModel.adBlockMode.value
+
+                                // Auto-block online gambling (Judol) redirects or popup tabs
+                                if (!isTrustedHost && com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(url)) {
+                                    val isNewPopupTab = view?.canGoBack() != true && viewModel.tabs.value.size > 1 && mainPageUrl != url
+                                    if (!hasGesture || isNewPopupTab || mainPageUrl.isNotBlank()) {
+                                        Log.w(TAG, "Auto-blocked online gambling (judol) navigation: $url")
+                                        view?.stopLoading()
+                                        viewModel.incrementBlockedStats(url, "Popup")
+                                        android.widget.Toast.makeText(
+                                            view?.context ?: context,
+                                            "Situs judol diblokir otomatis",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        if (isNewPopupTab) {
+                                            viewModel.removeTab(tab.id)
+                                        }
+                                        return true
+                                    }
+                                }
                                 
                                 if (currentMode != com.example.manager.AdBlockMode.OFF && (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value)) {
                                     syncAlexShieldV5State()
@@ -1373,14 +1427,21 @@ fun CustomWebView(
                                                 )
                                             }
                                             val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
+                                            val isJudolPopup = !isTrustedHost && com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(finalPopupUrl)
                                             val blockedByAdGuard = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
                                                 (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
                                                 alexShieldV5Client.shouldBlockNavigationRedirect(finalPopupUrl, mainPageUrl, isUserGesture)
 
-                                            if (blockedByAdGuard) {
+                                            if (isJudolPopup) {
+                                                Log.w(TAG, "Auto-blocked online gambling (judol) popup tab: $finalPopupUrl")
+                                                viewModel.incrementBlockedStats(finalPopupUrl, "Popup")
+                                                android.widget.Toast.makeText(
+                                                    view.context,
+                                                    "Pop-up situs judol diblokir otomatis",
+                                                    android.widget.Toast.LENGTH_SHORT
+                                                ).show()
+                                            } else if (blockedByAdGuard) {
                                                 Log.w(TAG, "Blocked ad popup redirect: $finalPopupUrl")
-                                            } else if (viewModel.openPopupsInNewTab.value) {
-                                                viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
                                             } else {
                                                 val threat = com.example.manager.SecurityGuardEngine.inspectUrlThreat(
                                                     url = finalPopupUrl,
@@ -1390,6 +1451,8 @@ fun CustomWebView(
                                                 )
                                                 if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
                                                     viewModel.reportTabSecurityThreat(tab.id, threat)
+                                                } else if (viewModel.openPopupsInNewTab.value) {
+                                                    viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
                                                 } else {
                                                     view.loadUrl(finalPopupUrl, mapOf("DNT" to "1"))
                                                 }
@@ -1779,7 +1842,12 @@ fun CustomWebView(
         update = { view ->
             val webView = (view as? WebView) ?: webViewPool[tab.id] ?: return@AndroidView
             (webView.context as? android.content.MutableContextWrapper)?.baseContext = context
-            val expectedVisibility = if (isVisibleTab) android.view.View.VISIBLE else android.view.View.INVISIBLE
+            val keepRendererActiveInBg = viewModel.backgroundPlaybackEnabled.value || tab.isPlayingAudio
+            val expectedVisibility = if (isVisibleTab || keepRendererActiveInBg) {
+                android.view.View.VISIBLE
+            } else {
+                android.view.View.INVISIBLE
+            }
             if (webView.visibility != expectedVisibility) {
                 webView.visibility = expectedVisibility
             }
@@ -2027,6 +2095,111 @@ private tailrec fun android.content.Context.findHostActivity(): android.app.Acti
     is android.content.ContextWrapper -> baseContext?.findHostActivity()
     else -> null
 }
+
+internal fun buildBackgroundPlaybackDocStartScript(): String = """
+(function() {
+    if (window.__alexBgVisibilitySpoofed) return;
+    window.__alexBgVisibilitySpoofed = true;
+    try {
+        var visibleDesc = { get: function() { return 'visible'; }, configurable: true };
+        var hiddenDesc = { get: function() { return false; }, configurable: true };
+        Object.defineProperty(document, 'visibilityState', visibleDesc);
+        Object.defineProperty(document, 'webkitVisibilityState', visibleDesc);
+        Object.defineProperty(document, 'hidden', hiddenDesc);
+        Object.defineProperty(document, 'webkitHidden', hiddenDesc);
+        if (typeof Document !== 'undefined' && Document.prototype) {
+            try {
+                Object.defineProperty(Document.prototype, 'visibilityState', visibleDesc);
+                Object.defineProperty(Document.prototype, 'webkitVisibilityState', visibleDesc);
+                Object.defineProperty(Document.prototype, 'hidden', hiddenDesc);
+                Object.defineProperty(Document.prototype, 'webkitHidden', hiddenDesc);
+            } catch (e) {}
+        }
+        document.hasFocus = function() { return true; };
+        if (typeof Document !== 'undefined' && Document.prototype) {
+            try { Document.prototype.hasFocus = function() { return true; }; } catch (e) {}
+        }
+
+        var blockBgEvent = function(e) {
+            if (e) {
+                e.stopImmediatePropagation();
+                e.stopPropagation();
+            }
+        };
+        ['visibilitychange', 'webkitvisibilitychange', 'mozvisibilitychange', 'pagehide', 'freeze'].forEach(function(evt) {
+            window.addEventListener(evt, blockBgEvent, true);
+            document.addEventListener(evt, blockBgEvent, true);
+        });
+
+        window.addEventListener('blur', function(e) {
+            if (!e || e.target === window || e.target === document) {
+                e.stopImmediatePropagation();
+            }
+        }, true);
+
+        var lastUserActionTs = 0;
+        var markUserAction = function() {
+            lastUserActionTs = Date.now();
+            try { window._lact = Date.now(); } catch (e) {}
+        };
+        ['pointerdown', 'touchstart', 'mousedown', 'keydown', 'click'].forEach(function(evt) {
+            window.addEventListener(evt, markUserAction, true);
+        });
+
+        // Keep YouTube activity timer alive in background tabs / minimized app
+        if (location.hostname.indexOf('youtube.com') !== -1 || location.hostname.indexOf('youtu.be') !== -1) {
+            setInterval(function() {
+                try { window._lact = Date.now(); } catch (e) {}
+            }, 25000);
+        }
+
+        // Prevent automatic pause when switching tabs or minimizing app
+        document.addEventListener('play', function(e) {
+            var v = e && e.target;
+            if (v && (v.tagName === 'VIDEO' || v.tagName === 'AUDIO')) {
+                v.__alexKeepPlaying = true;
+            }
+        }, true);
+        document.addEventListener('playing', function(e) {
+            var v = e && e.target;
+            if (v && (v.tagName === 'VIDEO' || v.tagName === 'AUDIO')) {
+                v.__alexKeepPlaying = true;
+            }
+        }, true);
+        document.addEventListener('ended', function(e) {
+            var v = e && e.target;
+            if (v && (v.tagName === 'VIDEO' || v.tagName === 'AUDIO')) {
+                v.__alexKeepPlaying = false;
+            }
+        }, true);
+        document.addEventListener('pause', function(e) {
+            var v = e && e.target;
+            if (!v || (v.tagName !== 'VIDEO' && v.tagName !== 'AUDIO')) return;
+            if (v.ended) {
+                v.__alexKeepPlaying = false;
+                return;
+            }
+            var now = Date.now();
+            var isUserInitiated = (now - lastUserActionTs) < 850 || window.__alexExplicitMediaPause === true;
+            if (isUserInitiated) {
+                v.__alexKeepPlaying = false;
+                window.__alexExplicitMediaPause = false;
+                return;
+            }
+            if (v.__alexKeepPlaying && v.readyState >= 2) {
+                setTimeout(function() {
+                    try {
+                        if (v.paused && !v.ended && v.__alexKeepPlaying) {
+                            var p = v.play();
+                            if (p && typeof p.catch === 'function') p.catch(function(){});
+                        }
+                    } catch (err) {}
+                }, 60);
+            }
+        }, true);
+    } catch(e) {}
+})();
+""".trimIndent()
 
 fun WebView.safeDestroy() {
     try {
