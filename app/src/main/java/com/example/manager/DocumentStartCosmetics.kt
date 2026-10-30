@@ -9,9 +9,10 @@ object DocumentStartCosmetics {
     private const val SCRIPT = """
 (function() {
     try {
-        if (!window.AlexBrowserNative || !window.AlexBrowserNative.getCosmeticCss) return;
+        // Async via NativeMessageBridge (audit H2); native side uses the verified origin host.
+        if (!window.AlexBrowserNative || !window.AlexBrowserNative.getCosmeticCssAsync) return;
         var host = location.hostname;
-        var css = window.AlexBrowserNative.getCosmeticCss(host);
+        window.AlexBrowserNative.getCosmeticCssAsync(host, function(css) {
         if (css && css.length > 0) {
             var inject = function() {
                 var target = document.head || document.documentElement;
@@ -27,6 +28,7 @@ object DocumentStartCosmetics {
                 document.addEventListener('DOMContentLoaded', inject, { once: true });
             }
         }
+        });
     } catch(e) {}
 })();
     """

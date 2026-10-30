@@ -727,6 +727,10 @@ class AppDownloadManager(
 
     companion object {
         internal const val MAX_DATA_URI_LENGTH = 25 * 1024 * 1024 // 25 MB max character length for data: URIs
+        private val BIDI_OVERRIDE_REGEX = Regex("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]")
+        private val UNSAFE_FILENAME_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\x7F]")
+        private val MULTI_DOT_REGEX = Regex("\\.\\.+")
+        private val WHITESPACE_REGEX = Regex("\\s+")
 
         internal fun isSafeDownloadUrl(url: String, resolveDns: Boolean = false): Boolean {
             val trimmed = url.trim()
@@ -783,10 +787,10 @@ class AppDownloadManager(
             }
             val cleanName = decoded
                 // Strip Unicode bidirectional override chars (RLO/LRO/Bidi isolates) to prevent extension spoofing
-                .replace(Regex("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]"), "")
-                .replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\x7F]"), "_")
-                .replace(Regex("\\.\\.+"), "_")
-                .replace(Regex("\\s+"), " ")
+                .replace(BIDI_OVERRIDE_REGEX, "")
+                .replace(UNSAFE_FILENAME_CHARS_REGEX, "_")
+                .replace(MULTI_DOT_REGEX, "_")
+                .replace(WHITESPACE_REGEX, " ")
                 .trim()
                 .trim('.')
                 .trim()

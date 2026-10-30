@@ -750,7 +750,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         val cleanSel = selector.trim().take(160)
         if (!isValidZapperSelector(cleanSel)) return false
-        val cleanTag = tag.trim().take(32).replace(Regex("[^a-zA-Z0-9_-]"), "")
+        val cleanTag = tag.trim().take(32).replace(ZAPPER_TAG_SANITIZE_REGEX, "")
         _zapperPreviewSelector.value = cleanSel
         _zapperPreviewTag.value = cleanTag
         return true
@@ -760,7 +760,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val cleanSel = selector.trim().take(160)
         if (!isValidZapperSelector(cleanSel)) return
         _zapperPreviewSelector.value = cleanSel
-        _zapperPreviewTag.value = tag.trim().take(32).replace(Regex("[^a-zA-Z0-9_-]"), "")
+        _zapperPreviewTag.value = tag.trim().take(32).replace(ZAPPER_TAG_SANITIZE_REGEX, "")
     }
 
     fun getCustomZapperRulesForHost(host: String): List<String> {
@@ -2115,6 +2115,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         const val MAX_CONSOLE_ENTRIES_PER_TAB = 200
         const val MAX_CONSOLE_ENTRIES_PER_SECOND = 60
         const val MAX_ZAPPER_RULES_PER_HOST = 100
+        private val ZAPPER_TAG_SANITIZE_REGEX = Regex("[^a-zA-Z0-9_-]")
 
         fun isValidZapperSelector(raw: String): Boolean {
             val trimmed = raw.trim()

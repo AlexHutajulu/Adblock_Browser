@@ -87,6 +87,12 @@ object AdGuardDnsFilter {
         }
     }
 
+    internal fun getCachedForTest(rawHost: String): Boolean? {
+        val host = SiteDomainPolicy.normalizeHost(rawHost)
+        if (host.isEmpty()) return null
+        return synchronized(verdictCache) { verdictCache.get(host) }
+    }
+
     /**
      * Dipanggil dari jalur panas shouldInterceptRequest:
      * - Bila host sudah ada di cache -> kembalikan hasil langsung (non-blocking).

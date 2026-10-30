@@ -44,8 +44,20 @@ import java.util.concurrent.Executors
  */
 object BackgroundMediaController {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val artworkExecutor = Executors.newCachedThreadPool()
+    // Bounded pool: artwork requests are triggered by untrusted page JS.
+    private val artworkExecutor = Executors.newFixedThreadPool(2)
     private val inFlightUrls = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var lastArtworkFetchTimestamp = 0L
+
+    private const val ARTWORK_TARGET_SIZE = 256
+    private const val MAX_ARTWORK_URL_LENGTH = 2048
+    private const val MAX_ARTWORK_BYTES = 2 * 1024 * 1024
+    private const val MAX_ARTWORK_DIMENSION = 8192
+    private const val MAX_ARTWORK_REDIRECTS = 3
+    private const val MAX_IN_FLIGHT_ARTWORK = 4
+    private const val MIN_ARTWORK_FETCH_INTERVAL_MS = 500L
+    private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+    private val YOUTUBE_PATH_ID_REGEX = Regex("/(?:shorts|embed|live|v)/([a-zA-Z0-9_-]{11})")
 
     private val artworkCache = object : LruCache<String, Bitmap>(24) {}
 
@@ -83,23 +95,70 @@ object BackgroundMediaController {
         onLoaded: (Bitmap) -> Unit
     ) {
         val trimmed = artworkUrl.trim()
-        if (trimmed.isBlank() || (!trimmed.startsWith("https://", ignoreCase = true) && !trimmed.startsWith("http://", ignoreCase = true))) {
-            return
-        }
+        // SECURITY FIX (audit H1): artworkUrl comes from untrusted page JS.
+        // Only allow HTTPS, bounded length, and never local/private hosts.
+        if (!isAcceptableArtworkUrl(trimmed)) return
         getCachedArtwork(trimmed)?.let {
             onLoaded(it)
             return
         }
+        val now = System.currentTimeMillis()
+        if (now - lastArtworkFetchTimestamp < MIN_ARTWORK_FETCH_INTERVAL_MS) return
+        if (inFlightUrls.size >= MAX_IN_FLIGHT_ARTWORK) return
         if (!inFlightUrls.add(trimmed)) return
+        lastArtworkFetchTimestamp = now
 
         artworkExecutor.execute {
-            var connection: HttpURLConnection? = null
             try {
-                val url = URL(trimmed)
-                connection = (url.openConnection() as? HttpURLConnection)?.apply {
+                val bytes = downloadArtworkBytes(trimmed) ?: return@execute
+                val rawBitmap = decodeBoundedArtwork(bytes, ARTWORK_TARGET_SIZE) ?: return@execute
+                if (rawBitmap.width <= 0 || rawBitmap.height <= 0) return@execute
+                val framed = createRoundedCenterCropArtwork(rawBitmap, ARTWORK_TARGET_SIZE)
+                if (framed !== rawBitmap) {
+                    rawBitmap.recycle()
+                }
+                synchronized(artworkCache) {
+                    artworkCache.put(trimmed, framed)
+                }
+                mainHandler.post {
+                    onLoaded(framed)
+                }
+            } catch (e: Exception) {
+                Log.d("BackgroundMediaCtrl", "Artwork download skipped: ${e.javaClass.simpleName}")
+            } catch (oom: OutOfMemoryError) {
+                Log.w("BackgroundMediaCtrl", "Artwork decode aborted: out of memory")
+            } finally {
+                inFlightUrls.remove(trimmed)
+            }
+        }
+    }
+
+    internal fun isAcceptableArtworkUrl(url: String): Boolean {
+        if (url.isBlank() || url.length > MAX_ARTWORK_URL_LENGTH) return false
+        if (!url.startsWith("https://", ignoreCase = true)) return false
+        // Static check only (no DNS) so this is safe to call on the main thread.
+        return AppDownloadManager.isSafeDownloadUrl(url, resolveDns = false)
+    }
+
+    /**
+     * Downloads artwork with SSRF protection: every hop (including redirects)
+     * is re-validated with DNS resolution against private/loopback ranges,
+     * redirects are followed manually, and the body size is hard-capped.
+     */
+    private fun downloadArtworkBytes(initialUrl: String): ByteArray? {
+        var currentUrl = initialUrl
+        var redirects = 0
+        while (true) {
+            if (!AppDownloadManager.isSafeDownloadUrl(currentUrl, resolveDns = true)) return null
+            if (!currentUrl.startsWith("https://", ignoreCase = true)) return null
+            val url = URL(currentUrl)
+            val connection = (url.openConnection() as? HttpURLConnection) ?: return null
+            try {
+                connection.apply {
                     connectTimeout = 6000
                     readTimeout = 6000
-                    instanceFollowRedirects = true
+                    instanceFollowRedirects = false
+                    useCaches = false
                     requestMethod = "GET"
                     setRequestProperty(
                         "User-Agent",
@@ -107,33 +166,67 @@ object BackgroundMediaController {
                     )
                     setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
                 }
-                val code = connection?.responseCode ?: -1
-                if (code in 200..299) {
-                    val rawBitmap = connection?.inputStream?.use { stream ->
-                        BitmapFactory.decodeStream(stream)
-                    }
-                    if (rawBitmap != null && rawBitmap.width > 0 && rawBitmap.height > 0) {
-                        val framed = createRoundedCenterCropArtwork(rawBitmap, 256)
-                        if (framed !== rawBitmap) {
-                            rawBitmap.recycle()
-                        }
-                        synchronized(artworkCache) {
-                            artworkCache.put(trimmed, framed)
-                        }
-                        mainHandler.post {
-                            onLoaded(framed)
-                        }
-                    }
+                val code = connection.responseCode
+                if (code in REDIRECT_CODES) {
+                    val location = connection.getHeaderField("Location")
+                    if (location.isNullOrBlank() || ++redirects > MAX_ARTWORK_REDIRECTS) return null
+                    val nextUrl = URL(url, location).toString()
+                    if (!AppDownloadManager.isSafeRedirectHop(currentUrl, nextUrl, resolveDns = true)) return null
+                    currentUrl = nextUrl
+                    continue
                 }
-            } catch (e: Exception) {
-                Log.d("BackgroundMediaCtrl", "Artwork download skipped for $trimmed: ${e.message}")
+                if (code !in 200..299) return null
+                val declaredLength = connection.contentLengthLong
+                if (declaredLength > MAX_ARTWORK_BYTES) return null
+                val contentType = connection.contentType?.lowercase().orEmpty()
+                if (contentType.isNotEmpty() && !contentType.startsWith("image/") &&
+                    !contentType.startsWith("application/octet-stream")
+                ) {
+                    return null
+                }
+                return connection.inputStream.use { readBounded(it, MAX_ARTWORK_BYTES) }
             } finally {
-                inFlightUrls.remove(trimmed)
                 try {
-                    connection?.disconnect()
+                    connection.disconnect()
                 } catch (_: Exception) {}
             }
         }
+    }
+
+    private fun readBounded(stream: java.io.InputStream, maxBytes: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val read = stream.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > maxBytes) return null
+            out.write(buffer, 0, read)
+        }
+        return out.toByteArray()
+    }
+
+    /**
+     * Two-pass decode: read bounds first, reject absurd dimensions
+     * (decompression bombs), then subsample to roughly [targetSize].
+     */
+    internal fun decodeBoundedArtwork(bytes: ByteArray, targetSize: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val w = bounds.outWidth
+        val h = bounds.outHeight
+        if (w <= 0 || h <= 0) return null
+        if (w > MAX_ARTWORK_DIMENSION || h > MAX_ARTWORK_DIMENSION) return null
+        var sample = 1
+        while (w / (sample * 2) >= targetSize && h / (sample * 2) >= targetSize) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
 
     private fun createRoundedCenterCropArtwork(src: Bitmap, targetSize: Int): Bitmap {
@@ -252,7 +345,9 @@ object BackgroundMediaController {
     private fun resolveBestArtworkUrl(rawArtworkUrl: String, pageUrl: String?, artistHost: String): String {
         val cleanArt = rawArtworkUrl.trim()
         if (cleanArt.startsWith("https://", ignoreCase = true) || cleanArt.startsWith("http://", ignoreCase = true)) {
-            return cleanArt
+            // SECURITY FIX (audit H1): drop page-supplied URLs pointing to
+            // local/private hosts or non-HTTPS so they are never fetched/stored.
+            if (isAcceptableArtworkUrl(cleanArt)) return cleanArt
         }
         val candidatePage = pageUrl?.trim().orEmpty()
         if (candidatePage.contains("youtube.com", ignoreCase = true) || candidatePage.contains("youtu.be", ignoreCase = true)) {
@@ -272,7 +367,7 @@ object BackgroundMediaController {
                 return vParam
             }
             val path = uri.path.orEmpty()
-            val match = Regex("/(?:shorts|embed|live|v)/([a-zA-Z0-9_-]{11})").find(path)
+            val match = YOUTUBE_PATH_ID_REGEX.find(path)
             if (match != null) {
                 return match.groupValues[1]
             }

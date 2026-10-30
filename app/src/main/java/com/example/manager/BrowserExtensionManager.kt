@@ -584,12 +584,11 @@ object BrowserExtensionManager {
         var runAt = ExtensionRunAt.DOCUMENT_END
 
         // Parse ==UserScript== header block if present
-        val headerRegex = Regex("""//\s*==UserScript==([\s\S]*?)//\s*==/UserScript==""")
-        val headerMatch = headerRegex.find(code)
+        val headerMatch = USERSCRIPT_HEADER_REGEX.find(code)
         if (headerMatch != null) {
             val headerBlock = headerMatch.groupValues[1]
             headerBlock.lines().forEach { line ->
-                val metaMatch = Regex("""^//\s*@(\S+)\s+(.+)$""").find(line.trim())
+                val metaMatch = USERSCRIPT_META_LINE_REGEX.find(line.trim())
                 if (metaMatch != null) {
                     val key = metaMatch.groupValues[1].lowercase(Locale.US)
                     val value = metaMatch.groupValues[2].trim()
@@ -930,6 +929,9 @@ object BrowserExtensionManager {
     private const val MAX_SINGLE_ENTRY_BYTES = 1_500_000
     private const val MAX_TOTAL_ARCHIVE_BYTES = 4_500_000
     private const val MAX_RAW_EXTENSION_BYTES = 2_000_000
+    private val USERSCRIPT_HEADER_REGEX = Regex("""//\s*==UserScript==([\s\S]*?)//\s*==/UserScript==""")
+    private val USERSCRIPT_META_LINE_REGEX = Regex("""^//\s*@(\S+)\s+(.+)$""")
+    private val STYLE_ID_SANITIZE_REGEX = Regex("[^a-zA-Z0-9_]")
 
     internal fun sanitizeZipEntryName(rawName: String): String? {
         if (rawName.isBlank() || rawName.contains('\u0000')) return null
@@ -1332,7 +1334,7 @@ object BrowserExtensionManager {
                     extension.cssCode.toByteArray(Charsets.UTF_8),
                     Base64.NO_WRAP
                 )
-                val styleId = "__ext_css_${extension.id.replace(Regex("[^a-zA-Z0-9_]"), "_")}"
+                val styleId = "__ext_css_${extension.id.replace(STYLE_ID_SANITIZE_REGEX, "_")}"
                 val cssInjector = """
                     (function() {
                         try {

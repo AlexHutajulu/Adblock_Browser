@@ -23,6 +23,9 @@
     public *;
 }
 
+-keep class com.example.ui.components.NativeMessageBridge { *; }
+-keep class com.example.ui.components.NativeMessageBridge$* { *; }
+
 # Keep Room Database entities and DAOs
 -keep class * extends androidx.room.RoomDatabase
 -keep @androidx.room.Entity class *

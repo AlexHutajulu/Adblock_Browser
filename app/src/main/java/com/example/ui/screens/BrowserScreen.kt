@@ -350,8 +350,7 @@ fun BrowserScreen(
     val pendingPermissionRequest by viewModel.pendingPermissionRequest.collectAsState()
 
     // Pure Chrome M3 Site Permission Request Dialog
-    if (pendingPermissionRequest != null) {
-        val request = pendingPermissionRequest!!
+    pendingPermissionRequest?.let { request ->
         val isIncognitoReq = request.isIncognito || activeTab.isPrivate
         AlertDialog(
             onDismissRequest = {
@@ -438,8 +437,7 @@ fun BrowserScreen(
     }
 
     val intentToOpen by viewModel.intentToOpen.collectAsState()
-    if (intentToOpen != null) {
-        val url = intentToOpen!!
+    intentToOpen?.let { url ->
         AlertDialog(
             onDismissRequest = { viewModel.clearIntentToOpen() },
             title = { Text("Buka di aplikasi eksternal?", fontWeight = FontWeight.SemiBold) },

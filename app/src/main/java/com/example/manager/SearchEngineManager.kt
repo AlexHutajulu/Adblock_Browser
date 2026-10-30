@@ -68,6 +68,12 @@ enum class SearchEngine(
 }
 
 object SearchEngineManager {
+    private val IPV4_PATTERN =
+        Regex("^(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?::\\d+)?(/.*)?$")
+    private val URL_PATTERN =
+        Regex("^(?i)([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(:\\d+)?(/.*)?$")
+    private val WHITESPACE_REGEX = Regex("\\s+")
+
     fun parseUrlOrQuery(input: String, selectedEngine: SearchEngine): String {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return selectedEngine.homeUrl
@@ -79,17 +85,16 @@ object SearchEngineManager {
                 trimmed.startsWith("https://", ignoreCase = true)
         if (hasSafeWebScheme) return trimmed
 
-        // Localhost and IPv4 address check (e.g. 192.168.1.1, 10.0.0.1, 127.0.0.1:8080)
+        // Localhost and IPv4 address check (e.g. 192.168.1.1, 10.0.0.1, 127.0.0.1:8080).
+        // Use https:// because network_security_config enforces cleartextTrafficPermitted="false".
         val isLocalhost = trimmed.startsWith("localhost", ignoreCase = true)
-        val ipV4Pattern = "^(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?::\\d+)?(?:/.*)?$".toRegex()
-        val isIp = ipV4Pattern.matches(trimmed)
+        val isIp = IPV4_PATTERN.matches(trimmed)
         if (isLocalhost || isIp) {
-            return "http://$trimmed"
+            return "https://$trimmed"
         }
 
         // Standard domain matching (e.g. google.com, wikipedia.org/wiki, github.com)
-        val urlPattern = "^(?i)([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(:\\d+)?(/.*)?$".toRegex()
-        if (urlPattern.matches(trimmed)) {
+        if (URL_PATTERN.matches(trimmed)) {
             return "https://$trimmed"
         }
 
@@ -99,6 +104,6 @@ object SearchEngineManager {
     }
 
     private fun trimDoubleSpaces(str: String): String {
-        return str.replace("\\s+".toRegex(), " ")
+        return str.replace(WHITESPACE_REGEX, " ")
     }
 }

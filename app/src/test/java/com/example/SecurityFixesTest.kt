@@ -1,8 +1,13 @@
 package com.example
 
+import com.example.manager.BackgroundMediaController
 import com.example.manager.CertificatePinning
+import com.example.manager.SearchEngine
+import com.example.manager.SearchEngineManager
+import com.example.ui.components.NativeMessageBridge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -127,6 +132,147 @@ class SecurityFixesTest {
         assertFalse(
             "Hard-coded Chrome/124 UA must be gone",
             source.contains("Chrome/124.0.0.0")
+        )
+    }
+
+    @Test
+    fun testH1ArtworkUrlValidationBlocksLocalAndNonHttps() {
+        assertTrue(
+            "Valid public HTTPS artwork URL must be accepted",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://i.ytimg.com/vi/abc12345678/hqdefault.jpg")
+        )
+        assertFalse(
+            "Cleartext HTTP artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("http://i.ytimg.com/vi/abc12345678/hqdefault.jpg")
+        )
+        assertFalse(
+            "Localhost artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://localhost/logo.png")
+        )
+        assertFalse(
+            "Loopback IPv4 artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://127.0.0.1/admin.png")
+        )
+        assertFalse(
+            "Private LAN 192.168.x.x artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://192.168.1.1/status.png")
+        )
+        assertFalse(
+            "Private LAN 10.x.x.x artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://10.0.0.1/router.png")
+        )
+        assertFalse(
+            "Oversized artwork URL must be rejected",
+            BackgroundMediaController.isAcceptableArtworkUrl("https://example.com/" + "a".repeat(2100))
+        )
+    }
+
+    @Test
+    fun testH2NativeMessageBridgeEnforcesMainFrameAndMatchingOrigin() {
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        assertFalse(
+            "CustomWebView must not expose addJavascriptInterface anymore",
+            customWebViewSource.contains("addJavascriptInterface(")
+        )
+        assertTrue(
+            "CustomWebView must use NativeMessageBridge",
+            customWebViewSource.contains("NativeMessageBridge.install(")
+        )
+
+        // Main frame + matching host -> trusted
+        assertTrue(
+            NativeMessageBridge.isTrustedSender(
+                sourceOrigin = "https://www.youtube.com",
+                isMainFrame = true,
+                currentPageUrl = "https://www.youtube.com/watch?v=123"
+            )
+        )
+        // Third-party iframe (isMainFrame = false) -> rejected even if origin matches
+        assertFalse(
+            NativeMessageBridge.isTrustedSender(
+                sourceOrigin = "https://www.youtube.com",
+                isMainFrame = false,
+                currentPageUrl = "https://www.youtube.com/watch?v=123"
+            )
+        )
+        // Cross-origin sender -> rejected
+        assertFalse(
+            NativeMessageBridge.isTrustedSender(
+                sourceOrigin = "https://ads.evil.example",
+                isMainFrame = true,
+                currentPageUrl = "https://www.youtube.com/watch?v=123"
+            )
+        )
+        // Opaque / null / non-web origin -> rejected
+        assertFalse(
+            NativeMessageBridge.isTrustedSender(
+                sourceOrigin = "null",
+                isMainFrame = true,
+                currentPageUrl = "https://www.youtube.com/watch?v=123"
+            )
+        )
+        assertFalse(
+            NativeMessageBridge.isTrustedSender(
+                sourceOrigin = "file:///sdcard/evil.html",
+                isMainFrame = true,
+                currentPageUrl = "https://www.youtube.com/watch?v=123"
+            )
+        )
+
+        // Valid envelope parses
+        val parsed = NativeMessageBridge.parseCall(
+            """{"m":"openUrlInNewTab","a":["https://example.com"]}""",
+            "example.com"
+        )
+        assertNotNull(parsed)
+        assertEquals("openUrlInNewTab", parsed?.method)
+        assertEquals("https://example.com", parsed?.args?.optString(0))
+
+        // Invalid method name rejected
+        assertNull(
+            NativeMessageBridge.parseCall(
+                """{"m":"../evil","a":[]}""",
+                "example.com"
+            )
+        )
+    }
+
+    @Test
+    fun testMediumAndLowAuditRemediations() {
+        // M1: syncAlexShieldV5State must not be @Synchronized on the hot shouldInterceptRequest path
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        assertFalse(
+            "syncAlexShieldV5State must not use method-level @Synchronized",
+            customWebViewSource.contains("@Synchronized\n                        private fun syncAlexShieldV5State")
+        )
+        assertTrue(
+            "CustomWebView must use shared mainHandler instead of per-call Handler allocations",
+            customWebViewSource.contains("private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())")
+        )
+        assertFalse(
+            "SSL error logger must not leak full error?.toString() URL to Log.e",
+            customWebViewSource.contains("val errorDesc = error?.toString()")
+        )
+
+        // M2: SearchEngineManager must use https:// for bare localhost / IPv4 inputs to match cleartextTrafficPermitted=false
+        assertEquals(
+            "https://localhost:8080",
+            SearchEngineManager.parseUrlOrQuery("localhost:8080", SearchEngine.GOOGLE)
+        )
+        assertEquals(
+            "https://192.168.1.1",
+            SearchEngineManager.parseUrlOrQuery("192.168.1.1", SearchEngine.GOOGLE)
+        )
+
+        // M3: AppDatabaseEncrypted must not duplicate @Database Room definition
+        val dbEncryptedSource = findSource("com/example/data/AppDatabaseEncrypted.kt").readText()
+        assertFalse(
+            "AppDatabaseEncrypted must not be a duplicate @Database RoomDatabase class",
+            dbEncryptedSource.contains("abstract class AppDatabaseEncrypted : RoomDatabase()")
+        )
+        assertTrue(
+            "AppDatabaseEncrypted must remain a passphrase manager object",
+            dbEncryptedSource.contains("object AppDatabaseEncrypted")
         )
     }
 }

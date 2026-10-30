@@ -127,7 +127,9 @@ object DevToolsScriptFactory {
                     const payload = serializeElement(el);
 
                     try {
-                        window.AdBlockDevTools.onElementSelected(JSON.stringify(payload));
+                        // Origin-checked message port (audit H2), replaces the AdBlockDevTools JS interface.
+                        var devPort = window.__alexDevToolsPort;
+                        if (devPort) devPort.postMessage(JSON.stringify(payload));
                     } catch (_) {}
 
                     window.__ADB_DEVTOOLS_PICKER_ACTIVE__ = false;

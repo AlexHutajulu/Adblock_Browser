@@ -27,13 +27,10 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Restore debug keystore and repair Gradle Wrapper if needed
+      - name: Restore debug keystore
         run: |
           if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
-          fi
-          if ! jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null 2>&1; then
-            gradle wrapper --gradle-version 9.3.1
           fi
           chmod +x gradlew
 
@@ -45,8 +42,8 @@ jobs:
           ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install \
             "cmdline-tools;latest" \
             "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
+            "platforms;android-36" \
+            "build-tools;35.0.0"
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace

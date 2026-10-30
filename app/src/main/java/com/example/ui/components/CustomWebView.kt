@@ -49,6 +49,7 @@ import com.example.ui.viewmodel.BrowserViewModel
 import kotlin.math.roundToInt
 
 private const val TAG = "CustomWebView"
+private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
@@ -118,13 +119,14 @@ fun CustomWebView(
     LaunchedEffect(tab.id, inspectToolsEnabled) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         try {
+            // SECURITY FIX (audit H2): origin-checked message listener instead of addJavascriptInterface.
             if (inspectToolsEnabled) {
-                webView.addJavascriptInterface(
-                    createDevToolsJsBridge(tab.id, viewModel),
-                    "AdBlockDevTools"
-                )
+                NativeMessageBridge.installDevTools(
+                    webView,
+                    createDevToolsJsBridge(tab.id, viewModel)
+                ) { webView.url }
             } else {
-                webView.removeJavascriptInterface("AdBlockDevTools")
+                NativeMessageBridge.removeDevTools(webView)
             }
         } catch (_: Exception) {}
     }
@@ -339,7 +341,6 @@ fun CustomWebView(
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
                         setLayerType(android.view.View.LAYER_TYPE_NONE, null)
-                        com.example.manager.DocumentStartCosmetics.install(this)
                         isFocusable = true
                         isFocusableInTouchMode = true
 
@@ -433,14 +434,17 @@ fun CustomWebView(
                         }
                     )
 
-                    addJavascriptInterface(object {
+                    // SECURITY FIX (audit H2): this object is no longer exposed via
+                    // addJavascriptInterface (which leaks it into every iframe). Calls
+                    // arrive through NativeMessageBridge, which accepts only messages
+                    // from the top frame whose origin matches the loaded page.
+                    val alexNativeBridge = object {
                         @Volatile private var lastNewTabTimestamp = 0L
                         @Volatile private var lastTrapReportTimestamp = 0L
                         @Volatile private var lastAudioStateTimestamp = 0L
                         @Volatile private var lastWebRtcToastTimestamp = 0L
                         @Volatile private var lastBlobDownloadTimestamp = 0L
 
-                        @android.webkit.JavascriptInterface
                         fun openUrlInNewTab(url: String) {
                             val trimmed = url.trim()
                             if (trimmed.isBlank() || trimmed.length > 2048) return
@@ -487,18 +491,17 @@ fun CustomWebView(
                             if (viewModel.tabs.value.size >= 40) return
                             lastNewTabTimestamp = now
 
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 viewModel.addNewTab(trimmed, tab.isPrivate)
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun onAudioStateChanged(isPlaying: Boolean) {
                             val now = System.currentTimeMillis()
                             if (now - lastAudioStateTimestamp < 150L) return
                             lastAudioStateTimestamp = now
                             val wvRef = this@apply
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 viewModel.updateTabPlayingAudio(tab.id, isPlaying)
                                 val currentTabSnapshot = viewModel.tabs.value.find { it.id == tab.id }
                                 val fallbackTitle = currentTabSnapshot?.title?.takeIf { it.isNotBlank() } ?: wvRef.title.orEmpty()
@@ -513,7 +516,6 @@ fun CustomWebView(
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun onMediaMetadataChanged(
                             isPlaying: Boolean,
                             title: String,
@@ -523,7 +525,7 @@ fun CustomWebView(
                             artworkUrl: String
                         ) {
                             val wvRef = this@apply
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 viewModel.updateTabPlayingAudio(tab.id, isPlaying)
                                 val currentTabSnapshot = viewModel.tabs.value.find { it.id == tab.id }
                                 val resolvedTitle = title.trim().ifBlank {
@@ -545,35 +547,32 @@ fun CustomWebView(
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun onStealthTrapDefused(kind: String) {
                             val now = System.currentTimeMillis()
                             if (now - lastTrapReportTimestamp < 300L) return
                             lastTrapReportTimestamp = now
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 alexShieldV5Client.recordStealthTrapDefused(1)
                                 viewModel.recordStealthTrapDefused()
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun onElementZapperSelected(selector: String, tag: String, token: String) {
                             if (!viewModel.isElementZapperActive.value) return
                             val cleanSelector = sanitizeZapperSelector(selector)
                             val cleanTag = tag.trim().lowercase().take(32)
                             val cleanToken = token.trim()
                             if (cleanSelector.isBlank() || cleanToken.isBlank()) return
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 viewModel.verifyAndSelectZapperElement(cleanToken, cleanSelector, cleanTag)
                             }
                         }
                         
-                        @android.webkit.JavascriptInterface
                         fun onWebRtcBlocked(url: String) {
                             val now = System.currentTimeMillis()
                             if (now - lastWebRtcToastTimestamp < 3000L) return
                             lastWebRtcToastTimestamp = now
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 android.widget.Toast.makeText(
                                     context,
                                     "Koneksi WebRTC diblokir oleh Mode Privasi Ketat. Ubah WebRTC ke 'Standar' di Pengaturan jika panggilan video gagal.",
@@ -582,7 +581,6 @@ fun CustomWebView(
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun downloadVerifiedBlob(blobUrl: String, dataUri: String, fileName: String, mimeType: String) {
                             val now = System.currentTimeMillis()
                             if (now - lastBlobDownloadTimestamp < 1000L) return
@@ -621,7 +619,7 @@ fun CustomWebView(
                             val cleanName = fileName.ifBlank {
                                 android.webkit.URLUtil.guessFileName(blobUrl, null, mimeType)
                             }
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            mainHandler.post {
                                 val started = viewModel.downloadManager.startDownload(
                                     url = dataUri,
                                     userAgent = "AlexBrowser/BlobDownload",
@@ -635,7 +633,6 @@ fun CustomWebView(
                             }
                         }
 
-                        @android.webkit.JavascriptInterface
                         fun getCosmeticCss(host: String): String {
                             // Solusi T3 & T5: Filter kosmetik generik hanya aktif di AGGRESSIVE mode
                             if (viewModel.adBlockMode.value != com.example.manager.AdBlockMode.AGGRESSIVE) return ""
@@ -648,62 +645,122 @@ fun CustomWebView(
                             if (isWhitelisted) return ""
                             return com.example.manager.DocumentStartCosmetics.buildCosmeticCssForHost(cleanHost)
                         }
-                    }, "AlexBrowserNative")
+                    }
 
-                    // Only attach DevTools JS Bridge when Inspect Tools is explicitly enabled by user
+                    NativeMessageBridge.install(
+                        webView = this,
+                        currentPageUrl = { currentPageUrlRef.get() },
+                        // Host comes from the verified sender origin, not from page-supplied data.
+                        onCosmeticCss = { originHost -> alexNativeBridge.getCosmeticCss(originHost) }
+                    ) { call ->
+                        val a = call.args
+                        when (call.method) {
+                            "openUrlInNewTab" -> alexNativeBridge.openUrlInNewTab(a.optString(0))
+                            "onAudioStateChanged" -> alexNativeBridge.onAudioStateChanged(a.optBoolean(0))
+                            "onMediaMetadataChanged" -> alexNativeBridge.onMediaMetadataChanged(
+                                isPlaying = a.optBoolean(0),
+                                title = a.optString(1).take(512),
+                                artist = a.optString(2).take(512),
+                                currentTimeSec = a.optDouble(3, 0.0),
+                                durationSec = a.optDouble(4, 0.0),
+                                artworkUrl = a.optString(5).take(4096)
+                            )
+                            "onStealthTrapDefused" -> alexNativeBridge.onStealthTrapDefused(a.optString(0).take(64))
+                            "onElementZapperSelected" -> alexNativeBridge.onElementZapperSelected(
+                                a.optString(0), a.optString(1), a.optString(2)
+                            )
+                            "onWebRtcBlocked" -> alexNativeBridge.onWebRtcBlocked(a.optString(0).take(2048))
+                            "downloadVerifiedBlob" -> alexNativeBridge.downloadVerifiedBlob(
+                                a.optString(0), a.optString(1), a.optString(2).take(255), a.optString(3).take(255)
+                            )
+                            else -> Log.w(TAG, "Unknown native bridge method: ${call.method.take(64)}")
+                        }
+                    }
+                    // Must come after the bridge shim: document-start scripts run in insertion order.
+                    com.example.manager.DocumentStartCosmetics.install(this)
+
+                    // Only attach DevTools bridge when Inspect Tools is explicitly enabled by user
                     if (viewModel.inspectToolsEnabled.value) {
-                        addJavascriptInterface(
-                            createDevToolsJsBridge(tab.id, viewModel),
-                            "AdBlockDevTools"
-                        )
+                        NativeMessageBridge.installDevTools(
+                            this,
+                            createDevToolsJsBridge(tab.id, viewModel)
+                        ) { currentPageUrlRef.get() }
                     }
                     
                     webViewClient = object : WebViewClient() {
                         @Volatile private var lastAlexShieldMode: com.yourbrowser.adblock.PrivacyMode? = null
+                        @Volatile private var lastAlexShieldWhitelistRaw: Set<String>? = null
                         @Volatile private var lastAlexShieldWhitelist: Set<String> = emptySet()
+                        @Volatile private var lastTrackerEnabled: Boolean? = null
+                        @Volatile private var lastStreamingBoost: Boolean? = null
+                        private val stateLock = Any()
 
-                        @Synchronized
                         private fun syncAlexShieldV5State(syncZapperRules: Boolean = false) {
                             val nextMode = when (viewModel.adBlockMode.value) {
                                 com.example.manager.AdBlockMode.OFF -> com.yourbrowser.adblock.PrivacyMode.OFF
                                 com.example.manager.AdBlockMode.BALANCED -> com.yourbrowser.adblock.PrivacyMode.BALANCED
                                 com.example.manager.AdBlockMode.AGGRESSIVE -> com.yourbrowser.adblock.PrivacyMode.AGGRESSIVE
                             }
+                            val nextTracker = viewModel.trackerBlockEnabled.value
+                            val nextBoost = viewModel.streamingBoostEnabled.value
+                            val rawWhitelist = viewModel.adBlockDisabledDomains.value
 
-                            if (nextMode != lastAlexShieldMode) {
-                                alexShieldV5Client.setMode(nextMode)
-                                com.example.manager.AdBlockServiceWorker.setMode(nextMode)
-                                lastAlexShieldMode = nextMode
+                            // Fast lock-free exit on hot shouldInterceptRequest path when nothing changed
+                            if (!syncZapperRules &&
+                                nextMode == lastAlexShieldMode &&
+                                nextTracker == lastTrackerEnabled &&
+                                nextBoost == lastStreamingBoost &&
+                                rawWhitelist === lastAlexShieldWhitelistRaw
+                            ) {
+                                return
                             }
 
-                            alexShieldV5Client.setTrackerBlockingEnabled(
-                                enabled = viewModel.trackerBlockEnabled.value,
-                                activeWhenAdBlockOff = true
-                            )
-                            alexShieldV5Client.setStreamingBoostEnabled(viewModel.streamingBoostEnabled.value)
-
-                            val nextWhitelist = viewModel.adBlockDisabledDomains.value
-                                .mapNotNull { domain ->
-                                    domain.trim().lowercase().removePrefix("www.").takeIf { it.isNotBlank() }
+                            synchronized(stateLock) {
+                                if (nextMode != lastAlexShieldMode) {
+                                    alexShieldV5Client.setMode(nextMode)
+                                    com.example.manager.AdBlockServiceWorker.setMode(nextMode)
+                                    lastAlexShieldMode = nextMode
                                 }
-                                .toSet()
 
-                            if (nextWhitelist != lastAlexShieldWhitelist) {
-                                alexShieldV5Client.setWhitelist(nextWhitelist)
-                                lastAlexShieldWhitelist = nextWhitelist
-                            }
+                                if (nextTracker != lastTrackerEnabled) {
+                                    alexShieldV5Client.setTrackerBlockingEnabled(
+                                        enabled = nextTracker,
+                                        activeWhenAdBlockOff = true
+                                    )
+                                    lastTrackerEnabled = nextTracker
+                                }
 
-                            if (syncZapperRules) {
-                                val currentHost = safeHost(currentPageUrlRef.get())
-                                if (currentHost.isNotBlank()) {
-                                    val zapperRules = viewModel.getCustomZapperRulesForHost(currentHost).toSet()
-                                    alexShieldV5Client.setCustomZapperSelectors(currentHost, zapperRules)
+                                if (nextBoost != lastStreamingBoost) {
+                                    alexShieldV5Client.setStreamingBoostEnabled(nextBoost)
+                                    lastStreamingBoost = nextBoost
+                                }
+
+                                if (rawWhitelist !== lastAlexShieldWhitelistRaw) {
+                                    val nextWhitelist = rawWhitelist
+                                        .mapNotNull { domain ->
+                                            domain.trim().lowercase().removePrefix("www.").takeIf { it.isNotBlank() }
+                                        }
+                                        .toSet()
+                                    if (nextWhitelist != lastAlexShieldWhitelist) {
+                                        alexShieldV5Client.setWhitelist(nextWhitelist)
+                                        lastAlexShieldWhitelist = nextWhitelist
+                                    }
+                                    lastAlexShieldWhitelistRaw = rawWhitelist
+                                }
+
+                                if (syncZapperRules) {
+                                    val currentHost = safeHost(currentPageUrlRef.get())
+                                    if (currentHost.isNotBlank()) {
+                                        val zapperRules = viewModel.getCustomZapperRulesForHost(currentHost).toSet()
+                                        alexShieldV5Client.setCustomZapperSelectors(currentHost, zapperRules)
+                                    }
                                 }
                             }
                         }
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
+                            view?.let { NativeMessageBridge.ensureShimFallback(it) }
                             currentPageUrlRef.set(url.orEmpty())
                             syncAlexShieldV5State(syncZapperRules = true)
                             if (view != null && !url.isNullOrBlank()) {
@@ -1084,9 +1141,10 @@ fun CustomWebView(
                             handler: android.webkit.SslErrorHandler?,
                             error: android.net.http.SslError?
                         ) {
-                            // High security: Do not bypass SSL errors.
-                            val errorDesc = error?.toString() ?: "Security Error: Blocked Invalid SSL Certificate"
-                            Log.e(TAG, "SSL Error blocked: $errorDesc")
+                            // High security: Do not bypass SSL errors, and redact URL from logcat (audit L10).
+                            val primaryCode = error?.primaryError ?: -1
+                            val errorDesc = "SSL error (code=$primaryCode)"
+                            Log.e(TAG, "SSL Error blocked: code=$primaryCode for url [redacted]")
                             handler?.cancel() // Cancel the request.
                             viewModel.updateTabError(tab.id, "Security Error: Blocked Invalid SSL Certificate")
                             viewModel.updateLastSslError(tab.id, errorDesc)
@@ -1139,8 +1197,9 @@ fun CustomWebView(
                                 )
                             }
 
-                            val latestTab = viewModel.tabs.value.find { it.id == tab.id }
-                            val mainPageUrl = latestTab?.url ?: currentPageUrlRef.get()
+                            val mainPageUrl = currentPageUrlRef.get().ifBlank {
+                                viewModel.tabs.value.find { it.id == tab.id }?.url.orEmpty()
+                            }
                             alexShieldV5Client.updateCurrentPageUrl(mainPageUrl)
 
                             val currentMode = viewModel.adBlockMode.value
@@ -1383,7 +1442,7 @@ fun CustomWebView(
                                     request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE))
                             ) {
                                 request.deny()
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                mainHandler.post {
                                     android.widget.Toast.makeText(
                                         context,
                                         "Akses Kamera/Mikrofon dari $origin diblokir oleh Perisai Keamanan",
@@ -1939,7 +1998,7 @@ private fun createDevToolsJsBridge(
 ): com.example.devtools.DevToolsJsBridge {
     return com.example.devtools.DevToolsJsBridge(
         onElementSelected = { selectedElement ->
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 if (viewModel.inspectToolsEnabled.value) {
                     viewModel.updateSelectedElement(tabId, selectedElement)
                     viewModel.openDevTools(tabId, com.example.devtools.DevToolsTab.ELEMENTS)
@@ -1954,7 +2013,7 @@ private fun createDevToolsJsBridge(
             }
         },
         onConsoleBridgeMessage = { entry ->
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 if (viewModel.inspectToolsEnabled.value) {
                     viewModel.addConsoleEntry(tabId, entry)
                 }
@@ -1974,8 +2033,7 @@ fun WebView.safeDestroy() {
         stopLoading()
         onPause()
         clearHistory()
-        removeJavascriptInterface("AlexBrowserNative")
-        removeJavascriptInterface("AdBlockDevTools")
+        NativeMessageBridge.removeAll(this)
         webChromeClient = null
         loadUrl("about:blank")
         removeAllViews()

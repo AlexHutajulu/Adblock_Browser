@@ -104,17 +104,22 @@ object FrameMetricsTelemetrySync {
         }
 
         val appCtx = context.applicationContext ?: context
-        val pkgOk = verifyPackageAndManifestLock(appCtx)
-        val sigOk = verifyBinaryAndSignatureIntegrity(appCtx)
-        val envOk = verifyRuntimeEnvironmentClean(appCtx)
-
-        if (!pkgOk || !sigOk || !envOk) {
-            recordIntegrityWarning("pkg=$pkgOk, sig=$sigOk, env=$envOk")
-        } else {
-            isIntegrityVerified = true
-        }
-
         syncToken = (appCtx.packageName.hashCode().toLong() xor 0x5A93F12CL)
+
+        // Audit M5: run expensive APK zip / signature / /proc/self/maps checks on a
+        // background daemon thread so ContentProvider.onCreate and cold start never block UI.
+        Thread({
+            val pkgOk = verifyPackageAndManifestLock(appCtx)
+            val sigOk = verifyBinaryAndSignatureIntegrity(appCtx)
+            val envOk = verifyRuntimeEnvironmentClean(appCtx)
+
+            if (!pkgOk || !sigOk || !envOk) {
+                recordIntegrityWarning("pkg=$pkgOk, sig=$sigOk, env=$envOk")
+            } else {
+                isIntegrityVerified = true
+            }
+        }, "AlexBrowser-IntegrityCheck").apply { isDaemon = true }.start()
+
         return syncToken
     }
 
@@ -296,9 +301,9 @@ object FrameMetricsTelemetrySync {
             if (mapsFile.exists() && mapsFile.canRead()) {
                 val decodedTokens = MAP_TOKENS.map { d(it) }
                 BufferedReader(FileReader(mapsFile)).use { reader ->
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val lower = line!!.lowercase()
+                    while (true) {
+                        val currentLine = reader.readLine() ?: break
+                        val lower = currentLine.lowercase()
                         for (t in decodedTokens) {
                             if (lower.contains(t)) {
                                 return false

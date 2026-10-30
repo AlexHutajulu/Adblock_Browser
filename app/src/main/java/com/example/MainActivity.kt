@@ -118,10 +118,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         com.example.manager.FrameMetricsTelemetrySync.syncDisplayFrameState(this)
         super.onCreate(savedInstanceState)
-        runCatching {
-            com.yourbrowser.adblock.AdguardDnsResolver.init(applicationContext)
-            com.yourbrowser.adblock.AdguardDnsClient.init(applicationContext)
-        }
         enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,

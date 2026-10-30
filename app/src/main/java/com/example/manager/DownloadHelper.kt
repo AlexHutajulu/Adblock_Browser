@@ -9,12 +9,14 @@ import android.webkit.URLUtil
 import com.example.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 
 object DownloadHelper {
+    private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     suspend fun checkAcceptRanges(urlStr: String, userAgent: String): Boolean = withContext(Dispatchers.IO) {
         try {
@@ -117,16 +119,17 @@ object DownloadHelper {
                 )
             } else {
                 // Standalone / legacy fallback: check Range support and enqueue to system manager
-                CoroutineScope(Dispatchers.Main).launch {
+                val appCtx = context.applicationContext ?: context
+                helperScope.launch {
                     val supportsRange = checkAcceptRanges(url, userAgent)
                     if (supportsRange) {
-                        val fastMsg = context.getString(R.string.download_fast_accelerated)
-                        android.widget.Toast.makeText(context, fastMsg, android.widget.Toast.LENGTH_SHORT).show()
+                        val fastMsg = appCtx.getString(R.string.download_fast_accelerated)
+                        android.widget.Toast.makeText(appCtx, fastMsg, android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        val fallbackMsg = context.getString(R.string.download_range_fallback_normal)
-                        android.widget.Toast.makeText(context, fallbackMsg, android.widget.Toast.LENGTH_SHORT).show()
+                        val fallbackMsg = appCtx.getString(R.string.download_range_fallback_normal)
+                        android.widget.Toast.makeText(appCtx, fallbackMsg, android.widget.Toast.LENGTH_SHORT).show()
                     }
-                    enqueueStandardDownload(context, url, userAgent, filename, finalMimeType, isIncognito)
+                    enqueueStandardDownload(appCtx, url, userAgent, filename, finalMimeType, isIncognito)
                 }
             }
         } else {
