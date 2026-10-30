@@ -38,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.*
@@ -2466,7 +2467,7 @@ fun SidebarTabsPanel(
                         }
                         if (tab.isPlayingAudio) {
                             IconButton(
-                                onClick = { viewModel.toggleTabMuted(tab.id) },
+                                onClick = { viewModel.toggleTabMute(tab.id) },
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
@@ -3196,7 +3197,7 @@ fun MobileTabsDialog(
                                                     Surface(
                                                         shape = RoundedCornerShape(100.dp),
                                                         color = MaterialTheme.colorScheme.primaryContainer,
-                                                        modifier = Modifier.clickable { viewModel.toggleTabMuted(tab.id) }
+                                                        modifier = Modifier.clickable { viewModel.toggleTabMute(tab.id) }
                                                     ) {
                                                         Row(
                                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),

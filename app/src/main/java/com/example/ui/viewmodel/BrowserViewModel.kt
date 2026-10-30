@@ -688,6 +688,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         com.yourbrowser.adblock.AlexShieldV5LogStore.clearAll()
     }
 
+    fun incrementBlockedStats(blockedUrl: String, reason: String = "Popup") {
+        val activeId = _activeTabId.value
+        val activeTab = _tabs.value.find { it.id == activeId }
+        if (activeTab?.isPrivate != true) {
+            com.yourbrowser.adblock.AlexShieldV5LogStore.add(
+                tabId = activeId,
+                pageUrl = activeTab?.url.orEmpty(),
+                blockedUrl = blockedUrl,
+                reason = reason
+            )
+        }
+    }
+
     fun toggleTabMute(tabId: String) {
         _tabs.update { currentTabs ->
             currentTabs.map {
