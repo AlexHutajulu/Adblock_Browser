@@ -522,7 +522,7 @@ fun BrowserScreen(
         val isTablet = layoutProfile.isTabletOrWide
         val displayMode by viewModel.displayMode.collectAsState()
 
-        if (displayMode == DisplayMode.DESKTOP && isTablet) {
+        if (displayMode == DisplayMode.DESKTOP) {
             DesktopBrowserLayout(
                 viewModel = viewModel,
                 activeTab = activeTab,
@@ -1780,37 +1780,42 @@ fun TabletOrMobileToolbar(
                         if (addressInput.isNotEmpty() && isOmniboxFocused) {
                             IconButton(
                                 onClick = onClearAddressInput,
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Bersihkan URL",
                                     tint = subTint,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
-                        } else if (!isOmniboxFocused && activeTab.url.isNotBlank() && activeTab.url != "about:blank") {
-                            IconButton(
-                                onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                                    contentDescription = if (activeTab.isLoading) "Hentikan" else "Muat Ulang",
-                                    tint = subTint,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                        } else {
+                            if (activeTab.url.isNotBlank() && activeTab.url != "about:blank") {
+                                IconButton(
+                                    onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                                        contentDescription = if (activeTab.isLoading) "Hentikan" else "Muat Ulang",
+                                        tint = subTint,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
                             }
-                        } else if (isTablet) {
+                            // 1-Tap Switch to Desktop Mode right inside the Omnibox
                             IconButton(
-                                onClick = onToggleBookmark,
-                                modifier = Modifier.size(36.dp)
+                                onClick = {
+                                    viewModel.setDisplayMode(DisplayMode.DESKTOP)
+                                    Toast.makeText(context, "Beralih ke Mode Desktop", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(
-                                    imageVector = if (isCurrentUrlBookmarked) Icons.Default.Star else Icons.Outlined.StarOutline,
-                                    contentDescription = "Bookmark",
-                                    tint = if (isCurrentUrlBookmarked) MaterialTheme.colorScheme.primary else subTint,
-                                    modifier = Modifier.size(18.dp)
+                                    imageVector = Icons.Outlined.DesktopWindows,
+                                    contentDescription = "Mode Desktop",
+                                    tint = if (isIncognito) ChromeIncognitoAccent else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         }
@@ -4528,13 +4533,15 @@ fun DesktopToolbar(
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val isCompactDesktop = maxWidth < 620.dp
+            val isMobileDesktop = maxWidth < 460.dp
+            val navBtnSize = if (isMobileDesktop) 34.dp else 38.dp
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = if (isCompactDesktop) 6.dp else 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (isMobileDesktop) 4.dp else 6.dp)
             ) {
                 // 1. Left Structured Navigation Capsule (Back, Forward, Reload, Home) with Interactive Liquid Glass
                 val leftCapsuleInteraction = remember { MutableInteractionSource() }
@@ -4548,57 +4555,59 @@ fun DesktopToolbar(
                         )
                         .animateContentSize(
                             animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                dampingRatio = Spring.DampingRatioNoBouncy,
                                 stiffness = Spring.StiffnessMediumLow
                             )
                         )
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         IconButton(
                             onClick = { viewModel.goBack() },
                             enabled = canNavigateBack,
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(navBtnSize)
                                 .testTag("desktop_back_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Back",
                                 tint = if (canNavigateBack) contentTint else contentTint.copy(alpha = 0.32f),
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(17.dp)
                             )
                         }
-                        IconButton(
-                            onClick = { viewModel.goForward() },
-                            enabled = activeTab.canGoForward,
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Forward",
-                                tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
-                                modifier = Modifier.size(18.dp)
-                            )
+                        if (!isMobileDesktop) {
+                            IconButton(
+                                onClick = { viewModel.goForward() },
+                                enabled = activeTab.canGoForward,
+                                modifier = Modifier.size(navBtnSize)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "Forward",
+                                    tint = if (activeTab.canGoForward) contentTint else contentTint.copy(alpha = 0.32f),
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
                         }
                         IconButton(
                             onClick = { if (activeTab.isLoading) viewModel.stop() else viewModel.reload() },
-                            modifier = Modifier.size(38.dp)
+                            modifier = Modifier.size(navBtnSize)
                         ) {
                             Icon(
                                 imageVector = if (activeTab.isLoading) Icons.Default.Close else Icons.Default.Refresh,
                                 contentDescription = "Refresh",
                                 tint = contentTint,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(17.dp)
                             )
                         }
                         if (!isCompactDesktop) {
                             IconButton(
                                 onClick = { viewModel.goHome() },
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(navBtnSize)
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Home,
@@ -4742,16 +4751,16 @@ fun DesktopToolbar(
                         )
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         // AdShield Guard Button
-                        IconButton(onClick = onShowShield, modifier = Modifier.size(38.dp)) {
+                        IconButton(onClick = onShowShield, modifier = Modifier.size(navBtnSize)) {
                             BadgedBox(
                                 badge = {
                                     if (adBlockEnabledState && pageBlockedCount > 0) {
-                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 10.sp) }
+                                        Badge { Text(if (pageBlockedCount > 99) "99+" else pageBlockedCount.toString(), fontSize = 9.sp) }
                                     }
                                 }
                             ) {
@@ -4759,31 +4768,33 @@ fun DesktopToolbar(
                                     imageVector = if (adBlockEnabledState) Icons.Filled.Shield else Icons.Outlined.Shield,
                                     contentDescription = "AdShield",
                                     tint = if (adBlockEnabledState) accentTint else subTint,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
                         }
 
-                        // Chrome Extensions Puzzle Button
-                        IconButton(
-                            onClick = { viewModel.setExtensionsHubVisible(true) },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .testTag("desktop_extensions_button")
-                        ) {
-                            BadgedBox(
-                                badge = {
-                                    if (enabledExtCount > 0) {
-                                        Badge { Text(enabledExtCount.toString(), fontSize = 10.sp) }
-                                    }
-                                }
+                        // Chrome Extensions Puzzle Button (Shown on Tablet/Wide Desktop)
+                        if (!isMobileDesktop) {
+                            IconButton(
+                                onClick = { viewModel.setExtensionsHubVisible(true) },
+                                modifier = Modifier
+                                    .size(navBtnSize)
+                                    .testTag("desktop_extensions_button")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Extension,
-                                    contentDescription = "Extensions",
-                                    tint = if (enabledExtCount > 0) accentTint else subTint,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                BadgedBox(
+                                    badge = {
+                                        if (enabledExtCount > 0) {
+                                            Badge { Text(enabledExtCount.toString(), fontSize = 10.sp) }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Extension,
+                                        contentDescription = "Extensions",
+                                        tint = if (enabledExtCount > 0) accentTint else subTint,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -4793,7 +4804,7 @@ fun DesktopToolbar(
                             IconButton(
                                 onClick = { viewModel.setShortcutBarVisible(!isDesktopShortcutVisible) },
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(navBtnSize)
                                     .testTag("desktop_toggle_shortcut_bar")
                             ) {
                                 Icon(
@@ -4803,21 +4814,22 @@ fun DesktopToolbar(
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
+                        }
 
-                            IconButton(
-                                onClick = {
-                                    viewModel.setDisplayMode(DisplayMode.MOBILE)
-                                    Toast.makeText(context, "Beralih ke Mode Mobile", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.PhoneAndroid,
-                                    contentDescription = "Mode Mobile",
-                                    tint = accentTint,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                        // Always visible 1-Tap Switch back to Mobile Mode
+                        IconButton(
+                            onClick = {
+                                viewModel.setDisplayMode(DisplayMode.MOBILE)
+                                Toast.makeText(context, "Beralih ke Mode Mobile", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(navBtnSize)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PhoneAndroid,
+                                contentDescription = "Mode Mobile",
+                                tint = accentTint,
+                                modifier = Modifier.size(17.dp)
+                            )
                         }
 
                         // Unified Structured Desktop 3-Dot Chrome Menu
@@ -4832,7 +4844,7 @@ fun DesktopToolbar(
                         Box {
                             IconButton(
                                 onClick = { showDesktopOverflowMenu = true },
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(navBtnSize)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,

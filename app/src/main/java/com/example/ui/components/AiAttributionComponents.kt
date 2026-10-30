@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -34,7 +35,7 @@ fun AntigravityLogoIcon(
     modifier: Modifier = Modifier.size(20.dp)
 ) {
     Image(
-        painter = painterResource(id = R.drawable.ic_logo_antigravity),
+        painter = painterResource(id = R.drawable.img_logo_antigravity),
         contentDescription = "Google Antigravity Official Logo",
         contentScale = ContentScale.Fit,
         modifier = modifier
@@ -92,6 +93,7 @@ fun MetaMuseLogoIcon(
 @Composable
 fun AiAssistantBadge(
     name: String,
+    provider: String = "",
     iconBgColor: Color,
     modifier: Modifier = Modifier,
     isCompact: Boolean = false,
@@ -100,17 +102,17 @@ fun AiAssistantBadge(
 ) {
     Surface(
         modifier = modifier.testTag("ai_badge_${name.lowercase().replace(" ", "_")}"),
-        shape = RoundedCornerShape(100.dp),
+        shape = RoundedCornerShape(16.dp),
         color = if (isHighlighted) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
         } else {
-            MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
         },
-        tonalElevation = if (isHighlighted) 3.dp else 1.dp,
+        tonalElevation = if (isHighlighted) 4.dp else 1.dp,
         border = BorderStroke(
-            width = 1.dp,
+            width = if (isHighlighted) 1.2.dp else 1.dp,
             color = if (isHighlighted) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
             } else {
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
             }
@@ -118,36 +120,54 @@ fun AiAssistantBadge(
     ) {
         Row(
             modifier = Modifier.padding(
-                horizontal = if (isCompact) 9.dp else 11.dp,
-                vertical = if (isCompact) 5.dp else 6.dp
+                horizontal = if (isCompact) 10.dp else 12.dp,
+                vertical = if (isCompact) 6.dp else 8.dp
             ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
             Box(
                 modifier = Modifier
-                    .size(if (isCompact) 22.dp else 26.dp)
+                    .size(if (isCompact) 24.dp else 28.dp)
                     .clip(CircleShape)
                     .background(iconBgColor),
                 contentAlignment = Alignment.Center
             ) {
                 logo()
             }
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = name,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.SemiBold,
-                    fontSize = if (isCompact) 11.sp else 12.5.sp
-                ),
-                color = if (isHighlighted) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Spacer(modifier = Modifier.width(7.dp))
+            Column(
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = if (isCompact) 11.5.sp else 12.5.sp,
+                        lineHeight = 14.sp
+                    ),
+                    color = if (isHighlighted) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (provider.isNotBlank() && !isCompact) {
+                    Text(
+                        text = provider,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 11.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }
@@ -166,10 +186,21 @@ fun DeveloperAiAttributionSection(
                 .padding(if (showCardContainer) (if (isCompact) 12.dp else 16.dp) else 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Developer Credit Pill
+            // Developer Credit Badge
             Surface(
                 shape = RoundedCornerShape(100.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                border = BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color(0xFF3186FF).copy(alpha = 0.5f),
+                            Color(0xFF00B95C).copy(alpha = 0.4f),
+                            Color(0xFFFBBC04).copy(alpha = 0.4f),
+                            Color(0xFFFC413D).copy(alpha = 0.5f)
+                        )
+                    )
+                )
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp),
@@ -186,7 +217,7 @@ fun DeveloperAiAttributionSection(
                         text = "Developed by Alex Hutajulu",
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = if (isCompact) 11.5.sp else 13.sp
+                            fontSize = if (isCompact) 11.5.sp else 12.5.sp
                         ),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         maxLines = 1,
@@ -195,12 +226,12 @@ fun DeveloperAiAttributionSection(
                 }
             }
 
-            Spacer(modifier = Modifier.height(7.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Browser ini dikembangkan dengan kolaborasi 5 AI:",
+                text = "Kolaborasi Resmi 5 AI (Antigravity • Gemini • Claude • ChatGPT • Meta Muse):",
                 style = MaterialTheme.typography.bodySmall.copy(
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                     fontSize = if (isCompact) 11.sp else 12.sp
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -209,18 +240,19 @@ fun DeveloperAiAttributionSection(
                 overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(9.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // 5 Modern AI Badge Pills: Antigravity, Gemini, Claude, ChatGPT, Meta Muse
-            val badgeIconSize: Dp = if (isCompact) 15.dp else 17.dp
+            // 5 Official AI Collaborator Badges: Antigravity, Gemini, Claude, ChatGPT, Meta Muse
+            val badgeIconSize: Dp = if (isCompact) 16.dp else 18.dp
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 AiAssistantBadge(
                     name = "Antigravity",
-                    iconBgColor = Color(0xFF0A1022),
+                    provider = "Google DeepMind",
+                    iconBgColor = Color(0xFFFFFFFF),
                     isCompact = isCompact,
                     isHighlighted = true
                 ) {
@@ -229,6 +261,7 @@ fun DeveloperAiAttributionSection(
 
                 AiAssistantBadge(
                     name = "Gemini",
+                    provider = "Google AI",
                     iconBgColor = Color(0xFF0B0F19),
                     isCompact = isCompact
                 ) {
@@ -237,6 +270,7 @@ fun DeveloperAiAttributionSection(
 
                 AiAssistantBadge(
                     name = "Claude",
+                    provider = "Anthropic",
                     iconBgColor = Color(0xFFFFF8F5),
                     isCompact = isCompact
                 ) {
@@ -245,6 +279,7 @@ fun DeveloperAiAttributionSection(
 
                 AiAssistantBadge(
                     name = "ChatGPT",
+                    provider = "OpenAI",
                     iconBgColor = Color(0xFF000000),
                     isCompact = isCompact
                 ) {
@@ -253,6 +288,7 @@ fun DeveloperAiAttributionSection(
 
                 AiAssistantBadge(
                     name = "Meta Muse",
+                    provider = "Meta AI",
                     iconBgColor = Color(0xFFEBF3FF),
                     isCompact = isCompact
                 ) {
@@ -267,8 +303,8 @@ fun DeveloperAiAttributionSection(
             modifier = modifier
                 .fillMaxWidth()
                 .interactiveLiquidGlass(
-                    shape = RoundedCornerShape(22.dp),
-                    elevation = 2.dp
+                    shape = RoundedCornerShape(24.dp),
+                    elevation = 3.dp
                 )
         ) {
             content()

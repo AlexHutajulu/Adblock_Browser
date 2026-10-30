@@ -1,27 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="18"
-    android:viewportHeight="18">
+    android:viewportWidth="136"
+    android:viewportHeight="136">
     <group
-        android:translateX="1.1"
-        android:translateY="1.6">
+        android:translateX="12"
+        android:translateY="10">
         <path
-            android:pathData="M14.0777,13.984C14.945,14.6345 16.2458,14.2008 15.0533,13.0084C11.476,9.53949 12.2349,0 7.79033,0C3.34579,0 4.10461,9.53949 0.527295,13.0084C-0.773543,14.3092 0.635692,14.6345 1.50293,13.984C4.86344,11.7076 4.64663,7.69664 7.79033,7.69664C10.934,7.69664 10.7172,11.7076 14.0777,13.984Z">
-            <aapt:attr name="android:fillColor">
-                <gradient
-                    android:startX="1.0"
-                    android:startY="14.0"
-                    android:endX="15.0"
-                    android:endY="0.5"
-                    android:type="linear">
-                    <item android:offset="0.0" android:color="#FF4285F4" />
-                    <item android:offset="0.5" android:color="#FF6366F1" />
-                    <item android:offset="1.0" android:color="#FF38BDF8" />
-                </gradient>
-            </aapt:attr>
-        </path>
+            android:fillColor="#3186FF"
+            android:pathData="M89.6992,93.695C94.3659,97.195 101.366,94.8617 94.9492,88.445C75.6992,69.7783 79.7825,18.445 55.8659,18.445C31.9492,18.445 36.0325,69.7783 16.7825,88.445C9.78251,95.445 17.3658,97.195 22.0325,93.695C40.1159,81.445 38.9492,59.8617 55.8659,59.8617C72.7825,59.8617 71.6159,81.445 89.6992,93.695Z" />
     </group>
 </vector>

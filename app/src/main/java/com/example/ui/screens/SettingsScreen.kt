@@ -723,7 +723,12 @@ fun SettingsScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 when (category) {
-                                    SettingsCategory.APPEARANCE -> renderAppearanceSection()
+                                    SettingsCategory.APPEARANCE -> {
+                                        Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                                            SettingsAboutBanner()
+                                        }
+                                        renderAppearanceSection()
+                                    }
                                     SettingsCategory.PRIVACY -> renderPrivacySection()
                                     SettingsCategory.ADBLOCK -> renderAdBlockSection()
                                     SettingsCategory.LANGUAGE -> renderLanguageSection()
@@ -739,22 +744,87 @@ fun SettingsScreen(
                     }
                 }
             } else {
+                var showAllMobileSections by remember { mutableStateOf(true) }
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    renderAppearanceSection()
-                    renderPrivacySection()
-                    renderAdBlockSection()
-                    renderLanguageSection()
-                    renderAdvancedSection()
-                    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                        SettingsAboutBanner()
+                    // Modern Horizontal Category Pill Filter Bar on Mobile
+                    androidx.compose.foundation.lazy.LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = showAllMobileSections,
+                                onClick = { showAllMobileSections = true },
+                                label = {
+                                    Text(
+                                        text = "Semua",
+                                        fontWeight = if (showAllMobileSections) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            )
+                        }
+                        items(SettingsCategory.values().toList()) { category ->
+                            val isSelected = !showAllMobileSections && selectedCategory == category
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    showAllMobileSections = false
+                                    selectedCategory = category
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = category.icon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = stringResource(category.titleRes),
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        if (showAllMobileSections) {
+                            Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                                SettingsAboutBanner()
+                            }
+                            renderAppearanceSection()
+                            renderPrivacySection()
+                            renderAdBlockSection()
+                            renderLanguageSection()
+                            renderAdvancedSection()
+                        } else {
+                            when (selectedCategory) {
+                                SettingsCategory.APPEARANCE -> renderAppearanceSection()
+                                SettingsCategory.PRIVACY -> renderPrivacySection()
+                                SettingsCategory.ADBLOCK -> renderAdBlockSection()
+                                SettingsCategory.LANGUAGE -> renderLanguageSection()
+                                SettingsCategory.ADVANCED -> {
+                                    renderAdvancedSection()
+                                    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                                        SettingsAboutBanner()
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
                 }
             }
         }
