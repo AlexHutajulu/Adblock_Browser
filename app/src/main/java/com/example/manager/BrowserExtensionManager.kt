@@ -53,6 +53,7 @@ object BrowserExtensionManager {
     private const val TAG = "BrowserExtensionMgr"
     private const val PREFS_NAME = "chrome_extensions_prefs_v1"
     private const val KEY_EXTENSIONS_JSON = "installed_extensions_json_v1"
+    private const val KEY_EXTENSIONS_HMAC = "installed_extensions_hmac_v1"
     private const val KEY_SEEDED_DEFAULTS = "seeded_default_extensions_v1"
     private const val KEY_DEFAULT_OFF_V2 = "builtin_extensions_default_off_v2"
 
@@ -410,6 +411,23 @@ object BrowserExtensionManager {
             prefs.edit().putBoolean(KEY_SEEDED_DEFAULTS, true).apply()
             return BUILT_IN_EXTENSIONS
         }
+
+        // HMAC-SHA256 integrity check against offline tampering
+        var isTampered = false
+        if (com.example.security.KeystoreCrypto.isKeystoreAvailable()) {
+            val storedMac = prefs.getString(KEY_EXTENSIONS_HMAC, null)
+            val rawBytes = raw.toByteArray(Charsets.UTF_8)
+            if (storedMac != null) {
+                if (!com.example.security.KeystoreCrypto.verifyIntegrityMac(rawBytes, storedMac, context)) {
+                    Log.e(TAG, "EXTENSION INTEGRITY VIOLATION: HMAC verification failed! Extensions may have been tampered with.")
+                    isTampered = true
+                }
+            } else {
+                val computedMac = com.example.security.KeystoreCrypto.computeIntegrityMac(rawBytes, context)
+                prefs.edit().putString(KEY_EXTENSIONS_HMAC, computedMac).apply()
+            }
+        }
+
         val builtInById = BUILT_IN_EXTENSIONS.associateBy { it.id }
         var parsed = parseExtensionsJson(raw)
             .filter { it.id != "ext_fullscreen_kiwi_pro" && !it.name.equals("Full Screen Immersive Tool", ignoreCase = true) }
@@ -425,6 +443,14 @@ object BrowserExtensionManager {
                     ext
                 }
             }
+
+        if (isTampered) {
+            // Safety containment: disable all non-built-in extensions if storage was modified out-of-band
+            parsed = parsed.map { ext ->
+                if (ext.sourceType != ExtensionSourceType.BUILT_IN) ext.copy(isEnabled = false) else ext
+            }
+        }
+
         // Migrasi sekali: bawaan yang tersimpan aktif dimatikan. Setelah ini, status hanya berubah saat user mengaktifkannya.
         if (!prefs.getBoolean(KEY_DEFAULT_OFF_V2, false)) {
             parsed = parsed.map { if (it.sourceType == ExtensionSourceType.BUILT_IN) it.copy(isEnabled = false) else it }
@@ -447,10 +473,19 @@ object BrowserExtensionManager {
 
     fun saveExtensions(context: Context, extensions: List<BrowserExtension>) {
         val prefs = getSecurePrefs(context)
-        prefs.edit()
-            .putString(KEY_EXTENSIONS_JSON, serializeExtensionsJson(extensions))
+        val serialized = serializeExtensionsJson(extensions)
+        val editor = prefs.edit()
+            .putString(KEY_EXTENSIONS_JSON, serialized)
             .putBoolean(KEY_SEEDED_DEFAULTS, true)
-            .apply()
+
+        if (com.example.security.KeystoreCrypto.isKeystoreAvailable()) {
+            val mac = com.example.security.KeystoreCrypto.computeIntegrityMac(
+                serialized.toByteArray(Charsets.UTF_8),
+                context
+            )
+            editor.putString(KEY_EXTENSIONS_HMAC, mac)
+        }
+        editor.apply()
     }
 
     fun serializeExtensionsJson(extensions: List<BrowserExtension>): String {

@@ -110,7 +110,7 @@ abstract class AppDatabase : RoomDatabase() {
             if (!isUnitTestEnvironment()) {
                 try {
                     System.loadLibrary("sqlcipher")
-                    val passphrase = AppDatabaseEncrypted.getDatabasePassphrase(
+                    val passphraseBytes = AppDatabaseEncrypted.getDatabasePassphraseBytes(
                         context = appContext,
                         encryptedDbExistsOverride = encryptedFileExists
                     )
@@ -120,7 +120,7 @@ abstract class AppDatabase : RoomDatabase() {
                         ENCRYPTED_DB_NAME
                     )
                         .addMigrations(MIGRATION_1_2)
-                        .openHelperFactory(SupportOpenHelperFactory(passphrase.toByteArray(Charsets.UTF_8)))
+                        .openHelperFactory(SupportOpenHelperFactory(passphraseBytes))
 
                     if (com.example.BuildConfig.DEBUG && System.getenv("ALLOW_DESTRUCTIVE_MIGRATION") != null) {
                         encryptedBuilder.fallbackToDestructiveMigration(true)

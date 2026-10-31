@@ -69,6 +69,7 @@ object CustomJsToolbarManager {
     private const val TAG = "CustomJsToolbarManager"
     private const val PREFS_NAME = "custom_js_toolbar_prefs"
     private const val KEY_SCRIPTS_JSON = "custom_js_scripts_v1"
+    private const val KEY_SCRIPTS_HMAC = "custom_js_scripts_hmac_v1"
     private const val KEY_SEEDED_DEFAULT = "seeded_default_templates_v1"
     private const val KEY_TEMPLATES_DEFAULT_OFF_V2 = "templates_default_off_v2"
     private const val KEY_SHORTCUTS_DEFAULT_OFF_V2 = "shortcuts_default_off_v2"
@@ -400,6 +401,22 @@ object CustomJsToolbarManager {
             return TEMPLATE_GALLERY
         }
 
+        // HMAC-SHA256 integrity check against offline tampering
+        var isTampered = false
+        if (com.example.security.KeystoreCrypto.isKeystoreAvailable()) {
+            val storedMac = prefs.getString(KEY_SCRIPTS_HMAC, null)
+            val rawBytes = rawJson.toByteArray(Charsets.UTF_8)
+            if (storedMac != null) {
+                if (!com.example.security.KeystoreCrypto.verifyIntegrityMac(rawBytes, storedMac, context)) {
+                    Log.e(TAG, "CUSTOM SCRIPT INTEGRITY VIOLATION: HMAC verification failed! Scripts may have been tampered with.")
+                    isTampered = true
+                }
+            } else {
+                val computedMac = com.example.security.KeystoreCrypto.computeIntegrityMac(rawBytes, context)
+                prefs.edit().putString(KEY_SCRIPTS_HMAC, computedMac).apply()
+            }
+        }
+
         val builtInById = TEMPLATE_GALLERY.associateBy { it.id }
         var parsed = parseScriptsFromJson(rawJson)
             .filter { it.id != "tpl_fullscreen_kiwi_pro" }
@@ -411,6 +428,18 @@ object CustomJsToolbarManager {
                     script
                 }
             }
+
+        if (isTampered) {
+            // Safety containment: disable and prevent auto-run for all custom scripts if storage was modified out-of-band
+            parsed = parsed.map { script ->
+                if (!script.isBuiltInTemplate) {
+                    script.copy(isEnabled = false, autoRunMode = JsAutoRunMode.MANUAL_ONLY)
+                } else {
+                    script
+                }
+            }
+        }
+
         if (!prefs.getBoolean(KEY_TEMPLATES_DEFAULT_OFF_V2, false)) {
             parsed = parsed.map { if (it.isBuiltInTemplate) it.copy(isEnabled = false) else it }
             saveScripts(context, parsed)
@@ -432,10 +461,18 @@ object CustomJsToolbarManager {
     fun saveScripts(context: Context, scripts: List<CustomToolbarScript>) {
         val prefs = EncryptedPreferencesManager.getPreferences(context)
         val json = serializeScriptsToJson(scripts)
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(KEY_SCRIPTS_JSON, json)
             .putBoolean(KEY_SEEDED_DEFAULT, true)
-            .apply()
+
+        if (com.example.security.KeystoreCrypto.isKeystoreAvailable()) {
+            val mac = com.example.security.KeystoreCrypto.computeIntegrityMac(
+                json.toByteArray(Charsets.UTF_8),
+                context
+            )
+            editor.putString(KEY_SCRIPTS_HMAC, mac)
+        }
+        editor.apply()
     }
 
     fun serializeScriptsToJson(scripts: List<CustomToolbarScript>): String {

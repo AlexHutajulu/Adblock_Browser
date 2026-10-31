@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.example.security.KeystoreCrypto
+import com.example.security.SecurePreferences
 
 object EncryptedPreferencesManager {
     private const val TAG = "EncryptedPreferencesManager"
@@ -17,25 +19,42 @@ object EncryptedPreferencesManager {
         return prefsInstance ?: synchronized(this) {
             prefsInstance ?: run {
                 val appContext = context.applicationContext ?: context
-                val encrypted: SharedPreferences? = try {
-                    val masterKey = MasterKey.Builder(appContext)
-                        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                        .build()
-
-                    EncryptedSharedPreferences.create(
-                        appContext,
-                        PREFS_NAME,
-                        masterKey,
-                        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                    )
-                } catch (e: Exception) {
-                    Log.w(TAG, "Hardware keystore unavailable, using in-memory preferences only (nothing persisted): ${e.message}")
+                val secureInstance: SharedPreferences? = if (KeystoreCrypto.isKeystoreAvailable()) {
+                    try {
+                        val sp = SecurePreferences.getInstance(appContext)
+                        migrateFromEncryptedSharedPreferencesIfNeeded(appContext, sp)
+                        migrateLegacyPreferencesIfNeeded(appContext, sp)
+                        sp
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "SecurePreferences unavailable, checking fallback: ${e.message}")
+                        null
+                    }
+                } else {
                     null
                 }
-                val instance = encrypted ?: InMemorySharedPreferences()
-                if (encrypted != null) {
-                    migrateLegacyPreferencesIfNeeded(appContext, instance)
+
+                val instance = secureInstance ?: run {
+                    val encrypted: SharedPreferences? = try {
+                        val masterKey = MasterKey.Builder(appContext)
+                            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                            .build()
+
+                        EncryptedSharedPreferences.create(
+                            appContext,
+                            PREFS_NAME,
+                            masterKey,
+                            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Hardware keystore unavailable, using in-memory preferences only (nothing persisted): ${e.message}")
+                        null
+                    }
+                    val fallback = encrypted ?: InMemorySharedPreferences()
+                    if (encrypted != null) {
+                        migrateLegacyPreferencesIfNeeded(appContext, fallback)
+                    }
+                    fallback
                 }
                 prefsInstance = instance
                 instance
@@ -144,6 +163,49 @@ object EncryptedPreferencesManager {
                     }
                 }
             }
+        }
+    }
+
+    internal fun migrateFromEncryptedSharedPreferencesIfNeeded(appContext: Context, targetPrefs: SharedPreferences) {
+        try {
+            if (targetPrefs.getBoolean("__secure_prefs_migrated_v2__", false)) return
+            val masterKey = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            val legacy = EncryptedSharedPreferences.create(
+                appContext,
+                PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+            val allEntries = legacy.all
+            if (allEntries.isNotEmpty()) {
+                val editor = targetPrefs.edit()
+                for ((k, v) in allEntries) {
+                    if (targetPrefs.contains(k)) continue
+                    when (v) {
+                        is String -> editor.putString(k, v)
+                        is Boolean -> editor.putBoolean(k, v)
+                        is Int -> editor.putInt(k, v)
+                        is Long -> editor.putLong(k, v)
+                        is Float -> editor.putFloat(k, v)
+                        is Set<*> -> {
+                            @Suppress("UNCHECKED_CAST")
+                            (v as? Set<String>)?.let { editor.putStringSet(k, it) }
+                        }
+                    }
+                }
+                editor.putBoolean("__secure_prefs_migrated_v2__", true)
+                val committed = editor.commit()
+                if (committed) {
+                    Log.i(TAG, "Successfully migrated ${allEntries.size} entries from EncryptedSharedPreferences to SecurePreferences")
+                }
+            } else {
+                targetPrefs.edit().putBoolean("__secure_prefs_migrated_v2__", true).apply()
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Legacy EncryptedSharedPreferences migration note: ${e.message}")
         }
     }
 

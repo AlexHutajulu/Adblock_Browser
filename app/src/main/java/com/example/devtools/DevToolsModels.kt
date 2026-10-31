@@ -1,5 +1,7 @@
 package com.example.devtools
 
+import kotlinx.coroutines.flow.asStateFlow
+
 enum class DevToolsTab {
     ELEMENTS,
     CONSOLE,
@@ -128,8 +130,7 @@ class DevToolsStateController(
     private val maxConsoleEntriesPerSecond: Int = 60
 ) {
     private val _states = kotlinx.coroutines.flow.MutableStateFlow<Map<String, DevToolsState>>(emptyMap())
-    val states: kotlinx.coroutines.flow.StateFlow<Map<String, DevToolsState>> =
-        kotlinx.coroutines.flow.asStateFlow(_states)
+    val states: kotlinx.coroutines.flow.StateFlow<Map<String, DevToolsState>> = _states.asStateFlow()
 
     private val consoleRateLock = Any()
     private var consoleWindowStartMs = 0L

@@ -5,6 +5,7 @@ import com.example.manager.CertificatePinning
 import com.example.manager.SearchEngine
 import com.example.manager.SearchEngineManager
 import com.example.ui.components.NativeMessageBridge
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -561,6 +562,144 @@ class SecurityFixesTest {
             "FrameMetricsTelemetrySync must document plaintext values for MOD_PKGS XOR arrays",
             frameSyncSource.contains("com.gmail.heagoo.apkeditor")
         )
+    }
+
+    @Test
+    fun testAdvancedCryptographyUpgrade() {
+        val keystoreCryptoSource = findSource("com/example/security/KeystoreCrypto.kt").readText()
+        val securePrefsSource = findSource("com/example/security/SecurePreferences.kt").readText()
+        val encPrefsSource = findSource("com/example/manager/EncryptedPreferencesManager.kt").readText()
+        val dbEncryptedSource = findSource("com/example/data/AppDatabaseEncrypted.kt").readText()
+        val extSource = findSource("com/example/manager/BrowserExtensionManager.kt").readText()
+        val customJsSource = findSource("com/example/manager/CustomJsToolbarManager.kt").readText()
+
+        // 1. Hardware-backed Keystore & AES-256-GCM verification
+        assertTrue(
+            "KeystoreCrypto must use StrongBox key property with TEE fallback",
+            keystoreCryptoSource.contains("setIsStrongBoxBacked(true)")
+        )
+        assertTrue(
+            "KeystoreCrypto must use AES/GCM/NoPadding cipher",
+            keystoreCryptoSource.contains("AES/GCM/NoPadding")
+        )
+        assertTrue(
+            "KeystoreCrypto must support AAD authentication data binding",
+            keystoreCryptoSource.contains("cipher.updateAAD(aad)")
+        )
+        assertTrue(
+            "KeystoreCrypto must support HMAC-SHA256 integrity tags",
+            keystoreCryptoSource.contains("HmacSHA256")
+        )
+
+        // 2. Custom Keystore SecurePreferences replacement
+        assertTrue(
+            "EncryptedPreferencesManager must adopt SecurePreferences",
+            encPrefsSource.contains("SecurePreferences.create(")
+        )
+        assertTrue(
+            "SecurePreferences must use atomic temp file replacement",
+            securePrefsSource.contains(".tmp")
+        )
+
+        // 3. Database key envelope encryption
+        assertTrue(
+            "AppDatabaseEncrypted must support getDatabasePassphraseBytes",
+            dbEncryptedSource.contains("fun getDatabasePassphraseBytes")
+        )
+        assertTrue(
+            "AppDatabaseEncrypted must support envelope wrapping via KeystoreCrypto",
+            dbEncryptedSource.contains("KeystoreCrypto.wrapDatabaseKey") &&
+                dbEncryptedSource.contains("KeystoreCrypto.unwrapDatabaseKey")
+        )
+
+        // 4. HMAC-SHA256 tamper prevention in extensions & custom scripts
+        assertTrue(
+            "BrowserExtensionManager must store and verify extensions HMAC",
+            extSource.contains("KEY_EXTENSIONS_HMAC") &&
+                extSource.contains("verifyIntegrityMac") &&
+                extSource.contains("computeIntegrityMac")
+        )
+        assertTrue(
+            "CustomJsToolbarManager must store and verify custom scripts HMAC",
+            customJsSource.contains("KEY_SCRIPTS_HMAC") &&
+                customJsSource.contains("verifyIntegrityMac") &&
+                customJsSource.contains("computeIntegrityMac")
+        )
+
+        // 5. Functional crypto operations
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // HMAC computation and verification
+        val payload = "alex_browser_security_payload_test_data".toByteArray(Charsets.UTF_8)
+        val mac = com.example.security.KeystoreCrypto.computeIntegrityMac(payload, context)
+        assertTrue(
+            "HMAC tag must verify against original payload",
+            com.example.security.KeystoreCrypto.verifyIntegrityMac(payload, mac, context)
+        )
+        val alteredPayload = "alex_browser_security_payload_tampered".toByteArray(Charsets.UTF_8)
+        assertFalse(
+            "HMAC tag must fail when payload is altered",
+            com.example.security.KeystoreCrypto.verifyIntegrityMac(alteredPayload, mac, context)
+        )
+
+        // Keystore encryption & decryption with AAD binding
+        val secretBytes = "super_secret_envelope_dek_content".toByteArray(Charsets.UTF_8)
+        val aad = "test_bound_context_id".toByteArray(Charsets.UTF_8)
+        val encrypted = com.example.security.KeystoreCrypto.encryptGcm(
+            secretBytes,
+            com.example.security.KeystoreCrypto.ALIAS_DB_KEK,
+            aad,
+            context
+        )
+        val decrypted = com.example.security.KeystoreCrypto.decryptGcm(
+            encrypted,
+            com.example.security.KeystoreCrypto.ALIAS_DB_KEK,
+            aad,
+            context
+        )
+        assertEquals("super_secret_envelope_dek_content", decrypted.toString(Charsets.UTF_8))
+
+        var aadFailed = false
+        try {
+            com.example.security.KeystoreCrypto.decryptGcm(
+                encrypted,
+                com.example.security.KeystoreCrypto.ALIAS_DB_KEK,
+                "wrong_aad_context".toByteArray(Charsets.UTF_8),
+                context
+            )
+        } catch (_: Exception) {
+            aadFailed = true
+        }
+        assertTrue("Decryption must fail with authentication error if AAD does not match", aadFailed)
+
+        // SecurePreferences functional test
+        val securePrefs = com.example.security.SecurePreferences.create(context, "test_crypto_storage")
+        securePrefs.edit()
+            .putString("crypto_test_key", "secret_value_123")
+            .putInt("crypto_test_int", 999)
+            .putBoolean("crypto_test_bool", true)
+            .commit()
+
+        assertEquals("secret_value_123", securePrefs.getString("crypto_test_key", null))
+        assertEquals(999, securePrefs.getInt("crypto_test_int", 0))
+        assertTrue(securePrefs.getBoolean("crypto_test_bool", false))
+
+        val secureFile = java.io.File(context.noBackupFilesDir, "test_crypto_storage.json")
+        if (secureFile.exists()) {
+            val rawStorage = secureFile.readText()
+            assertFalse(
+                "Plaintext value must never be stored on disk",
+                rawStorage.contains("secret_value_123")
+            )
+            assertFalse(
+                "Plaintext key name must never be stored on disk",
+                rawStorage.contains("crypto_test_key")
+            )
+        }
+
+        // Database passphrase bytes
+        val dbBytes = com.example.data.AppDatabaseEncrypted.getDatabasePassphraseBytes(context)
+        assertTrue("Database passphrase bytes must be present", dbBytes.isNotEmpty())
     }
 }
 
