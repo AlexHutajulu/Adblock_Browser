@@ -53,6 +53,21 @@ class AdBlockWebViewClient(
 
     private val cache = android.util.LruCache<String, String>(6_000)
 
+    internal fun buildBoundedCacheKey(
+        modeOrdinal: Int,
+        trackerEnabled: Boolean,
+        streamBoost: Boolean,
+        pgHost: String,
+        rawUrl: String
+    ): String {
+        val boundedUrl = if (rawUrl.length <= 512) {
+            rawUrl
+        } else {
+            rawUrl.substring(0, 384) + "#" + rawUrl.hashCode().toUInt().toString(16)
+        }
+        return "$modeOrdinal|$trackerEnabled|$streamBoost|$pgHost|$boundedUrl"
+    }
+
     init {
         syncCleanAdEngineMode(mode)
     }
@@ -312,7 +327,7 @@ class AdBlockWebViewClient(
             com.example.manager.SiteDomainPolicy.isSameSite(reqHost, pgHost)) || isProxiedSameSiteImage
 
         val streamBoost = streamingBoostEnabled.get()
-        val cacheKey = "${mode.ordinal}|$trackerEnabled|$streamBoost|$pgHost|$rawUrl"
+        val cacheKey = buildBoundedCacheKey(mode.ordinal, trackerEnabled, streamBoost, pgHost, rawUrl)
         cache.get(cacheKey)?.let { cachedReason ->
             return if (cachedReason == "ALLOW") {
                 null
@@ -2203,21 +2218,36 @@ class AdBlockWebViewClient(
     return false;
   }
 
-  window.__asConfirmZap=function(){
-    if(!selectedEl) return '';
-    var sel=cssPath(selectedEl);
-    var toHide=selectedEl;
-    clearHighlight();
-    try{toHide.style.setProperty('display','none','important');}catch(e){}
-    return sel;
-  };
+  Object.defineProperty(window, '__asConfirmZap', {
+    value: function(){
+      if(!selectedEl) return '';
+      var sel=cssPath(selectedEl);
+      var toHide=selectedEl;
+      clearHighlight();
+      try{toHide.style.setProperty('display','none','important');}catch(e){}
+      return sel;
+    },
+    writable: false,
+    configurable: true,
+    enumerable: false
+  });
 
-  window.__asZapperCleanup=function(){
-    window.__asZapperActive=false;
-    zapToken='';
-    clearHighlight();
-    document.removeEventListener('click',onClickCapture,true);
-  };
+  Object.defineProperty(window, '__asZapperCleanup', {
+    value: function(){
+      window.__asZapperActive=false;
+      zapToken='';
+      clearHighlight();
+      document.removeEventListener('click',onClickCapture,true);
+      try {
+        delete window.__asConfirmZap;
+        delete window.__asZapperCleanup;
+        delete window.__asZapperActive;
+      } catch(e) {}
+    },
+    writable: false,
+    configurable: true,
+    enumerable: false
+  });
 
   document.addEventListener('click',onClickCapture,true);
 })();

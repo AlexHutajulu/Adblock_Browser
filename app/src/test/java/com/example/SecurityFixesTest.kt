@@ -363,5 +363,204 @@ class SecurityFixesTest {
             customWebViewSource.contains("if (!isUserGesture && viewModel.blockHiddenPopups.value)")
         )
     }
+
+    @Test
+    fun testPriority1AuditFixes() {
+        val extSource = findSource("com/example/manager/BrowserExtensionManager.kt").readText()
+        val dlSource = findSource("com/example/manager/AppDownloadManager.kt").readText()
+        val tabPersistenceSource = findSource("com/example/manager/TabPersistenceService.kt").readText()
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        val viewModelSource = findSource("com/example/ui/viewmodel/BrowserViewModel.kt").readText()
+        val faviconSource = findSource("com/example/manager/FaviconStore.kt").readText()
+        val securityGuardSource = findSource("com/example/manager/SecurityGuardEngine.kt").readText()
+        val mainActivitySource = findSource("com/example/MainActivity.kt").readText()
+
+        // 1. N-01: SSRF via TOCTOU DNS Rebinding eliminated by binding OkHttpClient to FilterListManager.SAFE_PUBLIC_DNS
+        assertTrue(
+            "BrowserExtensionManager must use FilterListManager.SAFE_PUBLIC_DNS",
+            extSource.contains("FilterListManager.SAFE_PUBLIC_DNS")
+        )
+        assertFalse(
+            "BrowserExtensionManager must not use unpinned HttpURLConnection.openConnection()",
+            extSource.contains(".openConnection()")
+        )
+        assertTrue(
+            "AppDownloadManager must use FilterListManager.SAFE_PUBLIC_DNS",
+            dlSource.contains("FilterListManager.SAFE_PUBLIC_DNS")
+        )
+        assertFalse(
+            "AppDownloadManager must not use unpinned HttpURLConnection.openConnection()",
+            dlSource.contains(".openConnection()")
+        )
+        assertTrue(
+            "TabPersistenceService must use FilterListManager.SAFE_PUBLIC_DNS",
+            tabPersistenceSource.contains("FilterListManager.SAFE_PUBLIC_DNS")
+        )
+        assertFalse(
+            "TabPersistenceService must not use unpinned HttpURLConnection.openConnection()",
+            tabPersistenceSource.contains(".openConnection()")
+        )
+
+        // 2. N-02: Renderer crash deadlock recovery in onRenderProcessGone
+        assertTrue(
+            "CustomWebView onRenderProcessGone must destroy and remove crashed WebView",
+            customWebViewSource.contains("view?.safeDestroy()") &&
+                customWebViewSource.contains("viewModel.destroyAndRemoveWebView(tab.id)") &&
+                customWebViewSource.contains("crashRecoveryCounter++")
+        )
+
+        // 3. H-04: Multi-Profile WebView incognito isolation and private favicon memory cache
+        assertTrue(
+            "CustomWebView must use WebViewFeature.MULTI_PROFILE for private tabs",
+            customWebViewSource.contains("WebViewFeature.MULTI_PROFILE") &&
+                customWebViewSource.contains("INCOGNITO_WEBVIEW_PROFILE_NAME")
+        )
+        assertTrue(
+            "BrowserViewModel must purge isolated incognito WebView profile on close",
+            viewModelSource.contains("WebViewFeature.MULTI_PROFILE") &&
+                viewModelSource.contains("INCOGNITO_WEBVIEW_PROFILE_NAME")
+        )
+        assertTrue(
+            "FaviconStore must isolate private favicons in dedicated privateCache",
+            faviconSource.contains("privateCache")
+        )
+
+        // 4. N-06: Default browser ACTION_VIEW intent handling in MainActivity
+        assertTrue(
+            "MainActivity must handle incoming ACTION_VIEW intents safely",
+            mainActivitySource.contains("handleIncomingBrowserIntent") &&
+                mainActivitySource.contains("Intent.ACTION_VIEW")
+        )
+
+        // 5. H-02: Runtime Safe Browsing initialization & verification
+        assertTrue(
+            "SecurityGuardEngine must initialize Safe Browsing via WebViewCompat.startSafeBrowsing",
+            securityGuardSource.contains("initSafeBrowsingIfSupported") &&
+                securityGuardSource.contains("WebViewCompat.startSafeBrowsing")
+        )
+
+        // 6. H-03 / N-04: Extension sandbox hardening (closure-isolated GM storage & critical host protection)
+        assertTrue(
+            "GM_setValue/GM_getValue must use closure-private __gmPrivateStore instead of host localStorage",
+            extSource.contains("__gmPrivateStore") &&
+                !extSource.contains("localStorage.setItem('__gm_'")
+        )
+        assertTrue(
+            "BrowserExtensionManager must block non-built-in extensions on critical protected hosts even on manual trigger",
+            extSource.contains("SecurityGuardEngine.isCriticalProtectedHost(activeUrl)")
+        )
+    }
+
+    @Test
+    fun testPriority2AuditFixes() {
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        val securityGuardSource = findSource("com/example/manager/SecurityGuardEngine.kt").readText()
+        val dlSource = findSource("com/example/manager/AppDownloadManager.kt").readText()
+        val bridgeSource = findSource("com/example/ui/components/NativeMessageBridge.kt").readText()
+        val viewModelSource = findSource("com/example/ui/viewmodel/BrowserViewModel.kt").readText()
+        val devToolsModelsSource = findSource("com/example/devtools/DevToolsModels.kt").readText()
+
+        // 1. N-03: Document-start injection for Incognito storage isolation and WebRTC leak protection
+        assertTrue(
+            "CustomWebView must register buildIncognitoStorageIsolationScript via addDocumentStartJavaScript",
+            customWebViewSource.contains("SecurityGuardEngine.buildIncognitoStorageIsolationScript()") &&
+                customWebViewSource.contains("SecurityGuardEngine.buildWebRtcProtectionScript(")
+        )
+
+        // 2. N-05: Non-destructive Web Audio noise injection in Strict Privacy Shield
+        assertTrue(
+            "Strict AFP script must wrap origCreateOscillator instead of returning a broken stub object",
+            securityGuardSource.contains("origCreateOscillator.apply(this, arguments)") &&
+                securityGuardSource.contains("AudioBuffer.prototype.getChannelData")
+        )
+
+        // 3. M-05 & L-08: Streamed Base64 data URI decoding (10 MB cap) and 32 KB control message cap in NativeMessageBridge
+        assertEquals(
+            10 * 1024 * 1024,
+            com.example.manager.AppDownloadManager.MAX_DATA_URI_LENGTH
+        )
+        assertTrue(
+            "AppDownloadManager must stream-decode Base64 data URIs via Base64InputStream",
+            dlSource.contains("Base64InputStream")
+        )
+        assertTrue(
+            "NativeMessageBridge must enforce MAX_CONTROL_MESSAGE_LENGTH for non-blob calls",
+            bridgeSource.contains("MAX_CONTROL_MESSAGE_LENGTH")
+        )
+        val oversizedControlPayload = """{"m":"openUrlInNewTab","a":["https://example.com/${"a".repeat(40000)}"]}"""
+        assertNull(
+            "Oversized non-blob control message must be rejected by NativeMessageBridge.parseCall",
+            NativeMessageBridge.parseCall(oversizedControlPayload, "example.com")
+        )
+
+        // 4. M-02: DevToolsStateController extracted from BrowserViewModel
+        assertTrue(
+            "DevToolsStateController must be extracted into DevToolsModels.kt and used by BrowserViewModel",
+            devToolsModelsSource.contains("class DevToolsStateController") &&
+                viewModelSource.contains("DevToolsStateController(")
+        )
+    }
+
+    @Test
+    fun testPriority3AuditFixes() {
+        val filterManagerSource = findSource("com/example/manager/FilterListManager.kt").readText()
+        val heuristicsSource = findSource("com/yourbrowser/adblock/HeuristicsEngine.kt").readText()
+        val adBlockClientSource = findSource("com/yourbrowser/adblock/AdBlockWebViewClient.kt").readText()
+        val customWebViewSource = findSource("com/example/ui/components/CustomWebView.kt").readText()
+        val settingsSource = findSource("com/example/manager/SettingsManager.kt").readText()
+        val frameSyncSource = findSource("com/example/manager/FrameMetricsTelemetrySync.kt").readText()
+
+        // 1. M-04: Cooldown & exponential backoff for filter list downloads
+        assertTrue(
+            "FilterListManager must implement MIN_REFRESH_COOLDOWN_MS and computeBackoffDelayMs",
+            filterManagerSource.contains("MIN_REFRESH_COOLDOWN_MS") &&
+                filterManagerSource.contains("computeBackoffDelayMs")
+        )
+        assertEquals(30_000L, com.example.manager.FilterListManager.computeBackoffDelayMs(1))
+        assertEquals(60_000L, com.example.manager.FilterListManager.computeBackoffDelayMs(2))
+
+        // 2. M-10: Token-boundary matching for gambling URL keywords
+        assertTrue(
+            "HeuristicsEngine must match gambling URL keywords at token boundaries",
+            heuristicsSource.contains("containsKeywordAtTokenBoundary")
+        )
+        assertTrue(
+            com.yourbrowser.adblock.HeuristicsEngine.containsKeywordAtTokenBoundary(
+                "/promo/slot-gacor/daftar",
+                "slot-gacor"
+            )
+        )
+        assertFalse(
+            com.yourbrowser.adblock.HeuristicsEngine.containsKeywordAtTokenBoundary(
+                "/articles/myslot-gacorx-review",
+                "slot-gacor"
+            )
+        )
+
+        // 3. L-02: Bounded decision cache key in AdBlockWebViewClient
+        assertTrue(
+            "AdBlockWebViewClient must bound decision cache keys via buildBoundedCacheKey",
+            adBlockClientSource.contains("buildBoundedCacheKey")
+        )
+
+        // 4. L-07: MutableContextWrapper baseContext reset in WebView.safeDestroy()
+        assertTrue(
+            "safeDestroy must reset MutableContextWrapper baseContext to applicationContext",
+            customWebViewSource.contains("wrapper.baseContext = wrapper.baseContext.applicationContext")
+        )
+
+        // 5. L-09: Lock-free AtomicLong counters in SettingsManager
+        assertTrue(
+            "SettingsManager must use AtomicLong for blocked statistics counters",
+            settingsSource.contains("AtomicLong") &&
+                !settingsSource.contains("@Synchronized\n    fun incrementTrackerCookies")
+        )
+
+        // 6. M-01: Plaintext documentation for XOR constants in FrameMetricsTelemetrySync
+        assertTrue(
+            "FrameMetricsTelemetrySync must document plaintext values for MOD_PKGS XOR arrays",
+            frameSyncSource.contains("com.gmail.heagoo.apkeditor")
+        )
+    }
 }
 

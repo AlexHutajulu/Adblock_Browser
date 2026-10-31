@@ -349,4 +349,51 @@ class EngineTest {
         assertTrue(balancedScript.contains("regDomain(iHost)===regDomain(pHost)"))
         assertTrue(balancedScript.contains("SAFE_EMBED_DOMAINS"))
     }
+
+    @Test
+    fun testPriority2AbpImportantAndSeparatorRules() {
+        // 1. $important block rule overrides @@ exception rule
+        val rulesWithImportant = listOf(
+            "@@||ads.example.com^",
+            "||ads.example.com/tracker.js\$script,important"
+        )
+        val ruleSetImp = AbpRuleEngine.build(rulesWithImportant.asSequence())
+        val matchImp = ruleSetImp.shouldBlock(
+            url = "https://ads.example.com/tracker.js",
+            sourceHost = "news.example.org",
+            resourceType = AbpRuleEngine.ResourceType.SCRIPT
+        )
+        assertNotNull("\$important block rule must override @@ exception rule", matchImp)
+        assertEquals("important-custom-rule", matchImp?.reason)
+
+        // 2. Trailing ^ separator prevents false-positive prefix matches on longer path words
+        val rulesWithCaret = listOf(
+            "||cdn.example.com/ads^\$script"
+        )
+        val ruleSetCaret = AbpRuleEngine.build(rulesWithCaret.asSequence())
+        assertNotNull(
+            "Rule with trailing ^ must match when followed by query separator '?'",
+            ruleSetCaret.shouldBlock(
+                url = "https://cdn.example.com/ads?id=123",
+                sourceHost = "news.example.org",
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertNotNull(
+            "Rule with trailing ^ must match when followed by path separator '/'",
+            ruleSetCaret.shouldBlock(
+                url = "https://cdn.example.com/ads/banner.js",
+                sourceHost = "news.example.org",
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+        assertNull(
+            "Rule with trailing ^ must NOT false-positive match /adsense_helper.js",
+            ruleSetCaret.shouldBlock(
+                url = "https://cdn.example.com/adsense_helper.js",
+                sourceHost = "news.example.org",
+                resourceType = AbpRuleEngine.ResourceType.SCRIPT
+            )
+        )
+    }
 }

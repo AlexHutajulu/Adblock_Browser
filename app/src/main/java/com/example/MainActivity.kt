@@ -133,6 +133,9 @@ class MainActivity : AppCompatActivity() {
         }
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
 
+        // Initialize WebView Safe Browsing runtime engine if supported
+        com.example.manager.SecurityGuardEngine.initSafeBrowsingIfSupported(applicationContext)
+
         // Install AdBlock ServiceWorker interceptor before WebView content starts
         com.example.manager.AdBlockServiceWorker.install()
 
@@ -146,6 +149,9 @@ class MainActivity : AppCompatActivity() {
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]
         com.example.manager.AppLanguageManager.applyLocale(this, viewModel.appLanguage.value)
+        if (savedInstanceState == null) {
+            handleIncomingBrowserIntent(intent)
+        }
 
         // Start TabPersistenceService to track if the application is swiped away/killed from recent task manager
         try {
@@ -421,6 +427,31 @@ class MainActivity : AppCompatActivity() {
             mFilePathCallback?.onReceiveValue(null)
             mFilePathCallback = null
             mCameraPhotoUri = null
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (::viewModel.isInitialized) {
+            handleIncomingBrowserIntent(intent)
+        }
+    }
+
+    private fun handleIncomingBrowserIntent(incomingIntent: Intent?) {
+        if (incomingIntent?.action != Intent.ACTION_VIEW) return
+        val rawUrl = incomingIntent.dataString?.trim() ?: return
+        if (!com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(rawUrl)) {
+            Log.w(TAG, "Rejected unsafe external ACTION_VIEW URI: $rawUrl")
+            return
+        }
+        val currentTabs = viewModel.tabs.value
+        val activeId = viewModel.activeTabId.value
+        val activeTab = currentTabs.find { it.id == activeId }
+        if (activeTab != null && !activeTab.isPrivate && activeTab.url.isBlank()) {
+            viewModel.navigateTo(rawUrl)
+        } else {
+            viewModel.addNewTab(url = rawUrl, isPrivate = false)
         }
     }
 

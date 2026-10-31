@@ -43,6 +43,8 @@ object NativeMessageBridge {
 
     /** Largest message accepted: a blob data URI plus JSON envelope overhead. */
     internal const val MAX_MESSAGE_LENGTH = AppDownloadManager.MAX_DATA_URI_LENGTH + 64 * 1024
+    /** Strict upper bound for regular control/telemetry bridge calls (non-blob). */
+    internal const val MAX_CONTROL_MESSAGE_LENGTH = 32 * 1024
     private const val MAX_METHOD_LENGTH = 64
     private const val MAX_ARGS = 8
 
@@ -165,6 +167,7 @@ object NativeMessageBridge {
             val method = obj.optString("m", "")
             if (method.isEmpty() || method.length > MAX_METHOD_LENGTH) return null
             if (!method.all { it.isLetterOrDigit() || it == '_' }) return null
+            if (method != "downloadVerifiedBlob" && raw.length > MAX_CONTROL_MESSAGE_LENGTH) return null
             val args = obj.optJSONArray("a") ?: JSONArray()
             if (args.length() > MAX_ARGS) return null
             Call(method, args, originHost)

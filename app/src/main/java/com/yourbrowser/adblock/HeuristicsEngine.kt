@@ -157,6 +157,20 @@ object HeuristicsEngine {
         return false
     }
 
+    internal fun containsKeywordAtTokenBoundary(text: String, keyword: String): Boolean {
+        if (text.isEmpty() || keyword.isEmpty()) return false
+        var searchFrom = 0
+        while (true) {
+            val idx = text.indexOf(keyword, searchFrom)
+            if (idx == -1) return false
+            val beforeOk = idx == 0 || !text[idx - 1].isLetterOrDigit()
+            val endIdx = idx + keyword.length
+            val afterOk = endIdx >= text.length || !text[endIdx].isLetterOrDigit()
+            if (beforeOk && afterOk) return true
+            searchFrom = idx + 1
+        }
+    }
+
     /**
      * Deteksi apakah URL (host, path, atau query) merupakan situs / pop-up judi online (Judol).
      */
@@ -181,7 +195,7 @@ object HeuristicsEngine {
         val pathAndQuery = extractPathAndQuery(lower)
         if (pathAndQuery.isNotEmpty()) {
             for (kw in GAMBLING_URL_KEYWORDS) {
-                if (pathAndQuery.contains(kw)) return true
+                if (containsKeywordAtTokenBoundary(pathAndQuery, kw)) return true
             }
         }
         return false
@@ -240,7 +254,7 @@ object HeuristicsEngine {
                 }
             }
             for (kw in GAMBLING_URL_KEYWORDS) {
-                if (pathPart.contains(kw)) {
+                if (containsKeywordAtTokenBoundary(pathPart, kw)) {
                     return "heuristic-gambling-path"
                 }
             }

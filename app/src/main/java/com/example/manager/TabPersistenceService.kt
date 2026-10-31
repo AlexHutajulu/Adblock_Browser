@@ -140,10 +140,22 @@ object BackgroundMediaController {
         return AppDownloadManager.isSafeDownloadUrl(url, resolveDns = false)
     }
 
+    private val safeArtworkClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .dns(FilterListManager.SAFE_PUBLIC_DNS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     /**
-     * Downloads artwork with SSRF protection: every hop (including redirects)
-     * is re-validated with DNS resolution against private/loopback ranges,
-     * redirects are followed manually, and the body size is hard-capped.
+     * Downloads artwork with SSRF & TOCTOU DNS Rebinding protection:
+     * socket connections use [FilterListManager.SAFE_PUBLIC_DNS] so resolved IP
+     * addresses are validated at connection time, redirects are followed manually,
+     * and the body size is hard-capped.
      */
     private fun downloadArtworkBytes(initialUrl: String): ByteArray? {
         var currentUrl = initialUrl
@@ -152,44 +164,44 @@ object BackgroundMediaController {
             if (!AppDownloadManager.isSafeDownloadUrl(currentUrl, resolveDns = true)) return null
             if (!currentUrl.startsWith("https://", ignoreCase = true)) return null
             val url = URL(currentUrl)
-            val connection = (url.openConnection() as? HttpURLConnection) ?: return null
-            try {
-                connection.apply {
-                    connectTimeout = 6000
-                    readTimeout = 6000
-                    instanceFollowRedirects = false
-                    useCaches = false
-                    requestMethod = "GET"
-                    setRequestProperty(
-                        "User-Agent",
-                        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-                    )
-                    setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-                }
-                val code = connection.responseCode
+            val request = okhttp3.Request.Builder()
+                .url(currentUrl)
+                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                )
+                .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+                .get()
+                .build()
+
+            val redirectTarget: String? = safeArtworkClient.newCall(request).execute().use { response ->
+                val code = response.code
                 if (code in REDIRECT_CODES) {
-                    val location = connection.getHeaderField("Location")
+                    val location = response.header("Location")
                     if (location.isNullOrBlank() || ++redirects > MAX_ARTWORK_REDIRECTS) return null
                     val nextUrl = URL(url, location).toString()
                     if (!AppDownloadManager.isSafeRedirectHop(currentUrl, nextUrl, resolveDns = true)) return null
-                    currentUrl = nextUrl
-                    continue
+                    nextUrl
+                } else {
+                    if (code !in 200..299) return null
+                    val declaredLength = response.body?.contentLength() ?: -1L
+                    if (declaredLength > MAX_ARTWORK_BYTES) return null
+                    val contentType = response.header("Content-Type")?.lowercase().orEmpty()
+                    if (contentType.isNotEmpty() && !contentType.startsWith("image/") &&
+                        !contentType.startsWith("application/octet-stream")
+                    ) {
+                        return null
+                    }
+                    val stream = response.body?.byteStream() ?: return null
+                    return stream.use { readBounded(it, MAX_ARTWORK_BYTES) }
                 }
-                if (code !in 200..299) return null
-                val declaredLength = connection.contentLengthLong
-                if (declaredLength > MAX_ARTWORK_BYTES) return null
-                val contentType = connection.contentType?.lowercase().orEmpty()
-                if (contentType.isNotEmpty() && !contentType.startsWith("image/") &&
-                    !contentType.startsWith("application/octet-stream")
-                ) {
-                    return null
-                }
-                return connection.inputStream.use { readBounded(it, MAX_ARTWORK_BYTES) }
-            } finally {
-                try {
-                    connection.disconnect()
-                } catch (_: Exception) {}
             }
+            if (redirectTarget != null) {
+                currentUrl = redirectTarget
+                continue
+            }
+            return null
         }
     }
 
@@ -1009,6 +1021,7 @@ class TabPersistenceService : Service() {
                     val cookieManager = android.webkit.CookieManager.getInstance()
                     cookieManager.removeAllCookies(null)
                     cookieManager.flush()
+                    SecurityGuardEngine.purgeIncognitoWebViewProfile()
                     Log.d(TAG, "Cleared cookies, web storage, and persisted tabs on exit as configured")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to clear cookies on exit: ${e.message}")

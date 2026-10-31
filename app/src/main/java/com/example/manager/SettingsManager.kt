@@ -53,25 +53,55 @@ class SettingsManager(private val context: Context) {
         private const val KEY_THIRD_PARTY_COOKIES_BLOCKED = "third_party_cookies_blocked"
     }
 
-    // --- Counters ---
+    // --- Counters (Atomic in-memory + async EncryptedSharedPreferences persistence) ---
+    private val trackerCookiesAtomic by lazy {
+        java.util.concurrent.atomic.AtomicLong(prefs.getLong(KEY_TRACKER_COOKIES_BLOCKED, 0L))
+    }
+    private val fingerprintingAtomic by lazy {
+        java.util.concurrent.atomic.AtomicLong(prefs.getLong(KEY_FINGERPRINTING_BLOCKED, 0L))
+    }
+    private val thirdPartyCookiesAtomic by lazy {
+        java.util.concurrent.atomic.AtomicLong(prefs.getLong(KEY_THIRD_PARTY_COOKIES_BLOCKED, 0L))
+    }
+    private val stealthTrapsAtomic by lazy {
+        java.util.concurrent.atomic.AtomicLong(prefs.getLong("stealth_traps_defused_count", 0L))
+    }
+
     var trackersCookiesBlockedCount: Long
-        get() = prefs.getLong(KEY_TRACKER_COOKIES_BLOCKED, 0L)
-        set(value) = prefs.edit().putLong(KEY_TRACKER_COOKIES_BLOCKED, value).apply()
+        get() = trackerCookiesAtomic.get()
+        set(value) {
+            trackerCookiesAtomic.set(value)
+            prefs.edit().putLong(KEY_TRACKER_COOKIES_BLOCKED, value).apply()
+        }
         
     var fingerprintingBlockedCount: Long
-        get() = prefs.getLong(KEY_FINGERPRINTING_BLOCKED, 0L)
-        set(value) = prefs.edit().putLong(KEY_FINGERPRINTING_BLOCKED, value).apply()
+        get() = fingerprintingAtomic.get()
+        set(value) {
+            fingerprintingAtomic.set(value)
+            prefs.edit().putLong(KEY_FINGERPRINTING_BLOCKED, value).apply()
+        }
         
     var thirdPartyCookiesBlockedCount: Long
-        get() = prefs.getLong(KEY_THIRD_PARTY_COOKIES_BLOCKED, 0L)
-        set(value) = prefs.edit().putLong(KEY_THIRD_PARTY_COOKIES_BLOCKED, value).apply()
+        get() = thirdPartyCookiesAtomic.get()
+        set(value) {
+            thirdPartyCookiesAtomic.set(value)
+            prefs.edit().putLong(KEY_THIRD_PARTY_COOKIES_BLOCKED, value).apply()
+        }
         
-    @Synchronized
-    fun incrementTrackerCookies() { trackersCookiesBlockedCount++ }
-    @Synchronized
-    fun incrementFingerprinting() { fingerprintingBlockedCount++ }
-    @Synchronized
-    fun incrementThirdPartyCookies() { thirdPartyCookiesBlockedCount++ }
+    fun incrementTrackerCookies() {
+        val next = trackerCookiesAtomic.incrementAndGet()
+        prefs.edit().putLong(KEY_TRACKER_COOKIES_BLOCKED, next).apply()
+    }
+
+    fun incrementFingerprinting() {
+        val next = fingerprintingAtomic.incrementAndGet()
+        prefs.edit().putLong(KEY_FINGERPRINTING_BLOCKED, next).apply()
+    }
+
+    fun incrementThirdPartyCookies() {
+        val next = thirdPartyCookiesAtomic.incrementAndGet()
+        prefs.edit().putLong(KEY_THIRD_PARTY_COOKIES_BLOCKED, next).apply()
+    }
 
     // --- Privacy Features ---
     var privacyShieldMode: PrivacyShieldMode
@@ -240,12 +270,15 @@ class SettingsManager(private val context: Context) {
     }
 
     var stealthTrapsDefusedCount: Long
-        get() = prefs.getLong("stealth_traps_defused_count", 0L)
-        set(value) = prefs.edit().putLong("stealth_traps_defused_count", value).apply()
+        get() = stealthTrapsAtomic.get()
+        set(value) {
+            stealthTrapsAtomic.set(value)
+            prefs.edit().putLong("stealth_traps_defused_count", value).apply()
+        }
 
-    @Synchronized
     fun incrementStealthTrapsDefused() {
-        stealthTrapsDefusedCount++
+        val next = stealthTrapsAtomic.incrementAndGet()
+        prefs.edit().putLong("stealth_traps_defused_count", next).apply()
     }
 
     var appTheme: AppTheme

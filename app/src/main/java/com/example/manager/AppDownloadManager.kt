@@ -115,13 +115,23 @@ class AppDownloadManager(
         return cleanCurrent == cleanInitial || cleanCurrent.endsWith(".$cleanInitial")
     }
 
-    private fun openSafeConnection(
+    private val safeDownloadHttpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .dns(FilterListManager.SAFE_PUBLIC_DNS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun openSafeResponse(
         initialUrl: String,
         userAgent: String,
         isIncognito: Boolean = false,
         rangeHeader: String? = null,
         maxRedirects: Int = 5
-    ): HttpURLConnection {
+    ): okhttp3.Response {
         val initialHost = try {
             URL(initialUrl.trim()).host ?: ""
         } catch (_: Exception) {
@@ -134,30 +144,27 @@ class AppDownloadManager(
                 throw SecurityException("Blocked unsafe download URL or private network redirect target")
             }
             val urlObj = URL(currentUrl)
-            val conn = (urlObj.openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = false
-                useCaches = false
-                connectTimeout = 10000
-                readTimeout = 10000
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", userAgent)
-                if (!rangeHeader.isNullOrBlank()) {
-                    setRequestProperty("Range", rangeHeader)
+            val requestBuilder = okhttp3.Request.Builder()
+                .url(currentUrl)
+                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                .header("User-Agent", userAgent)
+                .get()
+            if (!rangeHeader.isNullOrBlank()) {
+                requestBuilder.header("Range", rangeHeader)
+            }
+            // Never leak normal-session cookies in Incognito or across cross-domain redirects
+            if (!isIncognito && isSameOrSubdomainHost(urlObj.host ?: "", initialHost)) {
+                val scopedCookie = try {
+                    android.webkit.CookieManager.getInstance().getCookie(currentUrl)
+                } catch (_: Exception) {
+                    null
                 }
-                // Never leak normal-session cookies in Incognito or across cross-domain redirects
-                if (!isIncognito && isSameOrSubdomainHost(urlObj.host ?: "", initialHost)) {
-                    val scopedCookie = try {
-                        android.webkit.CookieManager.getInstance().getCookie(currentUrl)
-                    } catch (_: Exception) {
-                        null
-                    }
-                    if (!scopedCookie.isNullOrBlank()) {
-                        setRequestProperty("Cookie", scopedCookie)
-                    }
+                if (!scopedCookie.isNullOrBlank()) {
+                    requestBuilder.header("Cookie", scopedCookie)
                 }
             }
-            conn.connect()
-            val code = conn.responseCode
+            val response = safeDownloadHttpClient.newCall(requestBuilder.build()).execute()
+            val code = response.code
             if (code in intArrayOf(
                     HttpURLConnection.HTTP_MOVED_PERM,
                     HttpURLConnection.HTTP_MOVED_TEMP,
@@ -166,8 +173,8 @@ class AppDownloadManager(
                     308
                 )
             ) {
-                val location = conn.getHeaderField("Location")
-                conn.disconnect()
+                val location = response.header("Location")
+                response.close()
                 if (location.isNullOrBlank()) {
                     throw Exception("Redirect response HTTP $code missing Location header")
                 }
@@ -183,7 +190,7 @@ class AppDownloadManager(
                 currentUrl = nextUrlObj.toString()
                 continue
             }
-            return conn
+            return response
         }
     }
 
@@ -281,17 +288,38 @@ class AppDownloadManager(
                 if (commaIndex == -1) throw Exception("Invalid data URI")
                 val meta = url.substring(5, commaIndex)
                 val payload = url.substring(commaIndex + 1)
-                val bytes = if (meta.contains(";base64", ignoreCase = true)) {
-                    android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                val estimatedBytes = if (meta.contains(";base64", ignoreCase = true)) {
+                    (payload.length.toLong() * 3L) / 4L
                 } else {
-                    java.net.URLDecoder.decode(payload, "UTF-8").toByteArray(Charsets.UTF_8)
+                    payload.length.toLong()
                 }
                 val usableSpaceData = parentDir.usableSpace
-                if (bytes.isNotEmpty() && usableSpaceData > 0 && usableSpaceData < bytes.size + (10 * 1024 * 1024)) {
-                    throw Exception("Insufficient storage space for data URI. Need ${formatSize(bytes.size.toLong())} but only ${formatSize(usableSpaceData)} is available.")
+                if (estimatedBytes > 0 && usableSpaceData > 0 && usableSpaceData < estimatedBytes + (10 * 1024 * 1024)) {
+                    throw Exception("Insufficient storage space for data URI. Need ${formatSize(estimatedBytes)} but only ${formatSize(usableSpaceData)} is available.")
                 }
-                destFile.writeBytes(bytes)
-                val size = bytes.size.toLong()
+                var writtenBytes = 0L
+                if (meta.contains(";base64", ignoreCase = true)) {
+                    android.util.Base64InputStream(
+                        payload.byteInputStream(Charsets.ISO_8859_1),
+                        android.util.Base64.DEFAULT
+                    ).use { base64In ->
+                        FileOutputStream(destFile).use { fileOut ->
+                            val buf = ByteArray(16 * 1024)
+                            while (true) {
+                                val read = base64In.read(buf)
+                                if (read == -1) break
+                                fileOut.write(buf, 0, read)
+                                writtenBytes += read
+                            }
+                            fileOut.flush()
+                        }
+                    }
+                } else {
+                    val bytes = java.net.URLDecoder.decode(payload, "UTF-8").toByteArray(Charsets.UTF_8)
+                    destFile.writeBytes(bytes)
+                    writtenBytes = bytes.size.toLong()
+                }
+                val size = writtenBytes
                 _activeDownloads.update {
                     val current = it[id] ?: return@update it
                     it + (id to current.copy(
@@ -309,22 +337,23 @@ class AppDownloadManager(
             }
 
             // Establish target metadata of source URL using quick Range check with safe redirect validation
-            var testConn: HttpURLConnection? = null
+            var testResponse: okhttp3.Response? = null
             var supportsRange = false
             var totalSize = -1L
             var resolvedTargetUrl = url
             try {
-                testConn = openSafeConnection(url, userAgent, isIncognito = isIncognito, rangeHeader = "bytes=0-0")
-                resolvedTargetUrl = testConn.url?.toString() ?: url
-                val responseCode = testConn.responseCode
+                testResponse = openSafeResponse(url, userAgent, isIncognito = isIncognito, rangeHeader = "bytes=0-0")
+                resolvedTargetUrl = testResponse.request.url.toString()
+                val responseCode = testResponse.code
                 supportsRange = (responseCode == HttpURLConnection.HTTP_PARTIAL)
+                val bodyLen = testResponse.body?.contentLength() ?: -1L
                 totalSize = if (supportsRange) {
-                    testConn.getHeaderField("Content-Range")?.substringAfter("/")?.toLongOrNull() ?: testConn.contentLengthLong
+                    testResponse.header("Content-Range")?.substringAfter("/")?.toLongOrNull() ?: bodyLen
                 } else {
-                    testConn.contentLengthLong
+                    bodyLen
                 }
             } finally {
-                try { testConn?.disconnect() } catch (_: Exception) {}
+                try { testResponse?.close() } catch (_: Exception) {}
             }
 
             // Safe Scoped-Storage/Low-Storage Check
@@ -417,7 +446,7 @@ class AppDownloadManager(
 
             } else {
                 // Sequential fallback downloading
-                var connection: HttpURLConnection? = null
+                var response: okhttp3.Response? = null
                 var inputStream: InputStream? = null
                 var randomAccessFile: RandomAccessFile? = null
 
@@ -430,9 +459,9 @@ class AppDownloadManager(
                     } else {
                         null
                     }
-                    connection = openSafeConnection(resolvedTargetUrl, userAgent, isIncognito = isIncognito, rangeHeader = rangeHeader)
+                    response = openSafeResponse(resolvedTargetUrl, userAgent, isIncognito = isIncognito, rangeHeader = rangeHeader)
 
-                    val seqResponseCode = connection.responseCode
+                    val seqResponseCode = response.code
                     val isPartial = seqResponseCode == HttpURLConnection.HTTP_PARTIAL
                     val isOk = seqResponseCode == HttpURLConnection.HTTP_OK
 
@@ -440,7 +469,7 @@ class AppDownloadManager(
                         throw Exception("Server connection error HTTP $seqResponseCode")
                     }
 
-                    val contentLength = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+                    val contentLength = response.header("Content-Length")?.toLongOrNull() ?: (response.body?.contentLength() ?: -1L)
                     val totalSeqSize = if (isPartial) downloadedBefore + contentLength else contentLength
 
                     val usableSpaceSeq = parentDir.usableSpace
@@ -454,7 +483,7 @@ class AppDownloadManager(
                         it + (id to current.copy(totalBytes = totalSeqSize, downloadedBytes = downloadedBefore))
                     }
 
-                    inputStream = connection.inputStream
+                    inputStream = response.body?.byteStream() ?: throw Exception("Empty download response stream")
                     randomAccessFile = RandomAccessFile(destFile, "rw")
                     if (isPartial) {
                         randomAccessFile.seek(downloadedBefore)
@@ -510,7 +539,7 @@ class AppDownloadManager(
                 } finally {
                     try { inputStream?.close() } catch (e: Exception) {}
                     try { randomAccessFile?.close() } catch (e: Exception) {}
-                    try { connection?.disconnect() } catch (e: Exception) {}
+                    try { response?.close() } catch (e: Exception) {}
                 }
             }
 
@@ -557,24 +586,24 @@ class AppDownloadManager(
             return // Segment already complete
         }
 
-        var connection: HttpURLConnection? = null
+        var response: okhttp3.Response? = null
         var inputStream: InputStream? = null
         var outputStream: FileOutputStream? = null
 
         try {
-            connection = openSafeConnection(
+            response = openSafeResponse(
                 initialUrl = url,
                 userAgent = userAgent,
                 isIncognito = isIncognito,
                 rangeHeader = "bytes=$actualStartBytes-$endBytes"
             )
 
-            val responseCode = connection.responseCode
+            val responseCode = response.code
             if (responseCode != HttpURLConnection.HTTP_PARTIAL && responseCode != HttpURLConnection.HTTP_OK) {
                 throw Exception("Segment $partIndex request denied: HTTP $responseCode")
             }
 
-            inputStream = connection.inputStream
+            inputStream = response.body?.byteStream() ?: throw Exception("Segment $partIndex response body empty")
             outputStream = FileOutputStream(partFile, true)
 
             val buffer = ByteArray(8 * 1024)
@@ -586,7 +615,7 @@ class AppDownloadManager(
         } finally {
             try { inputStream?.close() } catch (e: Exception) {}
             try { outputStream?.close() } catch (e: Exception) {}
-            try { connection?.disconnect() } catch (e: Exception) {}
+            try { response?.close() } catch (e: Exception) {}
         }
     }
 
@@ -726,7 +755,7 @@ class AppDownloadManager(
     fun sanitizeFileName(name: String): String = Companion.sanitizeFileName(name)
 
     companion object {
-        internal const val MAX_DATA_URI_LENGTH = 25 * 1024 * 1024 // 25 MB max character length for data: URIs
+        internal const val MAX_DATA_URI_LENGTH = 10 * 1024 * 1024 // 10 MB max character length for data: URIs (prevents OOM heap spikes)
         private val BIDI_OVERRIDE_REGEX = Regex("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]")
         private val UNSAFE_FILENAME_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\x7F]")
         private val MULTI_DOT_REGEX = Regex("\\.\\.+")

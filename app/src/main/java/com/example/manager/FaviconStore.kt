@@ -23,10 +23,15 @@ import java.security.MessageDigest
 
 object FaviconStore {
     private const val MAX_MEMORY_BYTES = 8 * 1024 * 1024   // batas memori 8 MB
+    private const val MAX_PRIVATE_MEMORY_BYTES = 2 * 1024 * 1024 // batas memori khusus sesi privat (2 MB)
     private const val SIZE_PX = 64
     private var dir: File? = null
 
     private val cache = object : LruCache<String, Bitmap>(MAX_MEMORY_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+
+    private val privateCache = object : LruCache<String, Bitmap>(MAX_PRIVATE_MEMORY_BYTES) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
@@ -48,7 +53,11 @@ object FaviconStore {
         if (url.isNullOrBlank() || icon == null) return
         val host = hostOf(url); if (host.isEmpty()) return
         val scaled = Bitmap.createScaledBitmap(icon, SIZE_PX, SIZE_PX, true)
-        cache.put(host, scaled)
+        if (isPrivate) {
+            privateCache.put(host, scaled)
+        } else {
+            cache.put(host, scaled)
+        }
         // SECURITY FIX: Never persist incognito / private tab favicons to disk.
         if (!isPrivate) {
             fileFor(host)?.let { f -> f.outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) } }
@@ -56,6 +65,7 @@ object FaviconStore {
     }
 
     fun clearPrivateSessionFavicons(hosts: Set<String>) {
+        privateCache.evictAll()
         if (hosts.isEmpty()) return
         for (host in hosts) {
             val h = host.lowercase().removePrefix("www.")
@@ -68,6 +78,7 @@ object FaviconStore {
     fun get(host: String): Bitmap? {
         val h = host.lowercase().removePrefix("www.")
         if (h.isEmpty()) return null
+        privateCache.get(h)?.let { return it }
         cache.get(h)?.let { return it }
         val f = fileFor(h) ?: return null
         if (!f.exists()) return null

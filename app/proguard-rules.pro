@@ -2,22 +2,9 @@
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 
-# Keep WebView @JavascriptInterface methods (AlexBrowserNative & AdBlockDevTools)
--keepattributes JavascriptInterface
+# Keep WebView NativeMessageBridge & AdBlockDevTools models
 -keepattributes *Annotation*
 -keepattributes Signature, InnerClasses, EnclosingMethod
-
--keepclassmembers class * {
-    @android.webkit.JavascriptInterface <methods>;
-}
-
--keep class com.example.ui.components.CustomWebView$* {
-    @android.webkit.JavascriptInterface <methods>;
-}
-
--keep class com.example.ui.components.CustomWebViewKt$* {
-    @android.webkit.JavascriptInterface <methods>;
-}
 
 -keep class com.example.devtools.DevToolsJsBridge {
     public *;

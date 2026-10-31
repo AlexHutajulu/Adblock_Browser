@@ -46,6 +46,59 @@ object SecurityGuardEngine {
     private val httpsUpgradesCounter = AtomicInteger(0)
     private val clipboardBlocksCounter = AtomicInteger(0)
 
+    const val INCOGNITO_WEBVIEW_PROFILE_NAME = "AlexBrowserIncognitoProfile"
+
+    fun purgeIncognitoWebViewProfile() {
+        try {
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+                val store = androidx.webkit.ProfileStore.getInstance()
+                val incognitoProfile = store.getProfile(INCOGNITO_WEBVIEW_PROFILE_NAME)
+                incognitoProfile?.cookieManager?.removeAllCookies(null)
+                incognitoProfile?.cookieManager?.flush()
+                incognitoProfile?.webStorage?.deleteAllData()
+                try {
+                    store.deleteProfile(INCOGNITO_WEBVIEW_PROFILE_NAME)
+                } catch (_: IllegalStateException) {
+                    // Profile may still be attached to an active WebView; data inside it is already purged above
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    @Volatile
+    var isSafeBrowsingRuntimeReady: Boolean = false
+        internal set
+
+    @Volatile
+    private var safeBrowsingInitAttempted: Boolean = false
+
+    fun initSafeBrowsingIfSupported(context: Context) {
+        if (safeBrowsingInitAttempted) return
+        safeBrowsingInitAttempted = true
+        val appContext = context.applicationContext ?: context
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O_MR1) {
+            isSafeBrowsingRuntimeReady = false
+            return
+        }
+        try {
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.START_SAFE_BROWSING)) {
+                androidx.webkit.WebViewCompat.startSafeBrowsing(appContext) { success ->
+                    isSafeBrowsingRuntimeReady = success
+                    if (!success) {
+                        android.util.Log.w("SecurityGuardEngine", "Safe Browsing initialization returned false on this device")
+                    }
+                }
+            } else {
+                android.webkit.WebView.startSafeBrowsing(appContext) { success ->
+                    isSafeBrowsingRuntimeReady = success
+                }
+            }
+        } catch (t: Throwable) {
+            isSafeBrowsingRuntimeReady = false
+            android.util.Log.w("SecurityGuardEngine", "Safe Browsing not supported on runtime: ${t.message}")
+        }
+    }
+
     private val CRITICAL_PROTECTED_DOMAINS = setOf(
         "accounts.google.com", "myaccount.google.com", "oauth2.googleapis.com",
         "login.microsoftonline.com", "login.live.com", "appleid.apple.com",
@@ -636,9 +689,34 @@ object SecurityGuardEngine {
                 };
                 if (window.AudioContext || window.webkitAudioContext) {
                     var ac = window.AudioContext || window.webkitAudioContext;
-                    ac.prototype.createOscillator = function() {
-                        return { connect: function() {}, start: function() {}, stop: function() {}, frequency: { value: 440, setValueAtTime: function() {} }, type: 'sine' };
-                    };
+                    var origCreateOscillator = ac.prototype.createOscillator;
+                    if (typeof origCreateOscillator === 'function') {
+                        ac.prototype.createOscillator = function() {
+                            var osc = origCreateOscillator.apply(this, arguments);
+                            try {
+                                if (osc && osc.frequency && typeof osc.frequency.value === 'number') {
+                                    osc.frequency.value = osc.frequency.value + (hostSeed * 1e-7);
+                                }
+                            } catch (e) {}
+                            return osc;
+                        };
+                    }
+                    if (typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype && typeof AudioBuffer.prototype.getChannelData === 'function') {
+                        var origGetChannelData = AudioBuffer.prototype.getChannelData;
+                        AudioBuffer.prototype.getChannelData = function() {
+                            var channelData = origGetChannelData.apply(this, arguments);
+                            if (channelData && !channelData.__asAudioNoised) {
+                                try {
+                                    Object.defineProperty(channelData, '__asAudioNoised', { value: true, enumerable: false });
+                                    var noise = hostSeed * 1e-7;
+                                    for (var i = 0; i < channelData.length; i += 64) {
+                                        channelData[i] = channelData[i] + noise;
+                                    }
+                                } catch (e) {}
+                            }
+                            return channelData;
+                        };
+                    }
                 }
             })();
         """.trimIndent()

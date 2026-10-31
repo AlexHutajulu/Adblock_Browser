@@ -64,6 +64,13 @@ object FrameMetricsTelemetrySync {
     )
 
     // XOR(0x5A) encoded known patcher/modder installer & tool packages:
+    // 1. "com.gmail.heagoo.apkeditor"
+    // 2. "com.gmail.heagoo.apkeditor.pro"
+    // 3. "com.chelpus.lackypatch"
+    // 4. "com.dimonvideo.luckypatcher"
+    // 5. "com.forpda.lp"
+    // 6. "bin.mt.plus"
+    // 7. "player.normal.np"
     private val MOD_PKGS = arrayOf(
         intArrayOf(57, 53, 55, 116, 61, 55, 59, 51, 54, 116, 50, 63, 59, 61, 53, 53, 116, 59, 42, 49, 63, 62, 51, 46, 53, 40),
         intArrayOf(57, 53, 55, 116, 61, 55, 59, 51, 54, 116, 50, 63, 59, 61, 53, 53, 116, 59, 42, 49, 63, 62, 51, 46, 53, 40, 116, 42, 40, 53),

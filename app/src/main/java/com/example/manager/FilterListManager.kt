@@ -28,6 +28,18 @@ object FilterListManager {
     internal const val MAX_RULE_LINE_LENGTH = 2048
     internal const val MAX_NET_RULES = 150_000
     internal const val MAX_COSMETIC_RULES = 80_000
+    internal const val MIN_REFRESH_COOLDOWN_MS = 60_000L // 1 menit cooldown minimum antar-unduhan
+
+    @Volatile
+    private var lastDownloadAttemptMs: Long = 0L
+    private val urlFailureCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val urlBackoffUntilMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    internal fun computeBackoffDelayMs(failures: Int): Long {
+        if (failures <= 0) return 0L
+        val shift = (failures - 1).coerceIn(0, 5)
+        return minOf(30_000L * (1L shl shift), 15 * 60_000L)
+    }
 
     // Sumber filter eksternal dikosongkan agar 100% bebas dari lisensi pihak ketiga (GPL/CC-BY-SA).
     // Seluruh aturan menggunakan mesin internal mandiri (CleanAdEngine, HeuristicsEngine & fallback.txt).
@@ -222,19 +234,30 @@ object FilterListManager {
         return null
     }
 
-    private fun downloadAllLists(context: Context, cacheFile: File): String {
-        val safeDns = object : okhttp3.Dns {
-            override fun lookup(hostname: String): List<InetAddress> {
-                val resolved = okhttp3.Dns.SYSTEM.lookup(hostname)
-                val safeAddresses = resolved.filter { addr -> !isRestrictedAddress(addr) }
-                if (safeAddresses.isEmpty() || safeAddresses.size != resolved.size) {
-                    throw java.net.UnknownHostException("Blocked restricted or private IP resolution for $hostname")
-                }
-                return safeAddresses
+    /**
+     * Shared TOCTOU-free DNS resolver for OkHttpClient instances.
+     * Validates the resolved [InetAddress] list at socket connection time and
+     * rejects any hostname that resolves to a loopback, private, link-local,
+     * CGNAT, or multicast address (defending against DNS Rebinding / SSRF).
+     */
+    val SAFE_PUBLIC_DNS: okhttp3.Dns = object : okhttp3.Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val cleanHost = hostname.trim().lowercase(Locale.US).removeSurrounding("[", "]").trimEnd('.')
+            if (cleanHost.isEmpty() || SecurityGuardEngine.isLocalOrPrivateAddress(cleanHost)) {
+                throw java.net.UnknownHostException("Blocked local or private host: $hostname")
             }
+            val resolved = okhttp3.Dns.SYSTEM.lookup(hostname)
+            val safeAddresses = resolved.filter { addr -> !isRestrictedAddress(addr) }
+            if (safeAddresses.isEmpty() || safeAddresses.size != resolved.size) {
+                throw java.net.UnknownHostException("Blocked restricted or private IP resolution for $hostname")
+            }
+            return safeAddresses
         }
+    }
+
+    private fun downloadAllLists(context: Context, cacheFile: File): String {
         val clientBuilder = OkHttpClient.Builder()
-            .dns(safeDns)
+            .dns(SAFE_PUBLIC_DNS)
             .followRedirects(false)
             .followSslRedirects(false)
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -245,10 +268,22 @@ object FilterListManager {
         CertificatePinning.buildPinner()?.let { clientBuilder.certificatePinner(it) }
         val client = clientBuilder.build()
 
+        val now = System.currentTimeMillis()
+        if (now - lastDownloadAttemptMs < MIN_REFRESH_COOLDOWN_MS && cacheFile.exists() && cacheFile.length() > 0) {
+            Log.d(TAG, "Skipping filter download: within cooldown window")
+            return cacheFile.readText(Charsets.UTF_8)
+        }
+        lastDownloadAttemptMs = now
+
         val combined = StringBuilder()
         var successCount = 0
 
         for ((name, url) in FILTER_LIST_URLS) {
+            val backoffUntil = urlBackoffUntilMs[url] ?: 0L
+            if (System.currentTimeMillis() < backoffUntil) {
+                Log.w(TAG, "Skipping $name: in exponential backoff window")
+                continue
+            }
             try {
                 val body = fetchFilterListSecurely(client, url)
                 if (!body.isNullOrBlank() && !CertificatePinning.isSafeFilterListContent(body)) {
@@ -256,6 +291,8 @@ object FilterListManager {
                     continue
                 }
                 if (!body.isNullOrBlank()) {
+                    urlFailureCount.remove(url)
+                    urlBackoffUntilMs.remove(url)
                     if (combined.length + body.length <= MAX_TOTAL_CACHE_BYTES) {
                         combined.appendLine("! === $name ===")
                         combined.appendLine(body)
@@ -264,8 +301,15 @@ object FilterListManager {
                     } else {
                         Log.w(TAG, "Skipping $name: total filter cache limit reached")
                     }
+                } else {
+                    val fails = (urlFailureCount[url] ?: 0) + 1
+                    urlFailureCount[url] = fails
+                    urlBackoffUntilMs[url] = System.currentTimeMillis() + computeBackoffDelayMs(fails)
                 }
             } catch (e: Exception) {
+                val fails = (urlFailureCount[url] ?: 0) + 1
+                urlFailureCount[url] = fails
+                urlBackoffUntilMs[url] = System.currentTimeMillis() + computeBackoffDelayMs(fails)
                 Log.w(TAG, "Failed to download $name: ${e.message}")
             }
         }

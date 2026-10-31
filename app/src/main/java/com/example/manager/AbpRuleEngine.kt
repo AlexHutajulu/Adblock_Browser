@@ -109,6 +109,10 @@ object AbpRuleEngine {
         val reason: String
     )
 
+    internal fun isAbpSeparatorChar(ch: Char): Boolean {
+        return !ch.isLetterOrDigit() && ch != '_' && ch != '-' && ch != '.' && ch != '%'
+    }
+
     class CustomRule(
         val rawLine: String,
         val isAllow: Boolean,
@@ -120,7 +124,9 @@ object AbpRuleEngine {
         val excludedDomains: Set<String>?,
         val resourceTypes: Int,
         val excludedResourceTypes: Int = 0,
-        val wildcardTokens: List<String>? = null
+        val wildcardTokens: List<String>? = null,
+        val isImportant: Boolean = false,
+        val requireTrailingSeparator: Boolean = false
     ) {
         fun matchesType(type: ResourceType): Boolean {
             val bit = 1 shl type.ordinal
@@ -159,6 +165,12 @@ object AbpRuleEngine {
             return true
         }
 
+        private fun hasValidTrailingSeparator(lowerUrl: String, endIdx: Int): Boolean {
+            if (!requireTrailingSeparator) return true
+            if (endIdx >= lowerUrl.length) return true
+            return isAbpSeparatorChar(lowerUrl[endIdx])
+        }
+
         fun matchesUrl(lowerUrl: String, reqHost: String): Boolean {
             if (domainTarget != null) {
                 if (reqHost != domainTarget && !reqHost.endsWith(".$domainTarget")) return false
@@ -171,10 +183,19 @@ object AbpRuleEngine {
                     if (idx == -1) return false
                     searchFrom = idx + part.length
                 }
-                return true
+                return hasValidTrailingSeparator(lowerUrl, searchFrom)
             }
             if (!substringToken.isNullOrEmpty()) {
-                return lowerUrl.contains(substringToken)
+                var searchFrom = 0
+                while (true) {
+                    val idx = lowerUrl.indexOf(substringToken, searchFrom)
+                    if (idx == -1) return false
+                    val endIdx = idx + substringToken.length
+                    if (hasValidTrailingSeparator(lowerUrl, endIdx)) {
+                        return true
+                    }
+                    searchFrom = idx + 1
+                }
             }
             return domainTarget != null
         }
@@ -307,6 +328,32 @@ object AbpRuleEngine {
             val isProxiedSameSiteImage = resourceType == ResourceType.IMAGE &&
                 isSameSiteImageProxy(reqHost, srcHost, lowerUrl)
             val isThirdParty = isThirdParty(reqHost, srcHost) && !isProxiedSameSiteImage
+
+            // 1. Evaluate $important block rules first (per ABP/uBO spec, $important overrides @@ exception rules)
+            var hImp = reqHost
+            while (hImp.isNotEmpty()) {
+                domainOnlyBlock[hImp]?.forEach { rule ->
+                    if (rule.isImportant &&
+                        rule.matchesType(resourceType) &&
+                        rule.matchesParty(isThirdParty) &&
+                        rule.matchesSourceDomain(srcHost)
+                    ) {
+                        return MatchResult(false, rule.rawLine, "important-domain-rule")
+                    }
+                }
+                val dot = hImp.indexOf('.')
+                hImp = if (dot != -1) hImp.substring(dot + 1) else ""
+            }
+            for (rule in blockRules) {
+                if (!rule.isImportant) continue
+                if (rule.matchesType(resourceType) &&
+                    rule.matchesParty(isThirdParty) &&
+                    rule.matchesSourceDomain(srcHost) &&
+                    rule.matchesUrl(lowerUrl, reqHost)
+                ) {
+                    return MatchResult(false, rule.rawLine, "important-custom-rule")
+                }
+            }
 
             if (matchesAllowRule(lowerUrl, srcHost, resourceType)) {
                 return null
@@ -738,6 +785,7 @@ object AbpRuleEngine {
             var excludedResourceMask = 0
             var unsupportedOption = false
             var hasNonSubresourceModifier = false
+            var isImportant = false
 
             if (optionsPart.isNotEmpty()) {
                 for (opt in optionsPart.split(',')) {
@@ -792,7 +840,10 @@ object AbpRuleEngine {
                             o == "inline-script" || o == "inline-font" || o == "webrtc" || o == "all" -> {
                             hasNonSubresourceModifier = true
                         }
-                        o == "important" || o == "match-case" || o == "~match-case" -> {
+                        o == "important" -> {
+                            isImportant = true
+                        }
+                        o == "match-case" || o == "~match-case" -> {
                             // Recognized modifier that does not change resource mask
                         }
                         o.startsWith("redirect=") || o.startsWith("redirect-rule=") ||
@@ -839,7 +890,8 @@ object AbpRuleEngine {
                             excludedDomains = excludedDomains,
                             resourceTypes = resourceMask,
                             excludedResourceTypes = excludedResourceMask,
-                            wildcardTokens = null
+                            wildcardTokens = null,
+                            isImportant = isImportant
                         )
                         val targetMap = if (isAllow) domainOnlyAllow else domainOnlyBlock
                         targetMap.getOrPut(dom) { ArrayList() }.add(rule)
@@ -856,6 +908,7 @@ object AbpRuleEngine {
                     val rawHostPart = withoutPipes.substring(0, hostEnd)
                     val dom = if (rawHostPart.contains('*')) "" else cleanHost(rawHostPart)
                     val rawRest = withoutPipes.substring(hostEnd)
+                    val hasTrailingSep = rawRest.removePrefix("^").endsWith("^") || patternPart.endsWith("^")
                     val (firstToken, wildcardParts) = parsePatternTokens(rawRest)
                     if (dom.isEmpty() && firstToken == null && wildcardParts == null) {
                         skippedCount++
@@ -872,7 +925,9 @@ object AbpRuleEngine {
                         excludedDomains = excludedDomains,
                         resourceTypes = resourceMask,
                         excludedResourceTypes = excludedResourceMask,
-                        wildcardTokens = wildcardParts
+                        wildcardTokens = wildcardParts,
+                        isImportant = isImportant,
+                        requireTrailingSeparator = hasTrailingSep
                     )
                     if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                     parsedCount++
@@ -881,6 +936,7 @@ object AbpRuleEngine {
             } else if (isSinglePipeScheme) {
                 val rawUrl = lowerPattern.substring(1)
                 val dom = extractHost(rawUrl)
+                val hasTrailingSep = rawUrl.endsWith("^")
                 val (firstToken, wildcardParts) = parsePatternTokens(rawUrl)
                 val rule = CustomRule(
                     rawLine = line,
@@ -893,13 +949,16 @@ object AbpRuleEngine {
                     excludedDomains = excludedDomains,
                     resourceTypes = resourceMask,
                     excludedResourceTypes = excludedResourceMask,
-                    wildcardTokens = wildcardParts
+                    wildcardTokens = wildcardParts,
+                    isImportant = isImportant,
+                    requireTrailingSeparator = hasTrailingSep
                 )
                 if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                 parsedCount++
                 continue
             } else {
                 val rawBody = lowerPattern.removePrefix("|")
+                val hasTrailingSep = rawBody.endsWith("^")
                 val (firstToken, wildcardParts) = parsePatternTokens(rawBody)
                 val effectiveLength = wildcardParts?.sumOf { it.length } ?: (firstToken?.length ?: 0)
                 if (effectiveLength < 3) {
@@ -917,7 +976,9 @@ object AbpRuleEngine {
                     excludedDomains = excludedDomains,
                     resourceTypes = resourceMask,
                     excludedResourceTypes = excludedResourceMask,
-                    wildcardTokens = wildcardParts
+                    wildcardTokens = wildcardParts,
+                    isImportant = isImportant,
+                    requireTrailingSeparator = hasTrailingSep
                 )
                 if (isAllow) allowRules.add(rule) else blockRules.add(rule)
                 parsedCount++

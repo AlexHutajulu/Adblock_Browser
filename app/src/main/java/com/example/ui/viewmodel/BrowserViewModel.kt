@@ -401,8 +401,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _isPipMode.value = enabled
     }
 
-    private val _devToolsStates = MutableStateFlow<Map<String, DevToolsState>>(emptyMap())
-    val devToolsStates = _devToolsStates.asStateFlow()
+    private val devToolsController = com.example.devtools.DevToolsStateController(
+        maxConsoleMessageLength = MAX_CONSOLE_MESSAGE_LENGTH,
+        maxConsoleSourceLength = MAX_CONSOLE_SOURCE_LENGTH,
+        maxConsoleEntriesPerTab = MAX_CONSOLE_ENTRIES_PER_TAB,
+        maxConsoleEntriesPerSecond = MAX_CONSOLE_ENTRIES_PER_SECOND
+    )
+    val devToolsStates = devToolsController.states
 
     init {
         if (settings.dolbyAtmosEnabled && !_dolbyAtmosEnabled.value) {
@@ -432,92 +437,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun toggleDevTools(tabId: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(isOpen = !current.isOpen))
-        }
-    }
+    fun toggleDevTools(tabId: String) = devToolsController.toggleDevTools(tabId)
 
-    fun openDevTools(tabId: String, tab: DevToolsTab) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(isOpen = true, activeTab = tab))
-        }
-    }
+    fun openDevTools(tabId: String, tab: DevToolsTab) = devToolsController.openDevTools(tabId, tab)
 
-    fun setDevToolsTab(tabId: String, tab: DevToolsTab) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(activeTab = tab))
-        }
-    }
+    fun setDevToolsTab(tabId: String, tab: DevToolsTab) = devToolsController.setDevToolsTab(tabId, tab)
 
-    fun setElementPickerActive(tabId: String, active: Boolean) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(isElementPickerActive = active))
-        }
-    }
+    fun setElementPickerActive(tabId: String, active: Boolean) = devToolsController.setElementPickerActive(tabId, active)
 
-    fun updateSelectedElement(tabId: String, element: SelectedElement) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(selectedElement = element, isElementPickerActive = false))
-        }
-    }
+    fun updateSelectedElement(tabId: String, element: SelectedElement) = devToolsController.updateSelectedElement(tabId, element)
 
-    private val consoleRateLock = Any()
-    private var consoleWindowStartMs = 0L
-    private var consoleCountInWindow = 0
+    fun addConsoleEntry(tabId: String, entry: ConsoleEntry) =
+        devToolsController.addConsoleEntry(tabId, entry, _inspectToolsEnabled.value)
 
-    fun addConsoleEntry(tabId: String, entry: ConsoleEntry) {
-        if (!_inspectToolsEnabled.value) return
-        val now = System.currentTimeMillis()
-        synchronized(consoleRateLock) {
-            if (now - consoleWindowStartMs > 1000L) {
-                consoleWindowStartMs = now
-                consoleCountInWindow = 0
-            }
-            if (++consoleCountInWindow > MAX_CONSOLE_ENTRIES_PER_SECOND) return
-        }
-        val boundedEntry = entry.copy(
-            message = entry.message.take(MAX_CONSOLE_MESSAGE_LENGTH),
-            sourceId = entry.sourceId?.take(MAX_CONSOLE_SOURCE_LENGTH)
-        )
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val newEntries = (current.consoleEntries + boundedEntry).takeLast(MAX_CONSOLE_ENTRIES_PER_TAB)
-            states + (tabId to current.copy(consoleEntries = newEntries))
-        }
-    }
+    fun addConsoleResult(tabId: String, command: String, result: String) =
+        devToolsController.addConsoleResult(tabId, command, result)
 
-    fun addConsoleResult(tabId: String, command: String, result: String) {
-        val entryCmd = ConsoleEntry(
-            id = java.util.UUID.randomUUID().toString(),
-            timestamp = System.currentTimeMillis(),
-            level = ConsoleLevel.DEBUG,
-            message = ("> $command").take(MAX_CONSOLE_MESSAGE_LENGTH)
-        )
-        val entryRes = ConsoleEntry(
-            id = java.util.UUID.randomUUID().toString(),
-            timestamp = System.currentTimeMillis(),
-            level = ConsoleLevel.RESULT,
-            message = result.take(MAX_CONSOLE_MESSAGE_LENGTH)
-        )
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val newEntries = (current.consoleEntries + entryCmd + entryRes).takeLast(MAX_CONSOLE_ENTRIES_PER_TAB)
-            states + (tabId to current.copy(consoleEntries = newEntries))
-        }
-    }
-
-    fun clearConsole(tabId: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(consoleEntries = emptyList()))
-        }
-    }
+    fun clearConsole(tabId: String) = devToolsController.clearConsole(tabId)
 
     fun recordNetworkRequest(
         tabId: String,
@@ -527,152 +463,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         hasGesture: Boolean,
         headers: Map<String, String>,
         resourceType: ResourceType
-    ): String {
-        val entryId = java.util.UUID.randomUUID().toString()
-        val host = try { android.net.Uri.parse(url).host ?: "" } catch (_: Exception) { "" }
-        val scheme = try { android.net.Uri.parse(url).scheme ?: "" } catch (_: Exception) { "" }
-        val entry = NetworkEntry(
-            id = entryId,
-            timestamp = System.currentTimeMillis(),
-            url = url,
-            method = method,
-            host = host,
-            scheme = scheme,
-            isMainFrame = isMainFrame,
-            hasGesture = hasGesture,
-            resourceType = resourceType,
-            requestHeaders = headers,
-            status = NetworkStatus.PENDING
-        )
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val newEntries = (current.networkEntries + entry).takeLast(500)
-            states + (tabId to current.copy(networkEntries = newEntries))
-        }
-        return entryId
-    }
+    ): String = devToolsController.recordNetworkRequest(tabId, url, method, isMainFrame, hasGesture, headers, resourceType)
 
-    fun updateNetworkBlocked(tabId: String, entryId: String, reason: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val updated = current.networkEntries.map { entry ->
-                if (entry.id == entryId) {
-                    entry.copy(
-                        status = NetworkStatus.BLOCKED,
-                        blockedReason = reason,
-                        durationMs = System.currentTimeMillis() - entry.timestamp
-                    )
-                } else entry
-            }
-            states + (tabId to current.copy(networkEntries = updated))
-        }
-    }
+    fun updateNetworkBlocked(tabId: String, entryId: String, reason: String) =
+        devToolsController.updateNetworkBlocked(tabId, entryId, reason)
 
-    fun updateNetworkAllowed(tabId: String, entryId: String, statusCode: Int? = null, mimeType: String? = null) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val updated = current.networkEntries.map { entry ->
-                if (entry.id == entryId) {
-                    entry.copy(
-                        status = NetworkStatus.ALLOWED,
-                        statusCode = statusCode ?: entry.statusCode ?: 200,
-                        mimeType = mimeType ?: entry.mimeType,
-                        durationMs = System.currentTimeMillis() - entry.timestamp
-                    )
-                } else entry
-            }
-            states + (tabId to current.copy(networkEntries = updated))
-        }
-    }
+    fun updateNetworkAllowed(tabId: String, entryId: String, statusCode: Int? = null, mimeType: String? = null) =
+        devToolsController.updateNetworkAllowed(tabId, entryId, statusCode, mimeType)
 
-    fun clearNetwork(tabId: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(networkEntries = emptyList()))
-        }
-    }
+    fun clearNetwork(tabId: String) = devToolsController.clearNetwork(tabId)
 
-    fun updateDomSource(tabId: String, source: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(domSource = source))
-        }
-    }
+    fun updateDomSource(tabId: String, source: String) = devToolsController.updateDomSource(tabId, source)
 
-    fun updateStorageSnapshot(tabId: String, snapshot: StorageSnapshot) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            states + (tabId to current.copy(storageSnapshot = snapshot))
-        }
-    }
+    fun updateStorageSnapshot(tabId: String, snapshot: StorageSnapshot) =
+        devToolsController.updateStorageSnapshot(tabId, snapshot)
 
     fun refreshSecuritySnapshot(tabId: String, currentUrl: String, isPrivate: Boolean) {
-        val uri = try { android.net.Uri.parse(currentUrl) } catch (_: Exception) { null }
-        val scheme = uri?.scheme ?: ""
-        val isHttps = scheme.equals("https", ignoreCase = true)
-        
-        val adBlockModeName = adBlockMode.value.name
-        val isTrackerBlockEnabled = trackerBlockEnabled.value
-        
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val currentSec = current.securitySnapshot
-            val newSec = SecuritySnapshot(
-                url = currentUrl,
-                scheme = scheme,
-                isHttps = isHttps,
-                mixedContentMode = "MIXED_CONTENT_NEVER_ALLOW",
-                safeBrowsingEnabled = true,
-                javaScriptEnabled = true,
-                domStorageEnabled = !isPrivate,
-                fileAccessAllowed = false,
-                contentAccessAllowed = false,
-                thirdPartyCookiesAllowed = !isPrivate && (privacyShieldMode.value != com.example.manager.PrivacyShieldMode.STRICT),
-                adBlockMode = adBlockModeName,
-                trackerProtectionEnabled = isTrackerBlockEnabled,
-                isPrivateTab = isPrivate,
-                lastSslError = currentSec?.lastSslError,
-                lastSafeBrowsingThreat = currentSec?.lastSafeBrowsingThreat
-            )
-            states + (tabId to current.copy(securitySnapshot = newSec))
-        }
+        devToolsController.refreshSecuritySnapshot(
+            tabId = tabId,
+            currentUrl = currentUrl,
+            isPrivate = isPrivate,
+            adBlockModeName = adBlockMode.value.name,
+            isTrackerBlockEnabled = trackerBlockEnabled.value,
+            thirdPartyCookiesAllowed = !isPrivate && (privacyShieldMode.value != com.example.manager.PrivacyShieldMode.STRICT),
+            safeBrowsingReady = com.example.manager.SecurityGuardEngine.isSafeBrowsingRuntimeReady
+        )
     }
 
-    fun updateLastSslError(tabId: String, error: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val currentSec = current.securitySnapshot
-            val updatedSec = currentSec?.copy(lastSslError = error) ?: SecuritySnapshot(
-                url = "", scheme = "", isHttps = false, mixedContentMode = "",
-                safeBrowsingEnabled = false, javaScriptEnabled = false, domStorageEnabled = false,
-                fileAccessAllowed = false, contentAccessAllowed = false, thirdPartyCookiesAllowed = false,
-                adBlockMode = "", trackerProtectionEnabled = false, isPrivateTab = false,
-                lastSslError = error
-            )
-            states + (tabId to current.copy(securitySnapshot = updatedSec))
-        }
-    }
+    fun updateLastSslError(tabId: String, error: String) = devToolsController.updateLastSslError(tabId, error)
 
-    fun updateLastSafeBrowsingThreat(tabId: String, threat: String) {
-        _devToolsStates.update { states ->
-            val current = states[tabId] ?: DevToolsState()
-            val currentSec = current.securitySnapshot
-            val updatedSec = currentSec?.copy(lastSafeBrowsingThreat = threat) ?: SecuritySnapshot(
-                url = "", scheme = "", isHttps = false, mixedContentMode = "",
-                safeBrowsingEnabled = false, javaScriptEnabled = false, domStorageEnabled = false,
-                fileAccessAllowed = false, contentAccessAllowed = false, thirdPartyCookiesAllowed = false,
-                adBlockMode = "", trackerProtectionEnabled = false, isPrivateTab = false,
-                lastSafeBrowsingThreat = threat
-            )
-            states + (tabId to current.copy(securitySnapshot = updatedSec))
-        }
-    }
+    fun updateLastSafeBrowsingThreat(tabId: String, threat: String) =
+        devToolsController.updateLastSafeBrowsingThreat(tabId, threat)
 
-    fun clearDevToolsState(tabId: String) {
-        _devToolsStates.update { states ->
-            states - tabId
-        }
-    }
+    fun clearDevToolsState(tabId: String) = devToolsController.clearDevToolsState(tabId)
 
     private val _adBlockDisabledDomains = MutableStateFlow(settings.getAdBlockDisabledDomains())
     val adBlockDisabledDomains = _adBlockDisabledDomains.asStateFlow()
@@ -1073,7 +896,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             downloadRepository.clearIncognito()
         }
 
-        // SECURITY FIX (Audit): Purge cookies, web storage, and memory favicons for all origins visited in incognito
+        // SECURITY FIX (Audit): Purge isolated incognito WebView profile if supported, plus cookies, web storage, and memory favicons
+        com.example.manager.SecurityGuardEngine.purgeIncognitoWebViewProfile()
+        try {
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+                val incognitoProfile = androidx.webkit.ProfileStore.getInstance()
+                    .getProfile(com.example.manager.SecurityGuardEngine.INCOGNITO_WEBVIEW_PROFILE_NAME)
+                incognitoProfile?.cookieManager?.removeAllCookies(null)
+                incognitoProfile?.cookieManager?.flush()
+                incognitoProfile?.webStorage?.deleteAllData()
+            }
+        } catch (_: Throwable) {}
+
         val cookieManager = android.webkit.CookieManager.getInstance()
         val webStorage = android.webkit.WebStorage.getInstance()
         val privateHostsToPurge = _privateSessionHosts.toSet()
@@ -1085,6 +919,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             try {
                 webStorage.deleteOrigin("https://$host")
                 webStorage.deleteOrigin("http://$host")
+                val regDomain = com.example.manager.SiteDomainPolicy.registrableDomain(host)
                 val cookieString = cookieManager.getCookie("https://$host") ?: cookieManager.getCookie("http://$host")
                 if (!cookieString.isNullOrBlank()) {
                     for (part in cookieString.split(";")) {
@@ -1093,6 +928,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/")
                             cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.$host; path=/")
                             cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=$host; path=/")
+                            cookieManager.setCookie("http://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/")
+                            if (regDomain.isNotEmpty() && regDomain != host) {
+                                cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.$regDomain; path=/")
+                                cookieManager.setCookie("https://$host", "$name=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=$regDomain; path=/")
+                            }
                         }
                     }
                 }
@@ -1485,8 +1325,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         
         // Clear permissions & temporary bypasses for session
         _activePermissions.value = emptyMap()
-        _devToolsStates.value = emptyMap()
+        devToolsController.clearAll()
         com.example.manager.SecurityGuardEngine.clearTemporaryBypasses()
+        com.example.manager.SecurityGuardEngine.purgeIncognitoWebViewProfile()
         clearBlockedLogs()
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -1767,6 +1608,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val cookieManager = android.webkit.CookieManager.getInstance()
             cookieManager.removeAllCookies(null)
             cookieManager.flush()
+            com.example.manager.SecurityGuardEngine.purgeIncognitoWebViewProfile()
 
             if (closeTabs) {
                 settings.clearPersistedTabs()

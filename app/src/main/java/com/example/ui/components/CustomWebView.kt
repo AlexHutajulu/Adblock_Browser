@@ -194,11 +194,13 @@ fun CustomWebView(
         }
     }
 
-    LaunchedEffect(tab.id, tab.isPrivate, privacyShieldMode) {
+    var crashRecoveryCounter by remember(tab.id) { mutableIntStateOf(0) }
+
+    LaunchedEffect(tab.id, tab.isPrivate, privacyShieldMode, crashRecoveryCounter) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         val shouldAllowThirdPartyCookies = !tab.isPrivate &&
             privacyShieldMode != com.example.manager.PrivacyShieldMode.STRICT
-        val cookieManager = CookieManager.getInstance()
+        val cookieManager = resolveCookieManagerForTab(webView, tab.isPrivate)
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, shouldAllowThirdPartyCookies)
         webView.settings.domStorageEnabled = !tab.isPrivate
@@ -266,9 +268,11 @@ fun CustomWebView(
             }
         }
     ) {
+        androidx.compose.runtime.key(tab.id, crashRecoveryCounter) {
         AndroidView(
             factory = { context ->
                 com.example.manager.FrameMetricsTelemetrySync.validateRenderToken(context)
+                com.example.manager.SecurityGuardEngine.initSafeBrowsingIfSupported(context.applicationContext)
 
                 val webView = webViewPool.getOrPut(tab.id) {
                     val mutableContext = android.content.MutableContextWrapper(context)
@@ -339,6 +343,16 @@ fun CustomWebView(
                             return super.onTouchEvent(event)
                         }
                     }.apply {
+                        if (tab.isPrivate && androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+                            try {
+                                androidx.webkit.WebViewCompat.setProfile(
+                                    this,
+                                    com.example.manager.SecurityGuardEngine.INCOGNITO_WEBVIEW_PROFILE_NAME
+                                )
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "Multi-profile incognito isolation fallback: ${e.message}")
+                            }
+                        }
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
@@ -372,13 +386,15 @@ fun CustomWebView(
                         // Block Mixed Content (HTTP on HTTPS)
                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         
-                        // Phishing and Malware Shield Safe Browsing (Android O+)
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            try {
+                        // Phishing and Malware Shield Safe Browsing (AndroidX WebKit + Android O+)
+                        try {
+                            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.SAFE_BROWSING_ENABLE)) {
+                                androidx.webkit.WebSettingsCompat.setSafeBrowsingEnabled(this, true)
+                            } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 safeBrowsingEnabled = true
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Safe Browsing is not supported on this device")
                             }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Safe Browsing is not supported on this device")
                         }
 
                         if (viewModel.displayMode.value != DisplayMode.MOBILE) {
@@ -389,9 +405,9 @@ fun CustomWebView(
                         }
                     }
 
-                    // For private/incognito tabs, disable third-party cookies for security isolation
+                    // For private/incognito tabs, use isolated profile CookieManager if supported and disable third-party cookies
                     // Also disable if in STRICT privacy mode
-                    val cookieManager = CookieManager.getInstance()
+                    val cookieManager = resolveCookieManagerForTab(this, tab.isPrivate)
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(
                         this,
@@ -718,6 +734,27 @@ fun CustomWebView(
                                 ),
                                 setOf("*")
                             )
+                            // SECURITY FIX (Audit N-03): Install incognito storage isolation and WebRTC leak protection at document-start
+                            if (tab.isPrivate) {
+                                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                                    this,
+                                    com.example.manager.SecurityGuardEngine.buildIncognitoStorageIsolationScript(),
+                                    setOf("*")
+                                )
+                            }
+                            if (preventWebRtcLeak) {
+                                val webRtcDocStart = com.example.manager.SecurityGuardEngine.buildWebRtcProtectionScript(
+                                    preventWebRtcLeak = true,
+                                    strictWebRtcMode = strictWebRtcMode
+                                )
+                                if (webRtcDocStart.isNotEmpty()) {
+                                    androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                                        this,
+                                        webRtcDocStart,
+                                        setOf("*")
+                                    )
+                                }
+                            }
                         } catch (_: Exception) {}
                     }
 
@@ -1144,6 +1181,10 @@ fun CustomWebView(
                             } else {
                                 Log.w(TAG, "WebView killed by OS (OOM)")
                             }
+                            webViewPool.remove(tab.id)
+                            view?.safeDestroy()
+                            viewModel.destroyAndRemoveWebView(tab.id)
+                            crashRecoveryCounter++
                             viewModel.updateTabError(tab.id, "Tab crashed. Refresh to restore.")
                             return true // Indicates we handled it, prevent app crash
                         }
@@ -1874,6 +1915,7 @@ fun CustomWebView(
         },
         modifier = Modifier.fillMaxSize()
     )
+        }
     }
 
     // Apply WebSettings only when actual settings state changes (never on every UI/IME recomposition frame)
@@ -1884,7 +1926,8 @@ fun CustomWebView(
         forceWebPageDarkMode,
         displayMode,
         desktopZoomScale,
-        dataSaverEnabled
+        dataSaverEnabled,
+        crashRecoveryCounter
     ) {
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
@@ -1962,7 +2005,7 @@ fun CustomWebView(
 
     // Execute navigation commands (LoadUrl, GoBack, GoForward, Reload, StopLoading) strictly ONCE per actionId
     val currentNavAction = navigationActions[tab.id]
-    LaunchedEffect(tab.id, currentNavAction?.actionId) {
+    LaunchedEffect(tab.id, currentNavAction?.actionId, crashRecoveryCounter) {
         val action = currentNavAction ?: return@LaunchedEffect
         val webView = webViewPool[tab.id] ?: return@LaunchedEffect
         when (action) {
@@ -2268,8 +2311,22 @@ internal fun buildBackgroundPlaybackDocStartScript(): String = """
 })();
 """.trimIndent()
 
+private fun resolveCookieManagerForTab(webView: WebView, isPrivate: Boolean): CookieManager {
+    if (isPrivate && androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+        try {
+            return androidx.webkit.ProfileStore.getInstance()
+                .getOrCreateProfile(com.example.manager.SecurityGuardEngine.INCOGNITO_WEBVIEW_PROFILE_NAME)
+                .cookieManager
+        } catch (_: Throwable) {}
+    }
+    return CookieManager.getInstance()
+}
+
 fun WebView.safeDestroy() {
     try {
+        (this.context as? android.content.MutableContextWrapper)?.let { wrapper ->
+            wrapper.baseContext = wrapper.baseContext.applicationContext ?: wrapper.baseContext
+        }
         stopLoading()
         onPause()
         clearHistory()

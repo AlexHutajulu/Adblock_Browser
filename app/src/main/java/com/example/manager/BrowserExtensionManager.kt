@@ -653,16 +653,21 @@ object BrowserExtensionManager {
                     return s;
                 };
             }
-            if (typeof window.GM_setValue === 'undefined') {
-                window.GM_setValue = function(k, v) { try { localStorage.setItem('__gm_' + k, JSON.stringify(v)); } catch(e){} };
-            }
-            if (typeof window.GM_getValue === 'undefined') {
-                window.GM_getValue = function(k, defVal) {
-                    try {
-                        var v = localStorage.getItem('__gm_' + k);
-                        return v !== null ? JSON.parse(v) : defVal;
-                    } catch(e) { return defVal; }
-                };
+            if (typeof window.GM_setValue === 'undefined' || typeof window.GM_getValue === 'undefined') {
+                (function() {
+                    var __gmPrivateStore = Object.create(null);
+                    window.GM_setValue = function(k, v) {
+                        try { __gmPrivateStore['__gm_' + String(k)] = JSON.stringify(v); } catch(e) {}
+                    };
+                    window.GM_getValue = function(k, defVal) {
+                        try {
+                            var key = '__gm_' + String(k);
+                            return Object.prototype.hasOwnProperty.call(__gmPrivateStore, key)
+                                ? JSON.parse(__gmPrivateStore[key])
+                                : defVal;
+                        } catch(e) { return defVal; }
+                    };
+                })();
             }
             if (typeof window.GM_xmlhttpRequest === 'undefined') {
                 (function() {
@@ -1075,6 +1080,17 @@ object BrowserExtensionManager {
             }
         }
 
+    private val safeExtensionHttpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .dns(FilterListManager.SAFE_PUBLIC_DNS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     suspend fun importExtensionFromUrl(urlStr: String): Result<List<BrowserExtension>> =
         withContext(Dispatchers.IO) {
             try {
@@ -1093,7 +1109,7 @@ object BrowserExtensionManager {
                 var currentUrl = cleanUrl
                 var redirects = 0
                 val maxRedirects = 3
-                var conn: HttpURLConnection
+                var rawText = ""
 
                 while (true) {
                     if (!isSafeRemoteExtensionUrl(currentUrl, resolveDns = true)) {
@@ -1102,55 +1118,60 @@ object BrowserExtensionManager {
                         )
                     }
                     val urlObj = URL(currentUrl)
-                    conn = (urlObj.openConnection() as HttpURLConnection).apply {
-                        instanceFollowRedirects = false
-                        useCaches = false
-                        connectTimeout = 10000
-                        readTimeout = 10000
-                        requestMethod = "GET"
-                        // SECURITY FIX (audit 2026-10-26): do not spoof an
-                        // outdated Chrome/124 UA for extension downloads.
-                        setRequestProperty("User-Agent", "AlexBrowser/2.0")
-                    }
-                    val status = conn.responseCode
-                    if (status in intArrayOf(
-                            HttpURLConnection.HTTP_MOVED_PERM,
-                            HttpURLConnection.HTTP_MOVED_TEMP,
-                            HttpURLConnection.HTTP_SEE_OTHER,
-                            307,
-                            308
-                        )
-                    ) {
-                        val location = conn.getHeaderField("Location")
-                        conn.disconnect()
-                        if (location.isNullOrBlank()) {
-                            return@withContext Result.failure(IllegalStateException("Pengalihan HTTP $status tanpa header Location"))
-                        }
-                        if (++redirects > maxRedirects) {
-                            return@withContext Result.failure(SecurityException("Terlalu banyak pengalihan URL (maks $maxRedirects)"))
-                        }
-                        val nextUrl = URL(urlObj, location).toString()
-                        if (!isSafeRemoteExtensionUrl(nextUrl, resolveDns = true)) {
-                            return@withContext Result.failure(
-                                SecurityException("Pengalihan ke protokol non-HTTPS atau jaringan lokal diblokir")
+                    val request = okhttp3.Request.Builder()
+                        .url(currentUrl)
+                        .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                        .header("User-Agent", "AlexBrowser/2.0")
+                        .get()
+                        .build()
+
+                    val redirectTarget: String? = safeExtensionHttpClient.newCall(request).execute().use { response ->
+                        val status = response.code
+                        if (status in intArrayOf(
+                                HttpURLConnection.HTTP_MOVED_PERM,
+                                HttpURLConnection.HTTP_MOVED_TEMP,
+                                HttpURLConnection.HTTP_SEE_OTHER,
+                                307,
+                                308
                             )
+                        ) {
+                            val location = response.header("Location")
+                            if (location.isNullOrBlank()) {
+                                return@withContext Result.failure(
+                                    IllegalStateException("Pengalihan HTTP $status tanpa header Location")
+                                )
+                            }
+                            if (++redirects > maxRedirects) {
+                                return@withContext Result.failure(
+                                    SecurityException("Terlalu banyak pengalihan URL (maks $maxRedirects)")
+                                )
+                            }
+                            val nextUrl = URL(urlObj, location).toString()
+                            if (!isSafeRemoteExtensionUrl(nextUrl, resolveDns = true)) {
+                                return@withContext Result.failure(
+                                    SecurityException("Pengalihan ke protokol non-HTTPS atau jaringan lokal diblokir")
+                                )
+                            }
+                            nextUrl
+                        } else if (status !in 200..299) {
+                            return@withContext Result.failure(
+                                IllegalStateException("Gagal mengunduh ekstensi (HTTP $status)")
+                            )
+                        } else {
+                            val stream = response.body?.byteStream()
+                                ?: return@withContext Result.failure(
+                                    IllegalStateException("Respons ekstensi kosong")
+                                )
+                            rawText = stream.use { readBoundedUtf8Text(it, MAX_RAW_EXTENSION_BYTES) }
+                            null
                         }
-                        currentUrl = nextUrl
+                    }
+
+                    if (redirectTarget != null) {
+                        currentUrl = redirectTarget
                         continue
                     }
-                    if (status !in 200..299) {
-                        conn.disconnect()
-                        return@withContext Result.failure(IllegalStateException("Gagal mengunduh ekstensi (HTTP $status)"))
-                    }
                     break
-                }
-
-                val rawText = try {
-                    conn.inputStream.use { stream ->
-                        readBoundedUtf8Text(stream, MAX_RAW_EXTENSION_BYTES)
-                    }
-                } finally {
-                    conn.disconnect()
                 }
 
                 val fileName = Uri.parse(currentUrl).lastPathSegment ?: "Remote_Extension.js"
@@ -1324,6 +1345,14 @@ object BrowserExtensionManager {
     ) {
         if (webView == null) {
             onResult?.invoke("Buka halaman web terlebih dahulu untuk menjalankan ekstensi")
+            return
+        }
+        val activeUrl = try { webView.url } catch (_: Throwable) { null }
+        if (extension.sourceType != ExtensionSourceType.BUILT_IN &&
+            !activeUrl.isNullOrBlank() &&
+            SecurityGuardEngine.isCriticalProtectedHost(activeUrl)
+        ) {
+            onResult?.invoke("Diblokir demi keamanan: ekstensi eksternal tidak diizinkan pada halaman perbankan/otentikasi sensitif")
             return
         }
 
