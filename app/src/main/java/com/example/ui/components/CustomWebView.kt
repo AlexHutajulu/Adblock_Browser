@@ -481,17 +481,17 @@ fun CustomWebView(
                                 return
                             }
 
-                            // Auto-block any popup new-tab URL (all sites, not just judol) when popup protection is active
-                            if (viewModel.openPopupsInNewTab.value ||
-                                viewModel.blockHiddenPopups.value ||
-                                com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(trimmed)
-                            ) {
+                            // Block online gambling or ad/redirect popups while allowing genuine user-opened new tabs
+                            val mainPageUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
+                            val isAdRedirect = viewModel.adBlockMode.value != com.example.manager.AdBlockMode.OFF &&
+                                alexShieldV5Client.shouldBlockNavigationRedirect(trimmed, mainPageUrl, true)
+                            if (com.example.manager.SecurityGuardEngine.isOnlineGamblingUrl(trimmed) || isAdRedirect) {
                                 Log.w(TAG, "Auto-blocked popup via openUrlInNewTab: $trimmed")
                                 mainHandler.post {
                                     viewModel.incrementBlockedStats(trimmed, "Popup")
                                     android.widget.Toast.makeText(
                                         context,
-                                        "Pop-up tab baru diblokir otomatis",
+                                        "Pop-up iklan/berbahaya diblokir otomatis",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 }
@@ -504,7 +504,11 @@ fun CustomWebView(
                             lastNewTabTimestamp = now
 
                             mainHandler.post {
-                                viewModel.addNewTab(trimmed, tab.isPrivate)
+                                if (viewModel.openPopupsInNewTab.value) {
+                                    viewModel.addNewTab(trimmed, tab.isPrivate)
+                                } else {
+                                    viewModel.navigateTo(trimmed)
+                                }
                             }
                         }
 
@@ -1385,14 +1389,14 @@ fun CustomWebView(
                         ): Boolean {
                             if (view == null) return false
 
-                            // Langsung blokir semua pop-up di tab baru dari situs apapun ketika fitur aktif (default aktif)
-                            if (viewModel.openPopupsInNewTab.value || !isUserGesture) {
+                            // Blokir pop-up otomatis yang tidak berasal dari interaksi klik pengguna (hidden/background pop-up)
+                            if (!isUserGesture && viewModel.blockHiddenPopups.value) {
                                 val currentUrl = viewModel.tabs.value.find { it.id == tab.id }?.url ?: currentPageUrlRef.get()
-                                Log.w(TAG, "Auto-blocked popup new tab on page: $currentUrl")
+                                Log.w(TAG, "Auto-blocked hidden popup without user gesture on page: $currentUrl")
                                 viewModel.incrementBlockedStats(currentUrl.ifBlank { "popup://blocked" }, "Popup")
                                 android.widget.Toast.makeText(
                                     view.context,
-                                    "Pop-up tab baru diblokir otomatis",
+                                    "Pop-up otomatis tanpa interaksi diblokir",
                                     android.widget.Toast.LENGTH_SHORT
                                 ).show()
                                 return false
@@ -1435,12 +1439,12 @@ fun CustomWebView(
                                                 (viewModel.blockSuspiciousRedirects.value || viewModel.blockHiddenPopups.value) &&
                                                 alexShieldV5Client.shouldBlockNavigationRedirect(finalPopupUrl, mainPageUrl, isUserGesture)
 
-                                            if (viewModel.openPopupsInNewTab.value || isJudolPopup || blockedByAdGuard) {
+                                            if ((!isUserGesture && viewModel.blockHiddenPopups.value) || isJudolPopup || blockedByAdGuard) {
                                                 Log.w(TAG, "Auto-blocked popup tab for URL: $finalPopupUrl")
                                                 viewModel.incrementBlockedStats(finalPopupUrl, "Popup")
                                                 android.widget.Toast.makeText(
                                                     view.context,
-                                                    "Pop-up tab baru diblokir otomatis",
+                                                    "Pop-up iklan/berbahaya diblokir otomatis",
                                                     android.widget.Toast.LENGTH_SHORT
                                                 ).show()
                                             } else {
@@ -1452,8 +1456,10 @@ fun CustomWebView(
                                                 )
                                                 if (threat.severity != com.example.manager.ThreatSeverity.SAFE) {
                                                     viewModel.reportTabSecurityThreat(tab.id, threat)
-                                                } else {
+                                                } else if (viewModel.openPopupsInNewTab.value) {
                                                     viewModel.addNewTab(finalPopupUrl, isPrivate = tab.isPrivate)
+                                                } else {
+                                                    viewModel.navigateTo(finalPopupUrl)
                                                 }
                                             }
                                         } else {
@@ -1825,12 +1831,24 @@ fun CustomWebView(
                         }
                     }
 
-                    if (tab.url.isNotBlank() && tab.url != "about:blank" &&
-                        navigationActions[tab.id] == null &&
-                        com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
+                    val pendingAction = viewModel.navigationActions.value[tab.id]
+                    val initialUrlToLoad = when (pendingAction) {
+                        is BrowserViewModel.NavigationAction.LoadUrl -> {
+                            viewModel.consumeNavigationAction(tab.id, pendingAction.actionId)
+                            pendingAction.url
+                        }
+                        null -> tab.url
+                        else -> ""
+                    }
+                    if (initialUrlToLoad.isNotBlank() && initialUrlToLoad != "about:blank" &&
+                        com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(initialUrlToLoad)
                     ) {
+                        val safeLoadUrl = com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(
+                            initialUrlToLoad,
+                            viewModel.httpsOnlyMode.value
+                        )
                         val headers = mapOf("DNT" to "1")
-                        loadUrl(tab.url, headers)
+                        loadUrl(safeLoadUrl, headers)
                     }
                 }
             }.apply {
@@ -1933,8 +1951,12 @@ fun CustomWebView(
             tab.url != "about:blank" && navigationActions[tab.id] == null &&
             com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
         ) {
+            val safeLoadUrl = com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(
+                tab.url,
+                viewModel.httpsOnlyMode.value
+            )
             val headers = mapOf("DNT" to "1")
-            webView.loadUrl(tab.url, headers)
+            webView.loadUrl(safeLoadUrl, headers)
         }
     }
 
@@ -1948,8 +1970,12 @@ fun CustomWebView(
                 if (action.url.isNotBlank() && action.url != "about:blank" &&
                     com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(action.url)
                 ) {
+                    val safeLoadUrl = com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(
+                        action.url,
+                        viewModel.httpsOnlyMode.value
+                    )
                     val headers = mapOf("DNT" to "1")
-                    webView.loadUrl(action.url, headers)
+                    webView.loadUrl(safeLoadUrl, headers)
                 }
             }
             is BrowserViewModel.NavigationAction.GoBack -> {
@@ -1968,7 +1994,11 @@ fun CustomWebView(
                     if (tab.url.isNotBlank() && tab.url != "about:blank" &&
                         com.example.manager.SecurityGuardEngine.isSafeWebNavigationUrl(tab.url)
                     ) {
-                        webView.loadUrl(tab.url, mapOf("DNT" to "1"))
+                        val safeLoadUrl = com.example.manager.SecurityGuardEngine.upgradeUrlIfHttpsOnly(
+                            tab.url,
+                            viewModel.httpsOnlyMode.value
+                        )
+                        webView.loadUrl(safeLoadUrl, mapOf("DNT" to "1"))
                     } else {
                         viewModel.updateTabLoading(tab.id, false)
                     }

@@ -49,9 +49,11 @@ data class BrowserTab(
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "BrowserViewModel"
 
-    private val db = AppDatabase.getDatabase(application)
-    private val repository = BrowserRepository(db)
-    val downloadRepository = com.example.data.DownloadRepository(db.downloadDao())
+    private val db: AppDatabase by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        AppDatabase.getDatabase(application)
+    }
+    private val repository = BrowserRepository { db }
+    val downloadRepository = com.example.data.DownloadRepository { db.downloadDao() }
     val downloadManager = com.example.manager.AppDownloadManager(application, downloadRepository, viewModelScope)
     private val settings = SettingsManager(application)
     val permissionManager = PermissionManager(application)

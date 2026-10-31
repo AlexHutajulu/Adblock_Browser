@@ -133,14 +133,15 @@ class MainActivity : AppCompatActivity() {
         }
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
 
-        // Initialize local Favicon disk & memory cache (no third-party network calls)
-        com.example.manager.FaviconStore.init(applicationContext)
-
         // Install AdBlock ServiceWorker interceptor before WebView content starts
         com.example.manager.AdBlockServiceWorker.install()
-        com.yourbrowser.adblock.AdGuardDnsFilter.setEnabled(
-            com.example.manager.SettingsManager(this).adguardDnsLayerEnabled
-        )
+
+        // Initialize disk-backed Favicon cache and DNS filter asynchronously off the UI thread
+        val initialDnsLayerEnabled = com.example.manager.SettingsManager(this).adguardDnsLayerEnabled
+        lifecycleScope.launch(Dispatchers.IO) {
+            com.example.manager.FaviconStore.init(applicationContext)
+            com.yourbrowser.adblock.AdGuardDnsFilter.setEnabled(initialDnsLayerEnabled)
+        }
 
         // Construct standard Android ViewModel
         viewModel = ViewModelProvider(this)[BrowserViewModel::class.java]

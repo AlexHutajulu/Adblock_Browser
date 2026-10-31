@@ -1588,7 +1588,8 @@ fun TabletOrMobileToolbar(
     val isDark = isAppInDarkTheme()
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val isFloatingWindow = maxHeight < 560.dp || maxWidth < 360.dp
+        val isCompactToolbarWidth = maxWidth < 360.dp
+        val isFloatingWindow = maxHeight < 560.dp || isCompactToolbarWidth
         Column(modifier = Modifier.fillMaxWidth()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1607,7 +1608,7 @@ fun TabletOrMobileToolbar(
                                 Modifier
                             }
                         )
-                        .padding(horizontal = if (maxWidth < 360.dp) 6.dp else 8.dp, vertical = 6.dp),
+                        .padding(horizontal = if (isCompactToolbarWidth) 6.dp else 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (isTablet) {

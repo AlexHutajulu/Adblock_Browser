@@ -43,7 +43,7 @@ import java.util.concurrent.Executors
  * while the app runs in the background or switches across multiple tabs.
  */
 object BackgroundMediaController {
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     // Bounded pool: artwork requests are triggered by untrusted page JS.
     private val artworkExecutor = Executors.newFixedThreadPool(2)
     private val inFlightUrls = ConcurrentHashMap.newKeySet<String>()
@@ -59,7 +59,7 @@ object BackgroundMediaController {
     private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
     private val YOUTUBE_PATH_ID_REGEX = Regex("/(?:shorts|embed|live|v)/([a-zA-Z0-9_-]{11})")
 
-    private val artworkCache = object : LruCache<String, Bitmap>(24) {}
+    private val artworkCache by lazy { object : LruCache<String, Bitmap>(24) {} }
 
     @Volatile private var activeMediaWebViewRef: WeakReference<WebView>? = null
     @Volatile var currentTitle: String = "AlexBrowser Media"

@@ -11,8 +11,13 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.io.File
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class SecurityFixesTest {
 
     private fun findSource(relative: String): File {
@@ -341,5 +346,22 @@ class SecurityFixesTest {
             "AppDatabaseEncrypted must use SecureRandom 256-bit token for database passphrase",
             dbEncryptedSource.contains("java.security.SecureRandom().nextBytes(randomBytes)")
         )
+
+        // 7. User-initiated new-tab links are allowed while hidden popups without user gesture are blocked
+        val clientScript = com.example.manager.SecurityGuardEngine.buildClientSecurityScript(
+            blockClipboardHijack = true,
+            blockHiddenPopups = true
+        )
+        assertTrue(
+            "Client security script must gate window.open on hasRecentUserGesture() rather than unconditionally returning null",
+            clientScript.contains("!hasRecentUserGesture()") &&
+                clientScript.contains("origOpen(strUrl") &&
+                clientScript.contains("noopener,noreferrer")
+        )
+        assertTrue(
+            "CustomWebView onCreateWindow must only block non-gesture popups when blockHiddenPopups is enabled",
+            customWebViewSource.contains("if (!isUserGesture && viewModel.blockHiddenPopups.value)")
+        )
     }
 }
+

@@ -492,13 +492,31 @@ object SecurityGuardEngine {
                 } catch (e) {}
             }
 
-            // 5. Block all window.open popups (any site, not just judol) & target="_blank" opener leaks
+            // 5. Block hidden/background window.open popups & target="_blank" opener leaks while allowing user-initiated clicks
             if ($blockHiddenPopups) {
                 try {
+                    var origOpen = window.open ? window.open.bind(window) : null;
                     window.open = function(url, target, features) {
-                        var strUrl = String(url || '');
-                        console.warn('[SecurityShield] Blocked popup window to: ' + strUrl);
-                        return null;
+                        var strUrl = String(url || '').trim();
+                        var lowerUrl = strUrl.toLowerCase();
+                        if (!hasRecentUserGesture() ||
+                            !strUrl ||
+                            lowerUrl === 'about:blank' ||
+                            lowerUrl.indexOf('javascript:') === 0 ||
+                            lowerUrl.indexOf('data:') === 0 ||
+                            lowerUrl.indexOf('vbscript:') === 0
+                        ) {
+                            console.warn('[SecurityShield] Blocked popup window to: ' + strUrl);
+                            return null;
+                        }
+                        if (!origOpen) return null;
+                        var safeFeatures = String(features || '');
+                        if (safeFeatures.indexOf('noopener') === -1) {
+                            safeFeatures = safeFeatures ? (safeFeatures + ',noopener,noreferrer') : 'noopener,noreferrer';
+                        }
+                        var win = origOpen(strUrl, target || '_blank', safeFeatures);
+                        try { if (win) win.opener = null; } catch (err) {}
+                        return win;
                     };
                 } catch (e) {}
             }

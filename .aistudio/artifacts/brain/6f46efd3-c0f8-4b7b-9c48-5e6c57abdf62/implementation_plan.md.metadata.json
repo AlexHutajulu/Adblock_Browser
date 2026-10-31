@@ -1,0 +1,6 @@
+{
+  "summary":  "Rencana perbaikan menyeluruh untuk mengatasi masalah aplikasi tidak dapat digunakan: memperbaiki logika pembukaan tab baru dan pop-up yang terbalik di CustomWebView & SecurityGuardEngine, memindahkan inisialisasi berat SQLCipher/Keystore/AdBlock dari Main Thread ke background thread (Dispatchers.IO) agar startup instan tanpa hang/ANR, serta memastikan upgrade otomatis URL HTTP ke HTTPS pada seluruh jalur navigasi.",
+  "updatedAt":  "2026-10-30T16:04:27.038670087Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
